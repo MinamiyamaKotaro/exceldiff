@@ -5,11 +5,11 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
-use fixtures::security;
-use std::io::Cursor;
 use exceldiff::{
     parse_workbook_reader, parse_workbook_reader_with_limits, to_json_string, Error, SizeLimits,
 };
+use fixtures::security;
+use std::io::Cursor;
 
 #[test]
 fn sparse_merge_bounding_box_does_not_amplify_json_generation_cost() {

@@ -77,7 +77,7 @@ pub enum Error {
     /// セルのみ。値・スタイル・共有文字列参照のいずれも持たない `<c>` は
     /// `flush_cell` が無料で捨てるためカウントされない)が
     /// `SizeLimits::max_cells_per_sheet` を超えた(Issue
-    /// [#88](https://github.com/MinamiyamaKotaro/exceldiff/issues/88))。
+    /// [#88](https://github.com/MinamiyamaKotaro/xlsxparser/issues/88))。
     /// `TooManyMergedRanges`/`TooManyColumnWidthRanges` (バッチ収集後に
     /// 一括チェック)とは異なり、`parse/worksheet.rs` が `<c>` を
     /// ストリーミングする最中に逐次チェックする——セルの場合、メモリコスト

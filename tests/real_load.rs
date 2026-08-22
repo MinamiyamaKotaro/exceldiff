@@ -6,8 +6,8 @@
 //! cost of being slower and needing binary fixtures on disk, so it's kept
 //! separate like `tests/load.rs` is.
 
-use std::sync::Arc;
 use exceldiff::{parse_workbook, CellRef, CellValue};
+use std::sync::Arc;
 
 fn fixture_path(relative: &str) -> String {
     format!("{}/tests/fixtures/{relative}", env!("CARGO_MANIFEST_DIR"))

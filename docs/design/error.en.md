@@ -87,7 +87,7 @@ pub enum Error {
     /// style, or shared-string reference is dropped for free by
     /// `flush_cell` and never counted) exceeded
     /// `SizeLimits::max_cells_per_sheet` (Issue
-    /// [#88](https://github.com/MinamiyamaKotaro/exceldiff/issues/88)).
+    /// [#88](https://github.com/MinamiyamaKotaro/xlsxparser/issues/88)).
     /// Unlike `TooManyMergedRanges`/`TooManyColumnWidthRanges` (checked in
     /// one batch after collection), `parse/worksheet.rs` checks this
     /// incrementally while streaming `<c>` elements — for cells, the memory
