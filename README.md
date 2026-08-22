@@ -1,7 +1,7 @@
 # exceldiff
 
-[![Rust CI](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/rust-ci.yml)
-[![Docs](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/docs.yml/badge.svg)](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/docs.yml)
+[![Rust CI](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/rust-ci.yml)
+[![Docs](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/docs.yml/badge.svg)](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/docs.yml)
 [![exceldiff on crates.io](https://img.shields.io/crates/v/exceldiff.svg)](https://crates.io/crates/exceldiff)
 [![codecov](https://codecov.io/gh/MinamiyamaKotaro/exceldiff/branch/master/graph/badge.svg)](https://codecov.io/gh/MinamiyamaKotaro/exceldiff)
 [![License](https://img.shields.io/github/license/MinamiyamaKotaro/exceldiff)](LICENSE)
@@ -563,4 +563,4 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 If you wish to use this software in a proprietary system or without the copyleft obligations of the AGPL-3.0, commercial licenses are available.
 
-Please contact the author via [GitHub Profile](https://github.com/MinamiyamaKotaro) or open an inquiry on [GitHub Discussions](https://github.com/MinamiyamaKotaro/xlsxparser/discussions).
+Please contact the author via [GitHub Profile](https://github.com/MinamiyamaKotaro) or open an inquiry on [GitHub Discussions](https://github.com/MinamiyamaKotaro/exceldiff/discussions).
