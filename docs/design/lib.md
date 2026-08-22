@@ -6,8 +6,8 @@
 
 ## 責務・スコープ
 
-- クレートの公開API関数を定義する: ファイルパスから `.xlsx` をパースする `parse_workbook`、任意の `Read + Seek` から直接パースする `parse_workbook_reader`（いずれも内部で [`pipeline::run`](pipeline.md) を呼び出す薄いラッパーで、Zip Bombサイズ上限は既定値 `SizeLimits::default()` を使う）、および上限を呼び出し側が明示的に指定できる `parse_workbook_with_limits` / `parse_workbook_reader_with_limits`（セキュリティレビュー Finding 2、Issue [#14](https://github.com/MinamiyamaKotaro/exceldiff/issues/14)）。既定値版の2関数は内部で対応する `_with_limits` 版へ `SizeLimits::default()` を渡して委譲するだけであり、`pipeline::run` を呼ぶロジックを二重に持たない
-- `parse_workbook` は、`pipeline::run` の内部（`File::open` 成功後、ZIP展開やXMLストリーミングの過程）で発生したI/Oエラーの `Error::Io { path: None, .. }` に対し、自身が知っているファイルパスを補完してから呼び出し元へ返す（[PR #11 レビュー](https://github.com/MinamiyamaKotaro/exceldiff/pull/11#pullrequestreview-4949346233)を反映）。`parse_workbook_with_limits` も同じ `fill_io_path` 補完を行う（`parse_workbook` はこれに `SizeLimits::default()` を添えて委譲するだけの薄いラッパーになる）
+- クレートの公開API関数を定義する: ファイルパスから `.xlsx` をパースする `parse_workbook`、任意の `Read + Seek` から直接パースする `parse_workbook_reader`（いずれも内部で [`pipeline::run`](pipeline.md) を呼び出す薄いラッパーで、Zip Bombサイズ上限は既定値 `SizeLimits::default()` を使う）、および上限を呼び出し側が明示的に指定できる `parse_workbook_with_limits` / `parse_workbook_reader_with_limits`（セキュリティレビュー Finding 2、Issue [#14](https://github.com/MinamiyamaKotaro/xlsxparser/issues/14)）。既定値版の2関数は内部で対応する `_with_limits` 版へ `SizeLimits::default()` を渡して委譲するだけであり、`pipeline::run` を呼ぶロジックを二重に持たない
+- `parse_workbook` は、`pipeline::run` の内部（`File::open` 成功後、ZIP展開やXMLストリーミングの過程）で発生したI/Oエラーの `Error::Io { path: None, .. }` に対し、自身が知っているファイルパスを補完してから呼び出し元へ返す（[PR #11 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/11#pullrequestreview-4949346233)を反映）。`parse_workbook_with_limits` も同じ `fill_io_path` 補完を行う（`parse_workbook` はこれに `SizeLimits::default()` を添えて委譲するだけの薄いラッパーになる）
 - どのサブモジュールをクレート外部へ公開するかを決定する。`container` / `parse` / `resolve` / `pipeline` / `json` は非公開の `mod` として宣言し、クレート内部実装として隠蔽する。個々のファイル内では `pub fn` として定義されている項目（例: [`container::ZipContainer::open`](container/mod.md)）があっても、包含する `mod` 自体が非公開であればRustの可視性規則上クレート外部からは到達不能になる（詳細は依存関係セクション参照）
 - `model/` が定義する型のうち、`Workbook` を介して外部から到達しうる型（`Workbook`, `Sheet`, `Cell`, `CellValue`, `CellRef`, `SheetVisibility`, `MergedRegion`, `ResolvedStyle`, `StyleId`, `DateTimeValue`）と `error::{Error, Result}` をクレートルートへ再エクスポートする
 - `container::sanitize::SizeLimits`（[container/sanitize.md](container/sanitize.md)）をクレートルートへ再エクスポートする。`container` 自体は非公開 `mod` だが、`sanitize` は `pub mod` であるため `pub use container::sanitize::SizeLimits;` の形でクレート外部への再エクスポートが可能（`model/` の型を再エクスポートするのと同じ Rust の可視性規則。詳細は依存関係セクション参照）
@@ -54,14 +54,14 @@ pub fn parse_workbook(path: impl AsRef<Path>) -> Result<Workbook> {
 
 /// [`parse_workbook`] に加え、Zip Bombサイズ上限（[`SizeLimits`]）を呼び出し
 /// 側が明示的に指定できるバリアント（セキュリティレビュー Finding 2、
-/// Issue [#14](https://github.com/MinamiyamaKotaro/exceldiff/issues/14)）。
+/// Issue [#14](https://github.com/MinamiyamaKotaro/xlsxparser/issues/14)）。
 /// `parse_workbook` はこの関数へ `SizeLimits::default()` を渡して委譲する
 /// だけの薄いラッパーであり、`std::fs::File` を開き
 /// [`pipeline::run`](pipeline.md) へ委譲する実処理は本関数側にのみ存在する。
 /// `File::open` 自体の失敗だけでなく、`pipeline::run` の内部（ZIP展開中や
 /// XMLストリーミング中）で発生したI/Oエラーについても、`path` が未設定
 /// （`None`）であれば本関数が知っているファイルパスで補完してから返す
-/// （[PR #11 レビュー](https://github.com/MinamiyamaKotaro/exceldiff/pull/11#pullrequestreview-4949346233)
+/// （[PR #11 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/11#pullrequestreview-4949346233)
 /// を反映）。
 pub fn parse_workbook_with_limits(path: impl AsRef<Path>, limits: SizeLimits) -> Result<Workbook> {
     let path = path.as_ref();
@@ -125,7 +125,7 @@ pub fn parse_workbook_reader_with_limits<R: Read + Seek>(
 ## エラー処理方針
 
 - `parse_workbook_with_limits` は `std::fs::File::open` の失敗を `Error::Io { path: Some(path), source }` へ変換する。`path` を `Some` にできるのは、ファイルパスという具体的な文脈を本関数自身が持っているためであり、[error.md](error.md) が定義する `Io::path: Option<PathBuf>` の `Some` 側の使用例そのものである
-- **`parse_workbook_with_limits` は `pipeline::run` から返る `Error::Io { path: None, .. }` を `fill_io_path` で補完する**（[PR #11 レビュー](https://github.com/MinamiyamaKotaro/exceldiff/pull/11#pullrequestreview-4949346233)を反映）。`File::open` 自体は成功したがその後のZIP展開・XMLストリーミング中にI/Oエラーが起きた場合（例えば読み取り中にファイルが削除・破損した場合）、`pipeline::run` は `container::ZipContainer` 等がどのファイルパスから読んでいるかを知らないため `path: None` のまま `Error::Io` を返す。`parse_workbook_with_limits` はこの `None` を自身が保持しているファイルパスで書き換えてから呼び出し元へ返すことで、パース処理のどの段階で発生したI/Oエラーであっても呼び出し元がファイル名を確実に得られるようにする。`parse_workbook` はこの関数への薄い委譲なので同じ補完を自動的に受け継ぐ。`Error::XmlParse` / `Error::MissingRequiredElement` の `path` フィールドはOPCパッケージ内のパーツ名（例: `"xl/worksheets/sheet1.xml"`）を表しファイルシステムパスとは意味が異なるため、`fill_io_path` の補完対象には含めない
+- **`parse_workbook_with_limits` は `pipeline::run` から返る `Error::Io { path: None, .. }` を `fill_io_path` で補完する**（[PR #11 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/11#pullrequestreview-4949346233)を反映）。`File::open` 自体は成功したがその後のZIP展開・XMLストリーミング中にI/Oエラーが起きた場合（例えば読み取り中にファイルが削除・破損した場合）、`pipeline::run` は `container::ZipContainer` 等がどのファイルパスから読んでいるかを知らないため `path: None` のまま `Error::Io` を返す。`parse_workbook_with_limits` はこの `None` を自身が保持しているファイルパスで書き換えてから呼び出し元へ返すことで、パース処理のどの段階で発生したI/Oエラーであっても呼び出し元がファイル名を確実に得られるようにする。`parse_workbook` はこの関数への薄い委譲なので同じ補完を自動的に受け継ぐ。`Error::XmlParse` / `Error::MissingRequiredElement` の `path` フィールドはOPCパッケージ内のパーツ名（例: `"xl/worksheets/sheet1.xml"`）を表しファイルシステムパスとは意味が異なるため、`fill_io_path` の補完対象には含めない
 - `parse_workbook_reader_with_limits`（および委譲元の `parse_workbook_reader`）はそれ自身がI/Oエラーを生成する処理を持たない（`reader` は既にメモリ上または呼び出し側が用意した入力であり、本関数はそれを開く処理を行わない）。`pipeline::run` の内部で発生するエラーはそのまま `?` で伝播する。ここで生成されうる `Error::Io` の `path` は補完されず `None` のままとなる（`parse_workbook_with_limits` と異なり、本関数はファイルパスという文脈を最初から持たないため補完しようがない） — [error.md](error.md) が `Io::path: Option<PathBuf>` の設計時に既に想定していた「ファイルパスを経由しない入力」がまさに本関数に該当する
 - `limits.max_entry_size` / `limits.max_total_size` を超過した場合、`pipeline::run`（→ [container/mod.md](container/mod.md) の `BoundedReader`）が `Error::ZipBombDetected` を返す。これは既定値使用時と全く同じエラー経路であり、`_with_limits` 系関数もそれ以外の関数もこの点で新しいエラーハンドリングを持たない。同様に `limits.max_cells_per_sheet` を超過した場合は `pipeline::run`（→ [parse/worksheet.md](parse/worksheet.md)）が `Error::TooManyCells` を返す（Issue #88）
 - 本ファイル自身は新たな `Error` バリアントを生成しない。既存のバリアント（`Io` 以外はすべて `pipeline::run` 以下から伝播する）をそのまま呼び出し元へ返す。`fill_io_path` は既存の `Error::Io` インスタンスの `path` フィールドを書き換えるのみで、新しいバリアントを生成しない

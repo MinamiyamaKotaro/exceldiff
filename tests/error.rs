@@ -6,9 +6,9 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
+use exceldiff::{parse_workbook_reader, Error};
 use fixtures::error;
 use std::io::Cursor;
-use exceldiff::{parse_workbook_reader, Error};
 
 #[test]
 fn corrupted_xml_is_reported_as_xml_parse_error() {

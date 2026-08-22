@@ -2,7 +2,7 @@
 
 *[日本語](color.md)*
 
-Design doc for `src/model/color.rs`. Defines the type representing an actual, resolved RGB value, needed by [Issue #76](https://github.com/MinamiyamaKotaro/exceldiff/issues/76) (converting theme/indexed colors to real RGB values, a display-oriented concern). This is a newly added file, independent of [`model/style.rs`](style.en.md)'s `ColorRef` (which keeps `rgb`/`theme`+`tint`/`indexed` raw and never resolves it to a real RGB value — [Issue #75](https://github.com/MinamiyamaKotaro/exceldiff/issues/75)'s diff-oriented scope), and exists purely for the display use case. Defines only pure, logic-free data structures (the same role [model/style.md](style.en.md) plays).
+Design doc for `src/model/color.rs`. Defines the type representing an actual, resolved RGB value, needed by [Issue #76](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76) (converting theme/indexed colors to real RGB values, a display-oriented concern). This is a newly added file, independent of [`model/style.rs`](style.en.md)'s `ColorRef` (which keeps `rgb`/`theme`+`tint`/`indexed` raw and never resolves it to a real RGB value — [Issue #75](https://github.com/MinamiyamaKotaro/xlsxparser/issues/75)'s diff-oriented scope), and exists purely for the display use case. Defines only pure, logic-free data structures (the same role [model/style.md](style.en.md) plays).
 
 [`parse/theme.rs`](../parse/theme.en.md) (the entity that builds a `ThemePalette` from `theme{N}.xml`) and [`resolve/color.rs`](../resolve/color.en.md) (the entity that resolves a `ColorRef` and `ThemePalette` into a real RGB value) are connected indirectly, only through the types defined here, without knowing about each other directly — the same "shared vocabulary between phases" role [model/style.md](style.en.md) plays between `parse/styles.rs` and `resolve/style.rs`.
 
@@ -32,7 +32,7 @@ pub struct Rgb {
 
 /// The 12 colors `theme{N}.xml`'s `<clrScheme>` defines. Held as a
 /// fixed-size array that can live on the stack, with zero heap allocation
-/// ([Issue #76 design proposal](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352309575)'s
+/// ([Issue #76 design proposal](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352309575)'s
 /// top priority — "no CPU regression, no added memory footprint" —
 /// carried through directly).
 ///
@@ -42,7 +42,7 @@ pub struct Rgb {
 /// `lt1, dk1, lt2, dk2, accent1..6, hlink, folHlink` (matching the order
 /// Apache POI's `ThemesTable.ThemeElement` enum uses, confirmed against
 /// real data by a PoC — see
-/// [Issue #76 comment](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352366260)).
+/// [Issue #76 comment](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352366260)).
 /// This is a well-known trap easy to get wrong, so
 /// [`parse/theme.rs`](../parse/theme.en.md) owns absorbing this swap when
 /// it builds this array — this file itself only documents the index
@@ -52,7 +52,7 @@ pub struct Rgb {
 pub struct ThemePalette(pub [Rgb; 12]);
 ```
 
-`Rgb` derives `Default` (black, `#000000`) because part of [`resolve/color.rs`](../resolve/color.en.md)'s fallback path (the `sysClr` fallback policy finalized in [Issue #76 comment](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352388486)) uses black as its default value. `ThemePalette` does not derive `Default` — it only carries meaning once all 12 slots are filled, and allowing an empty/partially-initialized `ThemePalette` to be constructed would make `resolve/color.rs`'s calling contract ambiguous.
+`Rgb` derives `Default` (black, `#000000`) because part of [`resolve/color.rs`](../resolve/color.en.md)'s fallback path (the `sysClr` fallback policy finalized in [Issue #76 comment](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352388486)) uses black as its default value. `ThemePalette` does not derive `Default` — it only carries meaning once all 12 slots are filled, and allowing an empty/partially-initialized `ThemePalette` to be constructed would make `resolve/color.rs`'s calling contract ambiguous.
 
 ## Dependencies
 
@@ -70,4 +70,4 @@ Not applicable. Type definitions only, so this file has no unit tests. Whether `
 ## Open Questions
 
 1. **Whether discarding the alpha channel from `ColorRef::Rgb`'s 8-digit ARGB string is sound**: confirmed via PoC against the fixtures on hand that it's practically always `FF` (opaque), but if a real file with a non-`FF` alpha value surfaces in the future, it remains an open question whether silently ignoring it (the current policy) is acceptable, or whether `Rgb` should gain an alpha field. The cost of adding one later is low (`Rgb` isn't locked into any public API surface yet), so this is deferred until a concrete example turns up.
-2. **How `Workbook` holds a `ThemePalette`**: for [Issue #76 design proposal](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352309575)'s "Option A (on-demand resolve API)" to actually work, callers need access to the workbook's `ThemePalette` in addition to a `ColorRef` — the original proposal's module layout didn't spell out this path, so this design pass filled the gap by adding a `theme: Option<ThemePalette>` field to [`model/workbook.rs`](workbook.en.md) (see [workbook.md](workbook.en.md) for detail). `Option` because a workbook without a `theme{N}.xml` part (the vast majority of files, which never use theme colors) has none.
+2. **How `Workbook` holds a `ThemePalette`**: for [Issue #76 design proposal](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352309575)'s "Option A (on-demand resolve API)" to actually work, callers need access to the workbook's `ThemePalette` in addition to a `ColorRef` — the original proposal's module layout didn't spell out this path, so this design pass filled the gap by adding a `theme: Option<ThemePalette>` field to [`model/workbook.rs`](workbook.en.md) (see [workbook.md](workbook.en.md) for detail). `Option` because a workbook without a `theme{N}.xml` part (the vast majority of files, which never use theme colors) has none.

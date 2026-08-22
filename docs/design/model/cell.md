@@ -98,7 +98,7 @@ pub struct Cell {
 
 ## 未決事項 / オープンクエスチョン
 
-1. ~~`style` フィールドの表現~~ → **解決**: `Option<Arc<ResolvedStyle>>` を採用する（[PR #5 レビュー](https://github.com/MinamiyamaKotaro/exceldiff/pull/5#pullrequestreview-4948235239)を踏まえて確定）。`Arc` により実データの重複コピーを避けつつ、`StyleSheet` コンテナ自体はフェーズ4完了後に破棄できる。
+1. ~~`style` フィールドの表現~~ → **解決**: `Option<Arc<ResolvedStyle>>` を採用する（[PR #5 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/5#pullrequestreview-4948235239)を踏まえて確定）。`Arc` により実データの重複コピーを避けつつ、`StyleSheet` コンテナ自体はフェーズ4完了後に破棄できる。
 2. ~~共有文字列の表現~~ → **解決**: `CellValue::Text(Arc<str>)` を採用する。理由は上記1と同様。
 3. **行・列の桁上限**: Excelの最大列数（16,384列 = XFD）・最大行数（1,048,576行）に対し `u32` で十分だが、`col` を数値として扱うか将来的に列名を別型（`ColumnRef`）として分離するかは未決定。
 4. ~~`DateTimeValue` の具体的な型~~ → **解決**(Issue #40): `year`/`month`/`day`/`hour`/`minute`/`second` を単純なフィールドとして持つ軽量な `Copy` 構造体とし、意図的に `chrono` 等の外部日付クレートには依存しない——[`resolve/style.rs`](../resolve/style.md) がExcelのシリアル値を自己完結型の整数演算アルゴリズム(Howard Hinnant の `civil_from_days`、パブリックドメイン)で直接分解して構築し、コンパイル時間・バイナリサイズへの影響をゼロに保つ。Excelの1900年うるう年バグ(シリアル60=架空の「1900-02-29」)と `<workbookPr date1904="1"/>` による代替エポックはいずれも同ファイルで処理する——詳細は [resolve/style.md](../resolve/style.md) 参照。

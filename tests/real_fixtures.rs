@@ -18,8 +18,8 @@
 //! Regenerate the fixtures with `python3 scripts/generate_real_fixtures.py`
 //! (requires `pip install openpyxl`) if they ever need to change.
 
-use std::sync::Arc;
 use exceldiff::{parse_workbook, CellRef, CellValue, DateTimeValue, SheetVisibility};
+use std::sync::Arc;
 
 fn fixture_path(relative: &str) -> String {
     format!("{}/tests/fixtures/{relative}", env!("CARGO_MANIFEST_DIR"))

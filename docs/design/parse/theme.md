@@ -2,13 +2,13 @@
 
 *[English](theme.en.md)*
 
-`src/parse/theme.rs` に対応する設計書。[architecture.md](../architecture.md) が定義する `parse/` の責務のうち「`theme{N}.xml` のパース」（[Issue #76](https://github.com/MinamiyamaKotaro/exceldiff/issues/76)）を担う。`xl/theme/theme{N}.xml` の `<a:clrScheme>` をパースし、[`model/color.rs`](../model/color.md) が定義する `ThemePalette` を構築する。
+`src/parse/theme.rs` に対応する設計書。[architecture.md](../architecture.md) が定義する `parse/` の責務のうち「`theme{N}.xml` のパース」（[Issue #76](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76)）を担う。`xl/theme/theme{N}.xml` の `<a:clrScheme>` をパースし、[`model/color.rs`](../model/color.md) が定義する `ThemePalette` を構築する。
 
 ## 責務・スコープ
 
-- `<a:clrScheme>` 直下の12要素(`dk1`/`lt1`/`dk2`/`lt2`/`accent1`〜`accent6`/`hlink`/`folHlink`)のみをストリーム走査し、それぞれの子要素 `<a:srgbClr val="RRGGBB"/>` または `<a:sysClr val="..." lastClr="RRGGBB"/>` から実RGB値を読み取る。図形スタイル・フォントスキームなど `<clrScheme>` 以外の要素は一切解釈しない([Issue #76 設計提案](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352309575)がそもそも要求する範囲)
-- 読み取った12色を、[`model::color::ThemePalette`](../model/color.md) が契約するインデックス順(`0:lt1, 1:dk1, 2:lt2, 3:dk2, 4..=9:accent1..=6, 10:hlink, 11:folHlink`——XML宣言順`dk1,lt1,...`からスロット0/1が入れ替わる)へ配置して返す。この入れ替えはPoC検証で実データ・Apache POIの `ThemesTable.ThemeElement` enum 双方に対して確認済み([Issue #76コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352366260))
-- `<a:sysClr val="windowText" lastClr="000000"/>` のような要素は `lastClr` 属性(Excelが保存時に書き込むキャッシュ値)を実RGB値として採用する。`lastClr` が欠落・不正な16進数の場合は、スロット名に応じたフォールバック値へ縮退する(`lt1`/`lt2` → 白、`dk1`/`dk2`/その他 → 黒。[Issue #76コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352388486)の確定仕様)——PoCでリポジトリ同梱の全フィクスチャ(`<a:sysClr>` 84要素)を走査した結果、実世界のExcel生成ファイルでは `lastClr` が欠落することは無かった。このフォールバックは専ら細工・破損ファイルに対する防御的コードであり、通常経路では発火しない
+- `<a:clrScheme>` 直下の12要素(`dk1`/`lt1`/`dk2`/`lt2`/`accent1`〜`accent6`/`hlink`/`folHlink`)のみをストリーム走査し、それぞれの子要素 `<a:srgbClr val="RRGGBB"/>` または `<a:sysClr val="..." lastClr="RRGGBB"/>` から実RGB値を読み取る。図形スタイル・フォントスキームなど `<clrScheme>` 以外の要素は一切解釈しない([Issue #76 設計提案](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352309575)がそもそも要求する範囲)
+- 読み取った12色を、[`model::color::ThemePalette`](../model/color.md) が契約するインデックス順(`0:lt1, 1:dk1, 2:lt2, 3:dk2, 4..=9:accent1..=6, 10:hlink, 11:folHlink`——XML宣言順`dk1,lt1,...`からスロット0/1が入れ替わる)へ配置して返す。この入れ替えはPoC検証で実データ・Apache POIの `ThemesTable.ThemeElement` enum 双方に対して確認済み([Issue #76コメント](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352366260))
+- `<a:sysClr val="windowText" lastClr="000000"/>` のような要素は `lastClr` 属性(Excelが保存時に書き込むキャッシュ値)を実RGB値として採用する。`lastClr` が欠落・不正な16進数の場合は、スロット名に応じたフォールバック値へ縮退する(`lt1`/`lt2` → 白、`dk1`/`dk2`/その他 → 黒。[Issue #76コメント](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352388486)の確定仕様)——PoCでリポジトリ同梱の全フィクスチャ(`<a:sysClr>` 84要素)を走査した結果、実世界のExcel生成ファイルでは `lastClr` が欠落することは無かった。このフォールバックは専ら細工・破損ファイルに対する防御的コードであり、通常経路では発火しない
 - **含まない責務**: `Rgb`/`ThemePalette` の型定義そのもの([`model/color.rs`](../model/color.md))、`tint` 補正・レガシー64色インデックスパレットの解決([`resolve/color.rs`](../resolve/color.md)、未設計——`tint` は `theme{N}.xml` 自体には存在せず参照側の `styles.xml` に個別に付与されるため、そもそも本ファイルが扱う情報ではない)、`theme{N}.xml` パーツの実体パスの解決(`xl/_rels/workbook.xml.rels` からのリレーションシップ解決。`pipeline.rs`、[pipeline.md オープンクエスチョン6](../pipeline.md)参照——本関数は既にパスが解決済みの `reader` を受け取る前提とする、`parse/styles.rs`/`parse/shared_strings.rs` と同じ形)、`theme{N}.xml` パーツ自体を読み込むかどうかの判断(「pay-for-what-you-use」——`StyleSheet` が `ColorRef::Theme` を1件も含まない場合に本パースを完全にスキップする最適化は呼び出し元 `pipeline.rs` の責務。[pipeline.md オープンクエスチョン6](../pipeline.md)参照)
 
 ## 主要な型・関数（案）
@@ -59,7 +59,7 @@ pub(crate) fn parse_theme(reader: impl BufRead, path: &str) -> Result<ThemePalet
 /// - `<a:sysClr val="..." lastClr="RRGGBB"/>`: `val`(名前付きシステム色。
 ///   `windowText`/`window`等)はOS非依存に解決する手段がないため無視し、
 ///   `lastClr`(Excelが保存時に書き込んだキャッシュ値)を採用する
-///   ([Issue #76コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352388486)。
+///   ([Issue #76コメント](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352388486)。
 ///   他実装(Apache POI含む)も採用する現実的な妥協点)。
 /// - `lastClr`属性自体が欠落、または6桁16進数として不正な場合:
 ///   `slot_name`が`lt1`/`lt2`なら`#FFFFFF`、それ以外(`dk1`/`dk2`/`accent*`/
@@ -84,12 +84,12 @@ fn resolve_slot_color(slot_name: &str, event: &Event<'_>, path: &str) -> Result<
 
 ## テスト方針
 
-- 実フィクスチャ(`tests/fixtures/complex/styled_fill_color.xlsx`)の `theme1.xml` から、PoC検証済みの実際の値(`dk1=000000, lt1=FFFFFF, dk2=1F497D, lt2=EEECE1, accent1=4F81BD, accent2=C0504D, ..., hlink=0000FF, folHlink=800080`)が、スワップ済みインデックス順(`palette.0[0] == lt1の値`、`palette.0[1] == dk1の値`)で正しく `ThemePalette` へ格納されることの確認——[Issue #76コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352366260)のPoCをユニットテストへ昇格させたもの
+- 実フィクスチャ(`tests/fixtures/complex/styled_fill_color.xlsx`)の `theme1.xml` から、PoC検証済みの実際の値(`dk1=000000, lt1=FFFFFF, dk2=1F497D, lt2=EEECE1, accent1=4F81BD, accent2=C0504D, ..., hlink=0000FF, folHlink=800080`)が、スワップ済みインデックス順(`palette.0[0] == lt1の値`、`palette.0[1] == dk1の値`)で正しく `ThemePalette` へ格納されることの確認——[Issue #76コメント](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352366260)のPoCをユニットテストへ昇格させたもの
 - `<clrScheme>` の子要素がXML宣言順(`dk1,lt1,dk2,lt2,...`)通りに現れる、仕様上正当な入力に対して正しく解決できることの確認
 - **`<clrScheme>` の12要素のいずれか(例: `accent3`)が欠落している場合に `Error::MissingRequiredElement` を返すことの確認**(構造的な欠落に対するfail closed方針の回帰テスト)
 - `<a:srgbClr val="4F81BD"/>` が `Rgb { r: 0x4F, g: 0x81, b: 0xBD }` へ正しく解決されることの確認
 - `<a:sysClr val="windowText" lastClr="000000"/>` が `lastClr` の値(`#000000`)へ解決され、`val` の値(`windowText`)は無視されることの確認
-- **`lastClr` 属性を持たない `<a:sysClr val="windowText"/>` が、`dk1`/`dk2`スロットでは `#000000` へ、`lt1`/`lt2`スロットでは `#FFFFFF` へフォールバックすることの確認**(実フィクスチャでは発火しない経路のため、合成XMLで明示的にテストする——[Issue #76コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/76#issuecomment-5352422163)が指摘した、自然にはカバレッジが付かない分岐)
+- **`lastClr` 属性を持たない `<a:sysClr val="windowText"/>` が、`dk1`/`dk2`スロットでは `#000000` へ、`lt1`/`lt2`スロットでは `#FFFFFF` へフォールバックすることの確認**(実フィクスチャでは発火しない経路のため、合成XMLで明示的にテストする——[Issue #76コメント](https://github.com/MinamiyamaKotaro/xlsxparser/issues/76#issuecomment-5352422163)が指摘した、自然にはカバレッジが付かない分岐)
 - `lastClr` が不正な16進数(例: `lastClr="ZZZZZZ"`)の場合も同じフォールバック値へ縮退し、パニックしないことの確認
 - 名前空間プレフィックスが `a:` 以外(またはプレフィックスなし)で宣言された `<clrScheme>` でも局所名一致により正しく解決できることの確認(オープンクエスチョン1参照)
 

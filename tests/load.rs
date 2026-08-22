@@ -7,9 +7,9 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
+use exceldiff::{parse_workbook_reader, CellRef, CellValue};
 use fixtures::load;
 use std::io::Cursor;
-use exceldiff::{parse_workbook_reader, CellRef, CellValue};
 
 #[test]
 fn massive_dense_accounting_parses_every_one_of_300_000_cells() {

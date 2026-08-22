@@ -4,10 +4,10 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
+use exceldiff::{parse_workbook_reader, to_json_string, CellRef, CellValue, DateTimeValue};
 use fixtures::normal;
 use std::io::Cursor;
 use std::sync::Arc;
-use exceldiff::{parse_workbook_reader, to_json_string, CellRef, CellValue, DateTimeValue};
 
 #[test]
 fn wrap_text_resolves_per_cell_and_serializes_nested_under_style() {

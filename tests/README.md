@@ -1,7 +1,7 @@
 # Test suite overview
 
 This directory implements the five fixture categories proposed in
-[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28) —
+[Issue #28](https://github.com/MinamiyamaKotaro/xlsxparser/issues/28) —
 **normal** (正常系), **error** (異常系), **complex** (正常系・複合型),
 **load** (負荷), and **security** (セキュリティ) — plus a parallel set of
 unit tests embedded in `src/` (`330`+ `#[test]` functions as of this
@@ -45,13 +45,13 @@ larger ad hoc corpus of real-world files — currently sourced from
 [calamine](https://github.com/tafia/calamine)'s test corpus — used to
 *discover* compatibility gaps by diffing exceldiff's output against
 calamine's, cell by cell (see
-[Issue #52](https://github.com/MinamiyamaKotaro/exceldiff/issues/52)).
+[Issue #52](https://github.com/MinamiyamaKotaro/xlsxparser/issues/52)).
 Every gap found this way that warranted a fix got a hand-authored,
 committed regression test reproducing the same shape (e.g.
 `tests/fixtures/normal.rs`'s `workbook_at_package_root`/
 `cells_without_r_attribute`, added for
-[Issue #55](https://github.com/MinamiyamaKotaro/exceldiff/issues/55)/
-[#79](https://github.com/MinamiyamaKotaro/exceldiff/issues/79)) — the
+[Issue #55](https://github.com/MinamiyamaKotaro/xlsxparser/issues/55)/
+[#79](https://github.com/MinamiyamaKotaro/xlsxparser/issues/79)) — the
 real file is what *found* the bug, but the committed test is what
 *prevents its regression*, since the corpus itself isn't part of CI.
 
@@ -89,7 +89,7 @@ real file is what *found* the bug, but the committed test is what
 - **Security** (`security.rs`): Zip Bomb (both the per-entry and
   cumulative-size caps), Zip Slip path traversal, XXE external-entity
   rejection, and the merged-region bounding-box amplification fixed by
-  [Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43).
+  [Issue #43](https://github.com/MinamiyamaKotaro/xlsxparser/issues/43).
 
 ## Edge-case coverage audit
 
@@ -105,9 +105,9 @@ found — don't let it silently go stale.
 | Area | Status | Evidence |
 | --- | --- | --- |
 | Extreme sparsity | ✅ Covered | `complex.rs`'s `extreme_sparse_coordinates_register_only_the_populated_cells` / `real_fixtures.rs`'s `real_extreme_sparse_xlsx_registers_only_the_two_populated_cells` — `A1` and `XFD1048576` (row 1,048,576, column 16,384: Excel's actual maximum in both dimensions), asserting only 2 entries ever land in the coordinate map. |
-| Dense merged cells | ✅ Resolved ([Issue #84](https://github.com/MinamiyamaKotaro/exceldiff/issues/84)) | Was: the only merge-heavy fixture, `houganshi_merged`, contains exactly **one** merged region (`A1:C3`), despite Issue #28's original spec calling for merges "至る所に" (everywhere). Closed by `complex.rs`'s `dense_merged_grid` (a 20×20 grid of 3×3 merged blocks, 400 regions, tiling with no gaps) and `tests/complex.rs`'s `dense_merged_grid_resolves_every_block_to_its_own_anchor`, verifying every block resolves independently (no leakage into a neighbor) and that JSON `rowSpan`/`colSpan` are correct at that scale. |
-| "Medium" density | ✅ Resolved ([Issue #83](https://github.com/MinamiyamaKotaro/exceldiff/issues/83)) | Was: no fixture existed between `extreme_sparse` (2 cells) and `massive_dense_accounting` (300,000 cells, 100% fill in a fixed rectangle) — nothing represented a wide coordinate range with cells scattered at partial density. Closed by `complex.rs`'s `medium_density` (rows 1-3,000 × cols 1-50, ~10% fill via `(row + col) % 10 == 0`) and `tests/complex.rs`'s `medium_density_registers_only_the_scattered_populated_cells`. |
-| Unicode / RTL text | ✅ Resolved ([Issue #85](https://github.com/MinamiyamaKotaro/exceldiff/issues/85)) | Was: every committed fixture's non-ASCII text was exactly one string, `"日本語Text"` (CJK, left-to-right) — no RTL scripts, ZWJ emoji sequences, combining diacritics, or surrogate-pair characters were ever committed, despite all of them working correctly (verified ad hoc before this fixture existed). Closed by `normal.rs`'s `unicode_text` (Arabic, Hebrew, a ZWJ-sequence emoji, a combining diacritic, and mixed-bidi text) and `tests/normal.rs`'s `unicode_text_round_trips_through_json`, which also confirms the JSON layer doesn't escape or otherwise mangle any of it. |
+| Dense merged cells | ✅ Resolved ([Issue #84](https://github.com/MinamiyamaKotaro/xlsxparser/issues/84)) | Was: the only merge-heavy fixture, `houganshi_merged`, contains exactly **one** merged region (`A1:C3`), despite Issue #28's original spec calling for merges "至る所に" (everywhere). Closed by `complex.rs`'s `dense_merged_grid` (a 20×20 grid of 3×3 merged blocks, 400 regions, tiling with no gaps) and `tests/complex.rs`'s `dense_merged_grid_resolves_every_block_to_its_own_anchor`, verifying every block resolves independently (no leakage into a neighbor) and that JSON `rowSpan`/`colSpan` are correct at that scale. |
+| "Medium" density | ✅ Resolved ([Issue #83](https://github.com/MinamiyamaKotaro/xlsxparser/issues/83)) | Was: no fixture existed between `extreme_sparse` (2 cells) and `massive_dense_accounting` (300,000 cells, 100% fill in a fixed rectangle) — nothing represented a wide coordinate range with cells scattered at partial density. Closed by `complex.rs`'s `medium_density` (rows 1-3,000 × cols 1-50, ~10% fill via `(row + col) % 10 == 0`) and `tests/complex.rs`'s `medium_density_registers_only_the_scattered_populated_cells`. |
+| Unicode / RTL text | ✅ Resolved ([Issue #85](https://github.com/MinamiyamaKotaro/xlsxparser/issues/85)) | Was: every committed fixture's non-ASCII text was exactly one string, `"日本語Text"` (CJK, left-to-right) — no RTL scripts, ZWJ emoji sequences, combining diacritics, or surrogate-pair characters were ever committed, despite all of them working correctly (verified ad hoc before this fixture existed). Closed by `normal.rs`'s `unicode_text` (Arabic, Hebrew, a ZWJ-sequence emoji, a combining diacritic, and mixed-bidi text) and `tests/normal.rs`'s `unicode_text_round_trips_through_json`, which also confirms the JSON layer doesn't escape or otherwise mangle any of it. |
 | Corrupted OOXML | ✅ Covered | `error.rs`/`real_error.rs` (truncated/malformed worksheet XML — plus, as of this audit, `workbook.xml`/`styles.xml`/`sharedStrings.xml` bodies via `corrupted_workbook_xml_is_reported_as_xml_parse_error`/`corrupted_styles_xml_is_reported_as_xml_parse_error`/`corrupted_shared_strings_xml_is_reported_as_missing_closing_tag` — the last one surfacing a distinct, more specific `Error::MissingRequiredElement { name: "si/is closing tag" }` rather than a raw `Error::XmlParse`, since `concat_rich_text`'s own EOF check catches that particular truncation shape first; see that test's fixture doc comment — dangling relationships, out-of-bounds SST index, invalid column-width/merge ranges) + `security.rs` (zip bomb, zip slip, XXE) + `src/lib.rs`'s `corrupt_xlsx_errors_propagate_unchanged` (non-ZIP garbage bytes) + `src/container/mod.rs`'s `open_reader_rejects_corrupt_zip_bytes` + `src/pipeline.rs`'s `malformed_worksheet_rels_xml_propagates_parse_error`/`malformed_drawing_rels_xml_propagates_parse_error` (malformed `_rels` XML) + `src/parse/mod.rs`'s invalid-UTF-8-in-`<t>`/CDATA tests. |
 
 Two related, already-triaged cases from Issue #52's own investigation are

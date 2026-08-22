@@ -4,10 +4,10 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
+use exceldiff::{parse_workbook_reader, CellRef, CellValue, SheetVisibility};
 use fixtures::complex;
 use std::io::Cursor;
 use std::sync::Arc;
-use exceldiff::{parse_workbook_reader, CellRef, CellValue, SheetVisibility};
 
 #[test]
 fn houganshi_merged_region_resolves_every_coordinate_to_the_anchor() {

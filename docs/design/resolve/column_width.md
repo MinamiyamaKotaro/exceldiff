@@ -68,7 +68,7 @@ pub(crate) fn resolve(
 
 本モジュール自体にはO(R²)/O(R³)のリスクは無いが、`resolve/merge.rs` と同じ理由で件数上限(`MAX_COLUMN_WIDTH_RANGES`、2,000)を設けている: 最小の `<col min="1" max="1" width=".."/>` エントリはわずか約40〜50バイトのため、Zip Bomb対策のバイト数上限(既定512 MiB)だけでは1,000万件を優に超える数が許容されてしまう——実CPU時間(ソート処理)と実メモリ(範囲1件あたり`Vec<ColWidthRange>`のエントリ)はバイトサイズとは独立に抑えるべきであり、その規模でのソート自体が危険だからではなく、「ファイル形式がそれを止めない」ことは「それを行うのがタダである」ことを意味しないためである。
 
-**設計の経緯**: この考え方——および `resolve/merge.rs` のO(N²)手法や `MAX_MERGE_REGIONS` の値をそのまま流用しなかった判断——は、[Issue #36](https://github.com/MinamiyamaKotaro/exceldiff/issues/36) の議論スレッドにおける5回にわたる提案設計と実測による反例の結果である: 重複を一切扱わない素朴な案は最悪ケースでO(R³)のリスクがあると実測で判明し、「後勝ち」でのトリム・分割方式は(そのトリム・分割ロジック自体の複雑度リスクが指摘された後)`resolve/merge.rs` 自身の方針に合わせて完全拒否方式に置き換えられ、上限値`2,000`の根拠も2回の訂正を経た(最初は `MAX_MERGE_REGIONS` のdocコメントから当てはまらないO(R²)の理由をそのまま引用し、その後アルゴリズム上の計算量の懸念とは独立に「Zip Bombのバイト数上限だけではRを抑えられない」という正しい理由に訂正)うえで、上記の理由に落ち着いた。
+**設計の経緯**: この考え方——および `resolve/merge.rs` のO(N²)手法や `MAX_MERGE_REGIONS` の値をそのまま流用しなかった判断——は、[Issue #36](https://github.com/MinamiyamaKotaro/xlsxparser/issues/36) の議論スレッドにおける5回にわたる提案設計と実測による反例の結果である: 重複を一切扱わない素朴な案は最悪ケースでO(R³)のリスクがあると実測で判明し、「後勝ち」でのトリム・分割方式は(そのトリム・分割ロジック自体の複雑度リスクが指摘された後)`resolve/merge.rs` 自身の方針に合わせて完全拒否方式に置き換えられ、上限値`2,000`の根拠も2回の訂正を経た(最初は `MAX_MERGE_REGIONS` のdocコメントから当てはまらないO(R²)の理由をそのまま引用し、その後アルゴリズム上の計算量の懸念とは独立に「Zip Bombのバイト数上限だけではRを抑えられない」という正しい理由に訂正)うえで、上記の理由に落ち着いた。
 
 ## 依存関係
 
@@ -77,7 +77,7 @@ pub(crate) fn resolve(
 
 ## エラー処理方針
 
-- 件数が `MAX_COLUMN_WIDTH_RANGES` を超える場合、個々の範囲が `min > max` の場合、または2つの範囲が重複する場合は、それぞれ `Error::TooManyColumnWidthRanges` / `Error::InvalidColumnWidthRange { min, max, reason }` として拒否する(`Error::TooManyMergedRanges` / `Error::InvalidMergedRange` と同じ形——`resolve::merge::validate_region` の座標逆転チェックも含む。[PR #48のレビュー](https://github.com/MinamiyamaKotaro/exceldiff/pull/48#pullrequestreview-4956349641)を受けて追加: `min > max` の範囲はそれ自体クラッシュやメモリ安全性の問題は起こさない(`Sheet::column_width` の二分探索がどの列にも一致させないだけ)が、このチェックが無いと、不正な入力をエラーとして表面化させる代わりに死んだ・到達不能なデータとして静かに登録されてしまう)。
+- 件数が `MAX_COLUMN_WIDTH_RANGES` を超える場合、個々の範囲が `min > max` の場合、または2つの範囲が重複する場合は、それぞれ `Error::TooManyColumnWidthRanges` / `Error::InvalidColumnWidthRange { min, max, reason }` として拒否する(`Error::TooManyMergedRanges` / `Error::InvalidMergedRange` と同じ形——`resolve::merge::validate_region` の座標逆転チェックも含む。[PR #48のレビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/48#pullrequestreview-4956349641)を受けて追加: `min > max` の範囲はそれ自体クラッシュやメモリ安全性の問題は起こさない(`Sheet::column_width` の二分探索がどの列にも一致させないだけ)が、このチェックが無いと、不正な入力をエラーとして表面化させる代わりに死んだ・到達不能なデータとして静かに登録されてしまう)。
 - `panic` はしない(不正・悪意ある範囲は信頼できない外部入力に由来しうるため)。
 - 検証(件数・逆転範囲・重複のいずれか)に失敗した場合、何も登録しない(fail closed)——`resolve/merge.rs` と同じ方針。
 
@@ -94,4 +94,4 @@ pub(crate) fn resolve(
 
 ## 未決事項 / オープンクエスチョン
 
-現時点で無し。核となるアルゴリズムは上記のIssue #36レビュープロセスを通じて実装着手前に収束した。実装後に見つかった唯一の抜け([`min > max` 検証の欠落](https://github.com/MinamiyamaKotaro/exceldiff/pull/48#pullrequestreview-4956349641))は未決事項として残さず、既に上記へ反映済み。
+現時点で無し。核となるアルゴリズムは上記のIssue #36レビュープロセスを通じて実装着手前に収束した。実装後に見つかった唯一の抜け([`min > max` 検証の欠落](https://github.com/MinamiyamaKotaro/xlsxparser/pull/48#pullrequestreview-4956349641))は未決事項として残さず、既に上記へ反映済み。

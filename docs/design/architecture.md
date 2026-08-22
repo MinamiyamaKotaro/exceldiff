@@ -2,7 +2,7 @@
 
 *[English](architecture.en.md)*
 
-Issue [#1](https://github.com/MinamiyamaKotaro/exceldiff/issues/1) での議論を経て確定した `src/` ディレクトリ構成と、各モジュールの責務をまとめたドキュメント。要求仕様書（[requirements.md](../requirement/requirements.md)）が定義する5フェーズ・パイプラインに対応させている。
+Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1) での議論を経て確定した `src/` ディレクトリ構成と、各モジュールの責務をまとめたドキュメント。要求仕様書（[requirements.md](../requirement/requirements.md)）が定義する5フェーズ・パイプラインに対応させている。
 
 ## 設計方針
 
@@ -76,13 +76,13 @@ src/
   ※この破棄が成立するのは、`model::Cell` がインデックスではなく解決済みの実データ（`String` や `ResolvedStyle` の値、または `Arc` などの所有権付き参照）を直接保持する設計を取る場合に限る。セル側がインデックス／参照のみを保持する設計にする場合は、フェーズ5（JSON生成）が完了するまで `SharedStringTable` や `StyleSheet` の生存期間を維持する必要がある。
 - 行単位のXMLノード破棄（フェーズ3）は `parse/worksheet.rs` 内部の実装詳細であり、`pipeline.rs` はこれを制御しない。ファイル/データ構造単位の破棄のみを担う。
 
-- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) で進行中のモジュール別設計書）: [pipeline.md](pipeline.md)
+- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [pipeline.md](pipeline.md)
 
 ### `container/`
 
 ZIP(OPC)展開のエントリポイント。Zip Bomb・Zip Slip の検知・ブロックを担う。XMLの中身の解釈（パース）は行わない。
 
-- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) で進行中のモジュール別設計書）: [mod.md](container/mod.md) / [sanitize.md](container/sanitize.md)
+- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [mod.md](container/mod.md) / [sanitize.md](container/sanitize.md)
 
 ### `parse/`
 
@@ -92,7 +92,7 @@ ZIP(OPC)展開のエントリポイント。Zip Bomb・Zip Slip の検知・ブ�
 
 `parse/worksheet.rs` は行/セルデータと `<mergeCells>`/`<cols>`/`<hyperlinks>` 情報をストリームで順次送出する。`parse/theme.rs` は「使う時だけ読む」方針で、`parse/styles.rs` が実際にテーマ色を参照するスタイルを解決した場合のみ読み込む（Issue #76）。
 
-- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) で進行中のモジュール別設計書）: [mod.md](parse/mod.md) / [relationships.md](parse/relationships.md) / [workbook.md](parse/workbook.md) / [shared_strings.md](parse/shared_strings.md) / [styles.md](parse/styles.md) / [theme.md](parse/theme.md) / [worksheet.md](parse/worksheet.md) / [drawing.md](parse/drawing.md)
+- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [mod.md](parse/mod.md) / [relationships.md](parse/relationships.md) / [workbook.md](parse/workbook.md) / [shared_strings.md](parse/shared_strings.md) / [styles.md](parse/styles.md) / [theme.md](parse/theme.md) / [worksheet.md](parse/worksheet.md) / [drawing.md](parse/drawing.md)
 
 ### `model/`
 
@@ -100,7 +100,7 @@ ZIP(OPC)展開のエントリポイント。Zip Bomb・Zip Slip の検知・ブ�
 
 この疎行列という選択は、[README.mdのBenchmarks節](../../README.md#benchmarks)で密な`Vec`を使う読み取りライブラリ(`calamine`)と直接比較・計測されている——対象は`tests/fixtures/complex/extreme_sparse.xlsx`(Excelの実際の対角にある2セルのみ populated。境界矩形サイズの確保を試みると171億8千万要素になる)。`exceldiff`は正確に2件のマップエントリで済み数ミリ秒で完了するのに対し、密な配列を使う読み取りライブラリは数GBまでメモリを膨張させた末にOSにkillされる。READMEのリソース使用量の時系列プロット(`docs/benchmarks/extreme_sparse_memory.svg`)がこれを理論上の話ではなく具体的に示している。
 
-- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) で進行中のモジュール別設計書）: [mod.md](model/mod.md) / [cell.md](model/cell.md) / [sheet.md](model/sheet.md) / [workbook.md](model/workbook.md) / [style.md](model/style.md) / [color.md](model/color.md)
+- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [mod.md](model/mod.md) / [cell.md](model/cell.md) / [sheet.md](model/sheet.md) / [workbook.md](model/workbook.md) / [style.md](model/style.md) / [color.md](model/color.md)
 
 ### `resolve/`
 
@@ -113,17 +113,17 @@ ZIP(OPC)展開のエントリポイント。Zip Bomb・Zip Slip の検知・ブ�
 - `hyperlink.rs`: `<hyperlink>` 範囲を`resolve::merge`と同型の重複検証にかけたうえで、既にセル化済みの全カバーセルへ1回のスイープラインパスで解決する(Issue #95)——`Sheet::finalize_merges`が結合セルについて解消したのと同じ理由で、セル単位の走査は行わない。
 - `color.rs`: 上記のセル単位パイプラインには含まれない——`resolve_color`は`ColorRef`から`Rgb`への変換を呼び出し元が実際に必要な時だけ呼ぶ、純粋なオンデマンド関数(Issue #76)。
 
-- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) で進行中のモジュール別設計書）: [mod.md](resolve/mod.md) / [shared_strings.md](resolve/shared_strings.md) / [merge.md](resolve/merge.md) / [style.md](resolve/style.md) / [column_width.md](resolve/column_width.md) / [hyperlink.md](resolve/hyperlink.md) / [color.md](resolve/color.md)
+- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [mod.md](resolve/mod.md) / [shared_strings.md](resolve/shared_strings.md) / [merge.md](resolve/merge.md) / [style.md](resolve/style.md) / [column_width.md](resolve/column_width.md) / [hyperlink.md](resolve/hyperlink.md) / [color.md](resolve/color.md)
 
 ### `json.rs`
 
 分析・解決が完了したデータモデルを、`row_span` / `col_span` などフロントエンド描画に必要な属性を含むJSONへシリアライズする。
 
-- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) で進行中のモジュール別設計書）: [json.md](json.md)
+- 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [json.md](json.md)
 
 ## 議論の経緯
 
-構成の妥当性検証および段階的な改訂の詳細は Issue [#1](https://github.com/MinamiyamaKotaro/exceldiff/issues/1) のコメント履歴を参照。主な論点は以下の通り:
+構成の妥当性検証および段階的な改訂の詳細は Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1) のコメント履歴を参照。主な論点は以下の通り:
 
 - `package/` → `container/` への改名（Cargo package との命名衝突回避）
 - XMLパースコードの `parse/` への集約（技術スタックの隠蔽、テスト容易性の向上）
