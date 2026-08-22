@@ -1,0 +1,116 @@
+name: .xlsx diff preview
+
+# Posts (and keeps updated) a single PR comment summarizing what changed in
+# any .xlsx file the PR touches — built on top of `diff_workbooks` from the
+# `diff` module (Issue #3). Scoped to this repo's own tracked .xlsx fixture
+# files for now (tests/fixtures/**); see docs/design/diff/engine.md for the
+# diff algorithm's own tradeoffs (coordinate-based, not row/column-shift
+# aware).
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    paths:
+      - "**/*.xlsx"
+
+concurrency:
+  group: xlsx-diff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  diff-comment:
+    name: Post .xlsx diff comment
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 so both the PR's base and head commits are present
+      # locally — `git show <sha>:<path>` below needs both, and a shallow
+      # checkout would only have the (merge) commit currently checked out.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build xlsx diff CLI
+        run: cargo build --release --example xlsx_diff_cli
+
+      - name: Compute diffs for changed .xlsx files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bin=target/release/examples/xlsx_diff_cli
+          out=xlsx-diff-comment.md
+
+          {
+            echo "<!-- xlsx-diff-comment -->"
+            echo "## 📊 .xlsx diff preview"
+            echo
+          } > "$out"
+
+          # --no-renames: a rename shows up as a plain Delete + Add pair
+          # instead of an "R###" status line, which keeps the status
+          # parsing below to exactly A/M/D.
+          changed=$(git diff --no-renames --name-status "$BASE_SHA" "$HEAD_SHA" -- '*.xlsx' || true)
+
+          if [ -z "$changed" ]; then
+            echo "_No .xlsx changes detected._" >> "$out"
+          else
+            while IFS=$'\t' read -r file_status path; do
+              [ -z "$path" ] && continue
+
+              base_file=""
+              head_file=""
+              case "$file_status" in
+                A)
+                  head_file=$(mktemp)
+                  git show "$HEAD_SHA:$path" > "$head_file"
+                  ;;
+                D)
+                  base_file=$(mktemp)
+                  git show "$BASE_SHA:$path" > "$base_file"
+                  ;;
+                M)
+                  base_file=$(mktemp)
+                  head_file=$(mktemp)
+                  git show "$BASE_SHA:$path" > "$base_file"
+                  git show "$HEAD_SHA:$path" > "$head_file"
+                  ;;
+                *)
+                  continue
+                  ;;
+              esac
+
+              "$bin" "$path" "$file_status" "$base_file" "$head_file" >> "$out"
+
+              [ -n "$base_file" ] && rm -f "$base_file"
+              [ -n "$head_file" ] && rm -f "$head_file"
+            done <<< "$changed"
+          fi
+
+      # A comment marker (<!-- xlsx-diff-comment -->, written above) lets
+      # this find-then-update pair edit the same comment across pushes to
+      # the PR instead of piling up a new one each time.
+      - uses: peter-evans/find-comment@v3
+        id: find_comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: "<!-- xlsx-diff-comment -->"
+
+      # NOTE: for a PR opened from a fork, GitHub Actions forces the
+      # GITHUB_TOKEN to read-only regardless of the `permissions:` block
+      # above — this step then fails to post, harmlessly (nothing else in
+      # this job depends on it). Same-repo-branch PRs (this being a
+      # single-owner repo's normal workflow) are unaffected.
+      - uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: xlsx-diff-comment.md
+          edit-mode: replace
