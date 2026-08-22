@@ -1,0 +1,474 @@
+//! Integration tests for Category 1 (正常系) fixtures — see
+//! `tests/fixtures/normal.rs` for what each package under test looks like.
+
+#[path = "fixtures/mod.rs"]
+mod fixtures;
+
+use fixtures::normal;
+use std::io::Cursor;
+use std::sync::Arc;
+use exceldiff::{parse_workbook_reader, to_json_string, CellRef, CellValue, DateTimeValue};
+
+#[test]
+fn wrap_text_resolves_per_cell_and_serializes_nested_under_style() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::wrap_text_styles())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert!(
+        sheet
+            .get(CellRef { row: 1, col: 1 })
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .wrap_text
+    );
+    assert!(
+        !sheet
+            .get(CellRef { row: 1, col: 2 })
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .wrap_text
+    );
+
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+    let a1 = cells.iter().find(|c| c["col"] == 1).unwrap();
+    let b1 = cells.iter().find(|c| c["col"] == 2).unwrap();
+    assert_eq!(a1["style"]["wrapText"], serde_json::json!(true));
+    assert_eq!(b1["style"]["wrapText"], serde_json::json!(false));
+}
+
+#[test]
+fn number_format_resolves_per_cell_and_serializes_nested_under_style() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::number_format_styles())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet
+            .get(CellRef { row: 1, col: 1 })
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .number_format
+            .as_deref(),
+        Some("0%")
+    );
+    assert_eq!(
+        sheet
+            .get(CellRef { row: 1, col: 2 })
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .number_format
+            .as_deref(),
+        Some("#,##0.00 \"円\"")
+    );
+
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+    let a1 = cells.iter().find(|c| c["col"] == 1).unwrap();
+    let b1 = cells.iter().find(|c| c["col"] == 2).unwrap();
+    assert_eq!(a1["style"]["numberFormat"], "0%");
+    assert_eq!(b1["style"]["numberFormat"], "#,##0.00 \"円\"");
+}
+
+#[test]
+fn font_size_and_bold_resolve_per_cell_and_serialize_nested_under_style() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::font_styles())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    let a1_font = &sheet
+        .get(CellRef { row: 1, col: 1 })
+        .unwrap()
+        .style
+        .as_ref()
+        .unwrap()
+        .font;
+    assert_eq!(a1_font.size_pt, 11.0);
+    assert!(!a1_font.bold);
+
+    let b1_font = &sheet
+        .get(CellRef { row: 1, col: 2 })
+        .unwrap()
+        .style
+        .as_ref()
+        .unwrap()
+        .font;
+    assert_eq!(b1_font.size_pt, 14.0);
+    assert!(b1_font.bold);
+
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+    let a1 = cells.iter().find(|c| c["col"] == 1).unwrap();
+    let b1 = cells.iter().find(|c| c["col"] == 2).unwrap();
+    assert_eq!(
+        a1["style"],
+        serde_json::json!({
+            "font": { "sizePt": 11.0, "bold": false },
+            "wrapText": false,
+            "alignment": "general"
+        })
+    );
+    assert_eq!(
+        b1["style"],
+        serde_json::json!({
+            "font": { "sizePt": 14.0, "bold": true },
+            "wrapText": false,
+            "alignment": "general"
+        })
+    );
+}
+
+#[test]
+fn date1904_workbook_pr_selects_the_1904_epoch_end_to_end() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::date1904_styles())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::DateTime(DateTimeValue {
+            year: 1904,
+            month: 1,
+            day: 2,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }))
+    );
+
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        parsed["sheets"][0]["cells"][0]["value"],
+        serde_json::json!({"type": "dateTime", "value": "1904-01-02T00:00:00"})
+    );
+}
+
+#[test]
+fn alignment_resolves_per_cell_and_serializes_nested_under_style() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::alignment_styles())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet
+            .get(CellRef { row: 1, col: 1 })
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .horizontal_alignment,
+        exceldiff::Alignment::Center
+    );
+    assert_eq!(
+        sheet
+            .get(CellRef { row: 1, col: 2 })
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .horizontal_alignment,
+        exceldiff::Alignment::General
+    );
+
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+    let a1 = cells.iter().find(|c| c["col"] == 1).unwrap();
+    let b1 = cells.iter().find(|c| c["col"] == 2).unwrap();
+    assert_eq!(a1["style"]["alignment"], "center");
+    assert_eq!(b1["style"]["alignment"], "general");
+}
+
+#[test]
+fn column_widths_resolve_per_column_and_serialize_as_a_sheet_level_array() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::column_widths())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(sheet.column_width(1), Some(12.5)); // in the A-C range
+    assert_eq!(sheet.column_width(3), Some(12.5));
+    assert_eq!(sheet.column_width(4), Some(9.1)); // gap -> defaultColWidth
+    assert_eq!(sheet.column_width(5), Some(30.0)); // the E-only range
+    assert_eq!(sheet.column_width(6), Some(9.1)); // beyond every range -> default
+
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let sheet_json = &parsed["sheets"][0];
+    assert_eq!(sheet_json["defaultColumnWidth"], serde_json::json!(9.1));
+    assert_eq!(
+        sheet_json["columns"],
+        serde_json::json!([
+            {"min": 1, "max": 3, "width": 12.5},
+            {"min": 5, "max": 5, "width": 30.0}
+        ])
+    );
+    // Not duplicated onto individual cells.
+    for cell in sheet_json["cells"].as_array().unwrap() {
+        assert!(cell.get("columnWidth").is_none());
+    }
+}
+
+#[test]
+fn basic_types_maps_each_cell_to_the_right_json_type() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::basic_types())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("日本語Text")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 2 }).unwrap().value,
+        Some(CellValue::Number(42.0))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 3 }).unwrap().value,
+        Some(CellValue::Number(19.99))
+    );
+    // D1's serial value (45000, 1900 date system) is 2023-03-15.
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 4 }).unwrap().value,
+        Some(CellValue::DateTime(DateTimeValue {
+            year: 2023,
+            month: 3,
+            day: 15,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 5 }).unwrap().value,
+        Some(CellValue::Boolean(true))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 6 }).unwrap().value,
+        Some(CellValue::Boolean(false))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 7 }).unwrap().value,
+        Some(CellValue::Error("#N/A".to_string()))
+    );
+
+    // No blank cell was ever instantiated for an untouched coordinate
+    // (e.g. H1) — the sparse model only holds what was actually populated.
+    assert_eq!(sheet.iter_cells().count(), 7);
+
+    let json = exceldiff::to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+    let mut types: Vec<&str> = cells
+        .iter()
+        .map(|c| c["value"]["type"].as_str().unwrap())
+        .collect();
+    types.sort_unstable();
+    // Sheet::iter_cells (HashMap-backed) makes no order guarantee, so this
+    // compares the type multiset rather than positional order.
+    let mut expected = vec![
+        "text", "number", "number", "dateTime", "boolean", "boolean", "error",
+    ];
+    expected.sort_unstable();
+    assert_eq!(types, expected);
+}
+
+#[test]
+fn shared_strings_resolves_repeated_and_distinct_indices() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::shared_strings())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("Apple")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 2 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("Banana")))
+    );
+    // Same SST entry (index 0) referenced from a second cell resolves to
+    // the same text.
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 3 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("Apple")))
+    );
+}
+
+#[test]
+fn inline_strings_are_extracted_without_a_shared_string_table() {
+    let workbook = parse_workbook_reader(Cursor::new(normal::inline_strings())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("Inline One")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 2 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("Inline Two")))
+    );
+}
+
+#[test]
+fn t_d_iso8601_cells_resolve_to_datetime() {
+    // Issue #58: t="d" cells were falling back to CellValue::Text instead
+    // of being parsed as dates.
+    let workbook = parse_workbook_reader(Cursor::new(normal::iso8601_dates())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::DateTime(DateTimeValue {
+            year: 2021,
+            month: 1,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        }))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 2, col: 1 }).unwrap().value,
+        Some(CellValue::DateTime(DateTimeValue {
+            year: 2021,
+            month: 1,
+            day: 1,
+            hour: 10,
+            minute: 10,
+            second: 10,
+        }))
+    );
+    // Time-only: no date component in the source, so it lands on Excel's
+    // own "time of day" convention (serial day 0 = 1899-12-30).
+    assert_eq!(
+        sheet.get(CellRef { row: 3, col: 1 }).unwrap().value,
+        Some(CellValue::DateTime(DateTimeValue {
+            year: 1899,
+            month: 12,
+            day: 30,
+            hour: 10,
+            minute: 10,
+            second: 10,
+        }))
+    );
+}
+
+#[test]
+fn workbook_part_at_package_root_resolves_via_root_rels() {
+    // Issue #55: the workbook part path was hardcoded to xl/workbook.xml
+    // rather than resolved via the package root's _rels/.rels, per OPC.
+    let workbook = parse_workbook_reader(Cursor::new(normal::workbook_at_package_root())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(sheet.name, "Sheet1");
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::Number(42.0))
+    );
+}
+
+#[test]
+fn cells_without_r_attribute_resolve_via_positional_inference() {
+    // Issue #79: `r` is optional per ECMA-376 §18.3.1.4; a <c> omitting it
+    // used to make the whole book fail with Error::MissingRequiredElement.
+    let workbook = parse_workbook_reader(Cursor::new(normal::cells_without_r_attribute())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("A1")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 2 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("B1")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 3 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("C1")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 2, col: 1 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("A2")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 2, col: 3 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("C2")))
+    );
+    // Resumes from column 3 (the explicit C2), not column 2.
+    assert_eq!(
+        sheet.get(CellRef { row: 2, col: 4 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("D2")))
+    );
+}
+
+#[test]
+fn unicode_text_round_trips_through_json() {
+    // tests/README.md edge-case audit: RTL scripts, ZWJ emoji sequences,
+    // combining diacritics, and mixed-bidi text had no committed test
+    // prior to this one.
+    let workbook = parse_workbook_reader(Cursor::new(normal::unicode_text())).unwrap();
+    let sheet = &workbook.sheets()[0];
+
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 1 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("مرحبا بالعالم")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 2 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("שלום עולם")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 3 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("👨‍👩‍👧‍👦🎉😀")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 4 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("é́ combining")))
+    );
+    assert_eq!(
+        sheet.get(CellRef { row: 1, col: 5 }).unwrap().value,
+        Some(CellValue::Text(Arc::from("Order #123 مرحبا")))
+    );
+
+    // The JSON layer must not mangle any of this either — serde_json
+    // escapes non-ASCII by default unless configured otherwise, so this
+    // also confirms exceldiff doesn't opt into that escaping.
+    let json = to_json_string(&workbook).unwrap();
+    assert!(json.contains("مرحبا بالعالم"));
+    assert!(json.contains("שלום עולם"));
+    assert!(json.contains("👨‍👩‍👧‍👦🎉😀"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+    let a1 = cells.iter().find(|c| c["col"] == 1).unwrap();
+    assert_eq!(a1["value"]["value"], "مرحبا بالعالم");
+}
+
+#[test]
+fn json_cells_array_is_sorted_by_row_then_col_regardless_of_source_order() {
+    // Issue #87: the whole point of switching Sheet::cells to a BTreeMap
+    // was making this deterministic — a textual diff of two JSON
+    // snapshots of the same unchanged file must not show spurious
+    // reordering. The fixture streams rows 3, 1, 2 (and out-of-order
+    // columns within each), so a naive "insertion order" or "hash order"
+    // implementation would fail this.
+    let workbook =
+        parse_workbook_reader(Cursor::new(normal::cells_streamed_out_of_order())).unwrap();
+    let json = to_json_string(&workbook).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let cells = parsed["sheets"][0]["cells"].as_array().unwrap();
+
+    let coords: Vec<(u64, u64)> = cells
+        .iter()
+        .map(|c| (c["row"].as_u64().unwrap(), c["col"].as_u64().unwrap()))
+        .collect();
+    assert_eq!(
+        coords,
+        vec![(1, 1), (1, 3), (2, 1), (3, 1), (3, 2)],
+        "cells array must be sorted (row, col) ascending, got: {coords:?}"
+    );
+}

@@ -1,0 +1,36 @@
+/target
+
+# Library crate: Cargo.lock is not checked in (see Cargo book guidance for
+# libraries). CI generates its own lockfile per run.
+/Cargo.lock
+
+# Claude Code local config (not part of the published project)
+.claude/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# TEST files: contains personal information, do not commit (added 2026-08-18 13:37 JST)
+tests/fixtures/other
+
+# Throwaway proof-of-concept code (design exploration, not meant to be
+# merged) — see e.g. Issue #67's grouped-image transform PoC. The folder's
+# own README (rules for this directory) stays tracked; everything else
+# under it does not.
+#
+# Pattern must match the actual on-disk directory name (`poc/`, lowercase)
+# exactly — git's gitignore matching is case-sensitive regardless of the
+# filesystem, so a case mismatch here (previously `/PoC/*`) silently stops
+# ignoring anything on a case-sensitive filesystem (Linux/CI), even though
+# it appears to work locally on macOS's default case-insensitive one.
+/poc/*
+!/poc/README.md
+
+# scripts/generate_real_fixtures.py's own bytecode cache.
+scripts/__pycache__/

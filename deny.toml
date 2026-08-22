@@ -1,0 +1,27 @@
+# cargo-deny configuration. See https://embarkstudios.github.io/cargo-deny/
+#
+# The [licenses] allow-list is extended as needed whenever a new dependency
+# is added under Issue #15 (e.g. "Zlib" for zip's zlib-rs).
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "Zlib",
+  "AGPL-3.0-only",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

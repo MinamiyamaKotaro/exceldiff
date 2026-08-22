@@ -1,0 +1,19 @@
+[package]
+name = "exceldiff"
+version = "0.13.0"
+edition = "2021"
+description = "A lightweight, high-performance .xlsx (OOXML) parser library"
+repository = "https://github.com/MinamiyamaKotaro/exceldiff"
+license = "AGPL-3.0-only"
+# The tests/fixtures/*/*.xlsx binaries (~1.5MiB of the ~2.3MiB unpacked
+# package) exist only for `cargo test` inside a git checkout of this repo
+# and are irrelevant to a published crate's consumers — excluded to keep
+# a "lightweight" library's own published package lightweight.
+exclude = ["tests/fixtures/**/*.xlsx"]
+
+[dependencies]
+quick-xml = "0.41.0"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = "1.0.151"
+thiserror = "2"
+zip = { version = "8", default-features = false, features = ["deflate"] }
