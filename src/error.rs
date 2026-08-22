@@ -204,6 +204,18 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    // --- diff (Issue #3), `diff-storage` Cargo feature only ---
+    /// A `diff::DiffStore` operation (opening the database, running a
+    /// query, etc.) failed. `source` is type-erased for the same reason as
+    /// `XmlParse::source` — `rusqlite` never becomes part of this crate's
+    /// public error surface even when the feature is enabled.
+    #[cfg(feature = "diff-storage")]
+    #[error("diff storage error: {source}")]
+    DiffStorage {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
     // --- Common across all phases ---
     /// An I/O error (e.g. the target file cannot be opened or read). `path`
     /// is `Option` because inputs that don't go through a file path (e.g. an
