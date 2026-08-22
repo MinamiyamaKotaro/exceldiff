@@ -277,4 +277,73 @@ mod tests {
             .unwrap();
         assert_eq!(kind, "modified");
     }
+
+    #[test]
+    fn save_diff_persists_added_and_deleted_kinds_too() {
+        // save_diff_persists_one_row_per_cell_diff above only exercises
+        // the Modified arm of save_diff's DiffStatus -> &str match; this
+        // hand-builds a WorkbookDiff carrying Added and Deleted cells too
+        // so both remaining arms are covered.
+        use crate::diff::model::{CellDiff, SheetDiff};
+        use crate::JsonCellValue;
+
+        let mut store = DiffStore::open(":memory:").unwrap();
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 2.0)], None);
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                cells: vec![
+                    CellDiff {
+                        row: 1,
+                        col: 1,
+                        status: DiffStatus::Added,
+                        old_value: None,
+                        new_value: Some(JsonCellValue::Number(1.0)),
+                    },
+                    CellDiff {
+                        row: 2,
+                        col: 1,
+                        status: DiffStatus::Deleted,
+                        old_value: Some(JsonCellValue::Number(2.0)),
+                        new_value: None,
+                    },
+                ],
+            }],
+        };
+        store.save_diff(base_id, target_id, &diff).unwrap();
+
+        let mut kinds: Vec<String> = store
+            .conn
+            .prepare("SELECT kind FROM diff_records ORDER BY row")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        kinds.sort();
+        assert_eq!(kinds, vec!["added".to_string(), "deleted".to_string()]);
+    }
+
+    #[test]
+    fn save_diff_with_unknown_revision_id_fails_with_diff_storage_error() {
+        // Exercises storage_err's own body, only reachable when a rusqlite
+        // call genuinely fails — and behaviorally confirms the `PRAGMA
+        // foreign_keys = ON` fix (code review on PR #6) actually rejects a
+        // diff_records row whose revision ids don't correspond to any
+        // revision ever saved via save_revision.
+        let mut store = DiffStore::open(":memory:").unwrap();
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 2.0)], None);
+        let diff = diff_workbooks(&base, &target);
+
+        let err = store.save_diff(999, 1000, &diff).unwrap_err();
+        assert!(matches!(err, Error::DiffStorage { .. }));
+    }
 }

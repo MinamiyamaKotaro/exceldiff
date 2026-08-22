@@ -260,6 +260,32 @@ mod tests {
     }
 
     #[test]
+    fn added_cell_ahead_of_remaining_base_cells_is_detected() {
+        // added_and_deleted_cells_are_detected only exercises an Added
+        // cell trailing after every base cell has been consumed
+        // ((None, Some(..)) in diff_cells's merge). This covers the
+        // distinct Ordering::Greater branch instead — target has an extra
+        // cell that sorts *before* a base cell diff_cells hasn't reached
+        // yet, with the base iterator still non-empty at that point.
+        let base = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(2, 1, 2.0)],
+        )]);
+        let target = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 1.0), (2, 1, 2.0)],
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let cells = &diff.sheets[0].cells;
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].row, 1);
+        assert_eq!(cells[0].status, DiffStatus::Added);
+    }
+
+    #[test]
     fn sheet_added_reports_every_cell_as_added() {
         let base = workbook(vec![]);
         let target = workbook(vec![sheet_with_cells(
