@@ -125,13 +125,23 @@ fn style_only_change_is_reported_as_modified_end_to_end() {
 #[test]
 fn diff_paths_parses_both_files_from_disk_and_diffs_them() {
     let (base_bytes, target_bytes) = diff::cell_modified();
+    // `std::process::id()` alone is not enough to guarantee a unique path:
+    // Rust's default test harness runs every #[test] fn concurrently as
+    // threads within the *same* process, so two tests sharing this naming
+    // scheme would share a pid too (code review on PR #6). A nanosecond
+    // timestamp added on top makes a same-process collision practically
+    // impossible without pulling in a dedicated tempfile crate.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let dir = std::env::temp_dir();
     let base_path = dir.join(format!(
-        "exceldiff-test-{}-diff_paths_base.xlsx",
+        "exceldiff-test-{}-{unique}-diff_paths_base.xlsx",
         std::process::id()
     ));
     let target_path = dir.join(format!(
-        "exceldiff-test-{}-diff_paths_target.xlsx",
+        "exceldiff-test-{}-{unique}-diff_paths_target.xlsx",
         std::process::id()
     ));
     std::fs::write(&base_path, base_bytes).unwrap();

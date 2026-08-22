@@ -59,6 +59,14 @@ impl DiffStore {
     /// the schema exists.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path).map_err(storage_err)?;
+        // SQLite does not enforce `FOREIGN KEY` constraints unless this
+        // pragma is set on the connection (it defaults to off, and is not
+        // persisted in the database file itself — every connection must
+        // set it again). Without it, `diff_records.base_revision_id`/
+        // `target_revision_id` could silently reference a `revisions.id`
+        // that doesn't exist (code review on PR #6).
+        conn.pragma_update(None, "foreign_keys", true)
+            .map_err(storage_err)?;
         let store = Self { conn };
         store.init_schema()?;
         Ok(store)
@@ -82,19 +90,24 @@ impl DiffStore {
     pub fn save_revision(&mut self, name: &str, is_head: bool, workbook: &Workbook) -> Result<i64> {
         let full_json = crate::to_json_string(workbook)?;
 
+        // Clearing the previous HEAD and inserting the new revision run in
+        // one transaction so a failure between the two statements can
+        // never leave the database with zero HEAD revisions (code review
+        // on PR #6) — mirrors `save_diff`'s use of a transaction below.
+        let tx = self.conn.transaction().map_err(storage_err)?;
         if is_head {
-            self.conn
-                .execute("UPDATE revisions SET is_head = 0", [])
+            tx.execute("UPDATE revisions SET is_head = 0", [])
                 .map_err(storage_err)?;
         }
-        self.conn
-            .execute(
-                "INSERT INTO revisions (revision_name, is_head, full_json) VALUES (?1, ?2, ?3)",
-                params![name, is_head as i64, full_json],
-            )
-            .map_err(storage_err)?;
+        tx.execute(
+            "INSERT INTO revisions (revision_name, is_head, full_json) VALUES (?1, ?2, ?3)",
+            params![name, is_head as i64, full_json],
+        )
+        .map_err(storage_err)?;
+        let id = tx.last_insert_rowid();
+        tx.commit().map_err(storage_err)?;
 
-        Ok(self.conn.last_insert_rowid())
+        Ok(id)
     }
 
     /// Persists every cell diff in `diff` as rows in `diff_records`,
