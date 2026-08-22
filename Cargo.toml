@@ -17,3 +17,11 @@ serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = "1.0.151"
 thiserror = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# Optional, behind `diff-storage`: pulled in only by `diff::storage`
+# (Issue #3). Left out of the default feature set so a consumer that only
+# ever calls `parse_workbook` — the common case for a "lightweight" parser
+# — never pays rusqlite's (bundled-SQLite) compile-time cost.
+rusqlite = { version = "0.33.0", features = ["bundled"], optional = true }
+
+[features]
+diff-storage = ["dep:rusqlite"]

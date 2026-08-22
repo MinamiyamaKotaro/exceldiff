@@ -4,6 +4,13 @@
 //! Orchestrates Phases 1-4 of the pipeline: wires together `container/`,
 //! `parse/`, `resolve/`, and `model/` in call order, and controls resource
 //! lifetimes (see `docs/design/architecture.en.md` design principle 3).
+//!
+//! `run`'s own contract (a single `Read + Seek` input in, one `Workbook`
+//! out) stays unchanged for `diff::engine` (Issue #3): `diff::engine::
+//! diff_paths` calls this pipeline twice, once per side, via
+//! `lib.rs::parse_workbook`, then hands both resulting `Workbook`s to
+//! `diff::engine::diff_workbooks` — the diff step is a consumer of this
+//! pipeline's output, not a phase spliced into it.
 
 use crate::container::sanitize::SizeLimits;
 use crate::container::ZipContainer;

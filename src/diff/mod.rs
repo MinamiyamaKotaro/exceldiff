@@ -1,0 +1,25 @@
+// SPDX-FileCopyrightText: 2026 Minamiyama Kotaro
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Diffs two `Workbook`s and, optionally, persists the result to SQLite
+//! (Issue #3). Builds on top of `pipeline::run` (via `parse_workbook`) the
+//! same way `json.rs` does — this module never touches the ZIP/XML layers
+//! directly.
+//!
+//! - `model`: `WorkbookDiff`/`SheetDiff`/`CellDiff` — the diff output shape.
+//! - `engine`: `diff_workbooks`/`diff_paths` — computes it, in
+//!   O(base_cells + target_cells) (see `engine`'s doc comment for why this
+//!   crate does not use a row/column-alignment algorithm by default).
+//! - `storage` (Cargo feature `diff-storage`): `DiffStore` — persists
+//!   revisions and diffs to SQLite, and serves a revision's full JSON back
+//!   out verbatim when it's flagged HEAD.
+
+pub mod engine;
+pub mod model;
+#[cfg(feature = "diff-storage")]
+pub mod storage;
+
+pub use engine::{diff_paths, diff_workbooks};
+pub use model::{CellDiff, DiffStatus, SheetDiff, WorkbookDiff};
+#[cfg(feature = "diff-storage")]
+pub use storage::DiffStore;

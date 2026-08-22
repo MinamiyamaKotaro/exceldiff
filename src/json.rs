@@ -287,9 +287,17 @@ struct JsonFont {
 
 /// A kind-tagged value representation. `#[serde(tag = "type", content =
 /// "value")]` serializes as `{"type": "number", "value": 42.0}`.
-#[derive(Debug, Serialize, PartialEq)]
+///
+/// `pub`, unlike every other type in this file: `diff::model::CellDiff`
+/// (Issue #3) reuses this exact type for its `old_value`/`new_value`
+/// fields rather than defining its own parallel value enum, so a cell's
+/// value serializes identically whether it reaches JSON through a full
+/// `to_json_string` snapshot or through a diff — and since `CellDiff`
+/// itself is public, this type must be too (re-exported from `lib.rs`) for
+/// callers to actually name/match `CellDiff::old_value`'s contents.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
-enum JsonCellValue {
+pub enum JsonCellValue {
     Number(f64),
     /// ISO 8601, no fractional seconds (`DateTimeValue` doesn't carry
     /// sub-second precision — see `model/cell.rs`), e.g.
@@ -332,7 +340,7 @@ fn cell_to_json(sheet: &Sheet, cell_ref: CellRef, cell: &Cell) -> JsonCell {
     }
 }
 
-fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
+pub(crate) fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
     match value {
         None => JsonCellValue::Empty,
         Some(CellValue::Number(n)) if n.is_finite() => JsonCellValue::Number(*n),
@@ -375,7 +383,10 @@ fn alignment_tag(a: Alignment) -> &'static str {
     }
 }
 
-fn visibility_tag(v: SheetVisibility) -> &'static str {
+/// `pub(crate)`: `diff/engine.rs` (Issue #3) reuses this for `SheetDiff`'s
+/// old/new visibility tags, so a sheet's visibility reads the same string
+/// whether it comes from a full snapshot or a diff.
+pub(crate) fn visibility_tag(v: SheetVisibility) -> &'static str {
     match v {
         SheetVisibility::Visible => "visible",
         SheetVisibility::Hidden => "hidden",
