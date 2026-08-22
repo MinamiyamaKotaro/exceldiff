@@ -1,7 +1,7 @@
 # exceldiff
 
-[![Rust CI](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/rust-ci.yml)
-[![Docs](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/docs.yml/badge.svg)](https://github.com/MinamiyamaKotaro/xlsxparser/actions/workflows/docs.yml)
+[![Rust CI](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/rust-ci.yml)
+[![Docs](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/docs.yml/badge.svg)](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/docs.yml)
 [![exceldiff on crates.io](https://img.shields.io/crates/v/exceldiff.svg)](https://crates.io/crates/exceldiff)
 [![codecov](https://codecov.io/gh/MinamiyamaKotaro/exceldiff/branch/master/graph/badge.svg)](https://codecov.io/gh/MinamiyamaKotaro/exceldiff)
 [![License](https://img.shields.io/github/license/MinamiyamaKotaro/exceldiff)](LICENSE)
