@@ -40,17 +40,17 @@ pub struct CellDiff {
     pub old_value: Option<JsonCellValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_value: Option<JsonCellValue>,
-    /// Present for `Added` (when the added cell has a style) and for a
+    /// Present for `Deleted` (when the removed cell had a style) and for a
     /// `Modified` cell whose style actually changed — unlike `old_value`/
     /// `new_value`, NOT "always both present on Modified regardless of
     /// whether that field changed"; a deliberately sparser convention
     /// (Issue #8; see `diff::engine`'s doc comment for why). Never present
-    /// for `Deleted`.
+    /// for `Added`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_style: Option<JsonStyle>,
-    /// Present for `Deleted` (when the removed cell had a style) and for a
+    /// Present for `Added` (when the added cell has a style) and for a
     /// `Modified` cell whose style actually changed. Never present for
-    /// `Added`.
+    /// `Deleted`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_style: Option<JsonStyle>,
 }

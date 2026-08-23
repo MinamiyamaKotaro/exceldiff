@@ -108,16 +108,7 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
             old_visibility: None,
             new_visibility: Some(visibility_tag(t.visibility)),
             cells: t.iter_cells().map(|(r, c)| cell_diff_added(r, c)).collect(),
-            merges: t
-                .merged_regions()
-                .iter()
-                .map(|(&origin, region)| MergeDiff {
-                    status: DiffStatus::Added,
-                    start: origin.into(),
-                    old_end: None,
-                    new_end: Some(region.end.into()),
-                })
-                .collect(),
+            merges: all_merges_added(t),
         }),
         (Some(b), None) => Some(SheetDiff {
             name: name.to_string(),
@@ -128,16 +119,7 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
                 .iter_cells()
                 .map(|(r, c)| cell_diff_deleted(r, c))
                 .collect(),
-            merges: b
-                .merged_regions()
-                .iter()
-                .map(|(&origin, region)| MergeDiff {
-                    status: DiffStatus::Deleted,
-                    start: origin.into(),
-                    old_end: Some(region.end.into()),
-                    new_end: None,
-                })
-                .collect(),
+            merges: all_merges_deleted(b),
         }),
         (Some(b), Some(t)) => {
             let cells = diff_cells(b, t);
@@ -301,6 +283,44 @@ fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
         }
     }
 
+    out.sort_by_key(|m| (m.start.row, m.start.col));
+    out
+}
+
+/// Every merge on `sheet`, reported as `Added` — used when the whole sheet
+/// is new (`diff_sheet`'s `(None, Some(t))` case). Sorted by origin
+/// coordinate for the same reason `diff_merges` sorts its own output:
+/// `Sheet::merged_regions` is a `HashMap` with no guaranteed order (code
+/// review on PR #10 — this and `all_merges_deleted` originally iterated it
+/// directly, producing nondeterministic `SheetDiff::merges` ordering).
+fn all_merges_added(sheet: &Sheet) -> Vec<MergeDiff> {
+    let mut out: Vec<MergeDiff> = sheet
+        .merged_regions()
+        .iter()
+        .map(|(&origin, region)| MergeDiff {
+            status: DiffStatus::Added,
+            start: origin.into(),
+            old_end: None,
+            new_end: Some(region.end.into()),
+        })
+        .collect();
+    out.sort_by_key(|m| (m.start.row, m.start.col));
+    out
+}
+
+/// The `Deleted` counterpart of [`all_merges_added`], used when the whole
+/// sheet was removed (`diff_sheet`'s `(Some(b), None)` case).
+fn all_merges_deleted(sheet: &Sheet) -> Vec<MergeDiff> {
+    let mut out: Vec<MergeDiff> = sheet
+        .merged_regions()
+        .iter()
+        .map(|(&origin, region)| MergeDiff {
+            status: DiffStatus::Deleted,
+            start: origin.into(),
+            old_end: Some(region.end.into()),
+            new_end: None,
+        })
+        .collect();
     out.sort_by_key(|m| (m.start.row, m.start.col));
     out
 }
@@ -751,5 +771,65 @@ mod tests {
         assert_eq!(sheet_diff.status, DiffStatus::Deleted);
         assert_eq!(sheet_diff.merges.len(), 1);
         assert_eq!(sheet_diff.merges[0].status, DiffStatus::Deleted);
+    }
+
+    fn sheet_with_merges_at(name: &str, vis: SheetVisibility, origins: &[(u32, u32)]) -> Sheet {
+        let mut sheet = Sheet::new(name.to_string(), vis);
+        for &(row, col) in origins {
+            sheet.insert_cell(
+                CellRef { row, col },
+                Cell {
+                    value: Some(CellValue::Number(1.0)),
+                    style: None,
+                },
+            );
+            sheet.insert_merge(crate::model::MergedRegion {
+                start: CellRef { row, col },
+                end: CellRef { row, col: col + 1 },
+            });
+        }
+        sheet.finalize_merges();
+        sheet
+    }
+
+    #[test]
+    fn sheet_added_reports_multiple_merges_in_deterministic_row_col_order() {
+        // Regression test for code review on PR #10: an earlier
+        // implementation built this list by iterating
+        // `Sheet::merged_regions()` (a HashMap) directly, so with more
+        // than one merge the output order could vary run to run.
+        // Origins deliberately inserted out of row order.
+        let base = workbook(vec![]);
+        let target = workbook(vec![sheet_with_merges_at(
+            "New",
+            SheetVisibility::Visible,
+            &[(5, 1), (1, 1), (3, 1)],
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let starts: Vec<(u32, u32)> = diff.sheets[0]
+            .merges
+            .iter()
+            .map(|m| (m.start.row, m.start.col))
+            .collect();
+        assert_eq!(starts, vec![(1, 1), (3, 1), (5, 1)]);
+    }
+
+    #[test]
+    fn sheet_deleted_reports_multiple_merges_in_deterministic_row_col_order() {
+        let base = workbook(vec![sheet_with_merges_at(
+            "Gone",
+            SheetVisibility::Visible,
+            &[(5, 1), (1, 1), (3, 1)],
+        )]);
+        let target = workbook(vec![]);
+
+        let diff = diff_workbooks(&base, &target);
+        let starts: Vec<(u32, u32)> = diff.sheets[0]
+            .merges
+            .iter()
+            .map(|m| (m.start.row, m.start.col))
+            .collect();
+        assert_eq!(starts, vec![(1, 1), (3, 1), (5, 1)]);
     }
 }

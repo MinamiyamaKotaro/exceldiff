@@ -37,7 +37,7 @@ pub struct CellDiff {
     /// Present for `Modified`/`Added`, absent for `Deleted`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_value: Option<JsonCellValue>,
-    /// Present for `Added` (whenever the added cell carries a style at
+    /// Present for `Deleted` (whenever the removed cell carried a style at
     /// all) and for `Modified` (but, unlike `old_value`, *only* when the
     /// style actually differs from `new_style` — a `Modified` cell whose
     /// value changed but whose style didn't carries no style fields at
@@ -46,12 +46,12 @@ pub struct CellDiff {
     /// which is always the reason a diff exists at all, style is a
     /// secondary dimension most `Modified` cells never touch — see
     /// `diff::engine`'s doc comment for the full rationale, Issue #8).
-    /// Never present for `Deleted`.
+    /// Never present for `Added`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_style: Option<JsonStyle>,
-    /// Present for `Deleted` (whenever the removed cell carried a style)
-    /// and for `Modified` when the style actually changed. Never present
-    /// for `Added`. See `old_style`'s doc comment.
+    /// Present for `Added` (whenever the added cell carries a style) and
+    /// for `Modified` when the style actually changed. Never present for
+    /// `Deleted`. See `old_style`'s doc comment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_style: Option<JsonStyle>,
 }
