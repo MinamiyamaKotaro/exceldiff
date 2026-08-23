@@ -35,9 +35,13 @@ mod resolve;
 pub use container::sanitize::SizeLimits;
 #[cfg(feature = "diff-storage")]
 pub use diff::DiffStore;
-pub use diff::{diff_paths, diff_workbooks, CellDiff, DiffStatus, SheetDiff, WorkbookDiff};
+pub use diff::{
+    diff_paths, diff_workbooks, CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff,
+};
 pub use error::{Error, Result};
-pub use json::{to_json_string, to_json_writer, JsonCellValue};
+pub use json::{
+    to_json_string, to_json_writer, JsonBorders, JsonCellValue, JsonColorRef, JsonFont, JsonStyle,
+};
 pub use model::{
     Alignment, AnchorMarker, Borders, Cell, CellRef, CellValue, ColWidthRange, ColorRef,
     DateTimeValue, Font, Hyperlink, Image, ImageAnchor, ImageExtent, MergedRegion, ResolvedStyle,

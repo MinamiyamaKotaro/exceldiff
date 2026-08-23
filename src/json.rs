@@ -7,7 +7,7 @@
 use crate::error::Error;
 use crate::model::{
     Alignment, AnchorMarker, Borders, Cell, CellRef, CellValue, ColWidthRange, ColorRef,
-    DateTimeValue, Hyperlink, Image, ImageAnchor, Sheet, SheetVisibility, Workbook,
+    DateTimeValue, Hyperlink, Image, ImageAnchor, ResolvedStyle, Sheet, SheetVisibility, Workbook,
 };
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{Serialize, Serializer};
@@ -200,34 +200,59 @@ fn hyperlink_to_json(h: &Hyperlink) -> JsonHyperlink {
     }
 }
 
-#[derive(Debug, Serialize)]
+/// `pub`, like `JsonCellValue`: `diff::model::CellDiff` (Issue #8) reuses
+/// this exact type (and its nested `JsonFont`/`JsonColorRef`/`JsonBorders`)
+/// for its `old_style`/`new_style` fields rather than defining its own
+/// parallel style representation, so a cell's style serializes identically
+/// whether it reaches JSON through a full `to_json_string` snapshot or
+/// through a diff — see `style_to_json`'s doc comment.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct JsonStyle {
-    font: JsonFont,
-    wrap_text: bool,
+pub struct JsonStyle {
+    pub font: JsonFont,
+    pub wrap_text: bool,
     /// Always present, like `font`/`wrap_text` (never `Option`) — unlike
     /// `numberFormat`, "general" is a real, meaningful alignment mode, not
     /// "nothing to report" (Issue #42).
-    alignment: &'static str,
+    pub alignment: &'static str,
     /// Omitted when `None` ("General" — no special format; see
     /// `model/style.rs`'s `ResolvedStyle::number_format` doc comment for why
     /// this is skipped rather than emitted as `"General"`) — unlike `font`/
     /// `wrap_text`/`alignment`, which always carry a meaningful value once a
     /// `style` object exists at all (Issue #41).
     #[serde(skip_serializing_if = "Option::is_none")]
-    number_format: Option<String>,
+    pub number_format: Option<String>,
     /// Omitted when the `<fill>` carries no `<fgColor>`/`<bgColor>` at all
     /// (Issue #75) — same "nothing to report" treatment as `number_format`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    fill_fg_color: Option<JsonColorRef>,
+    pub fill_fg_color: Option<JsonColorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    fill_bg_color: Option<JsonColorRef>,
+    pub fill_bg_color: Option<JsonColorRef>,
     /// Omitted when no side carries a border at all (`Borders::any()` is
     /// `false` — most cells) rather than emitted as
     /// `{"top":false,"right":false,"bottom":false,"left":false}` (Issue
     /// #97) — same "nothing to report" treatment as `fillFgColor`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    borders: Option<JsonBorders>,
+    pub borders: Option<JsonBorders>,
+}
+
+/// Converts a resolved style to its JSON form. Extracted out of
+/// `cell_to_json`'s inline construction (Issue #8) so `diff::engine` can
+/// call it too, the same way `cell_value_to_json` already serves both
+/// `cell_to_json` and the diff engine's value comparison.
+pub(crate) fn style_to_json(s: &ResolvedStyle) -> JsonStyle {
+    JsonStyle {
+        font: JsonFont {
+            size_pt: s.font.size_pt,
+            bold: s.font.bold,
+        },
+        wrap_text: s.wrap_text,
+        alignment: alignment_tag(s.horizontal_alignment),
+        number_format: s.number_format.as_deref().map(str::to_string),
+        fill_fg_color: s.fill_fg_color.as_ref().map(color_ref_to_json),
+        fill_bg_color: s.fill_bg_color.as_ref().map(color_ref_to_json),
+        borders: borders_to_json(&s.borders),
+    }
 }
 
 /// `Borders`'s JSON form (Issue #97) — a plain, non-tagged object (unlike
@@ -236,13 +261,13 @@ struct JsonStyle {
 /// `rowSpan`/`colSpan`'s single-value "all or nothing" omission, not
 /// `fillFgColor`/`fillBgColor`'s per-field omission — a per-side `false`
 /// is meaningful information here, not "nothing to report").
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct JsonBorders {
-    top: bool,
-    right: bool,
-    bottom: bool,
-    left: bool,
+pub struct JsonBorders {
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+    pub left: bool,
 }
 
 fn borders_to_json(b: &Borders) -> Option<JsonBorders> {
@@ -259,9 +284,9 @@ fn borders_to_json(b: &Borders) -> Option<JsonBorders> {
 /// this module's every kind-tagged value — e.g. `{"type":"theme","value":
 /// {"index":4,"tint":-0.25}}`. Kept in its raw/unresolved form, same as
 /// `model::ColorRef` itself (see that type's doc comment for why).
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
-enum JsonColorRef {
+pub enum JsonColorRef {
     Rgb(String),
     Theme { index: u32, tint: Option<f64> },
     Indexed(u32),
@@ -278,11 +303,11 @@ fn color_ref_to_json(c: &ColorRef) -> JsonColorRef {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct JsonFont {
-    size_pt: f64,
-    bold: bool,
+pub struct JsonFont {
+    pub size_pt: f64,
+    pub bold: bool,
 }
 
 /// A kind-tagged value representation. `#[serde(tag = "type", content =
@@ -324,18 +349,7 @@ fn cell_to_json(sheet: &Sheet, cell_ref: CellRef, cell: &Cell) -> JsonCell {
         value: cell_value_to_json(cell.value.as_ref()),
         row_span,
         col_span,
-        style: cell.style.as_ref().map(|s| JsonStyle {
-            font: JsonFont {
-                size_pt: s.font.size_pt,
-                bold: s.font.bold,
-            },
-            wrap_text: s.wrap_text,
-            alignment: alignment_tag(s.horizontal_alignment),
-            number_format: s.number_format.as_deref().map(str::to_string),
-            fill_fg_color: s.fill_fg_color.as_ref().map(color_ref_to_json),
-            fill_bg_color: s.fill_bg_color.as_ref().map(color_ref_to_json),
-            borders: borders_to_json(&s.borders),
-        }),
+        style: cell.style.as_deref().map(style_to_json),
         hyperlink: sheet.hyperlink_at(cell_ref).map(hyperlink_to_json),
     }
 }

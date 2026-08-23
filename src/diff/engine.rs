@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Computes a `WorkbookDiff` between two already-parsed `Workbook`s (Issue
-//! #3).
+//! #3; style and merged-region diffs added by Issue #8).
 //!
 //! # Algorithm choice: coordinate-based, not row/column-alignment-based
 //!
@@ -22,11 +22,46 @@
 //! extra memory beyond the output — safe on any sheet size this crate
 //! otherwise supports, at the cost of over-reporting a diff across a
 //! row/column insertion. A capped, opt-in alignment mode is left as
-//! future work (Issue #3 comment).
+//! future work (Issue #3 comment, tracked as Issue #4/#5).
+//!
+//! # Style diffs: sparser than value diffs, on purpose
+//!
+//! `CellDiff::old_style`/`new_style` (Issue #8) are populated only when
+//! the style actually differs between the two sides being compared —
+//! unlike `old_value`/`new_value`, which are always both present on a
+//! `Modified` cell even if that particular cell's value didn't change
+//! (e.g. a style-only change still reports `old_value == new_value`; see
+//! `style_only_change_is_reported_as_modified`'s test). This asymmetry is
+//! deliberate rather than an oversight: a value change is always *the*
+//! reason a `CellDiff` exists in the first place, so showing both sides
+//! costs nothing extra to interpret, whereas style is a secondary
+//! dimension most `Modified` cells never touch at all — always attaching
+//! a full `JsonStyle` pair (mirroring `old_value`/`new_value`'s
+//! unconditional-pair convention) would bloat the common case for no
+//! benefit. Changing `old_value`/`new_value` to match this sparser
+//! convention retroactively was considered and rejected here to avoid
+//! silently changing already-shipped, tested behavior (Issue #8 PR
+//! review discussion).
+//!
+//! # Merged-region diffs: sheet-level, not cell-level
+//!
+//! `diff_merges` reports merge changes on `SheetDiff::merges`, not folded
+//! into the origin cell's own `CellDiff` — unlike the full-snapshot JSON
+//! (`json.rs`), which embeds a merge as the origin cell's `rowSpan`/
+//! `colSpan`. This is a deliberate difference between the two output
+//! shapes, not an inconsistency that slipped through: a diff's job is to
+//! report *discrete changes*, and an `Added`/`Deleted` merge has no
+//! natural originating `CellDiff` to attach to when neither that cell's
+//! value nor style changed at all (synthesizing an otherwise-empty
+//! `CellDiff` just to carry a span change would be its own kind of
+//! awkwardness). A sheet-level list, mirroring how `json.rs` already
+//! treats `images`/`columns` as sheet-level for the same "doesn't
+//! naturally belong to one cell" reason, was chosen instead (Issue #8 PR
+//! review discussion).
 
-use crate::diff::model::{CellDiff, DiffStatus, SheetDiff, WorkbookDiff};
+use crate::diff::model::{CellDiff, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff};
 use crate::error::Result;
-use crate::json::{cell_value_to_json, visibility_tag};
+use crate::json::{cell_value_to_json, style_to_json, visibility_tag};
 use crate::model::{Cell, CellRef, Sheet, Workbook};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -63,8 +98,8 @@ pub fn diff_workbooks(base: &Workbook, target: &Workbook) -> WorkbookDiff {
 
 /// Diffs one sheet, identified by `name`, given its (possibly absent) form
 /// on each side. Returns `None` when the sheet exists on both sides with
-/// identical visibility and zero cell diffs — the "nothing to report" case
-/// documented on `SheetDiff`.
+/// identical visibility and zero cell/merge diffs — the "nothing to
+/// report" case documented on `SheetDiff`.
 fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Option<SheetDiff> {
     match (base, target) {
         (None, Some(t)) => Some(SheetDiff {
@@ -72,10 +107,8 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
             status: DiffStatus::Added,
             old_visibility: None,
             new_visibility: Some(visibility_tag(t.visibility)),
-            cells: t
-                .iter_cells()
-                .map(|(r, c)| cell_diff(r, DiffStatus::Added, None, Some(c)))
-                .collect(),
+            cells: t.iter_cells().map(|(r, c)| cell_diff_added(r, c)).collect(),
+            merges: all_merges_added(t),
         }),
         (Some(b), None) => Some(SheetDiff {
             name: name.to_string(),
@@ -84,11 +117,13 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
             new_visibility: None,
             cells: b
                 .iter_cells()
-                .map(|(r, c)| cell_diff(r, DiffStatus::Deleted, Some(c), None))
+                .map(|(r, c)| cell_diff_deleted(r, c))
                 .collect(),
+            merges: all_merges_deleted(b),
         }),
         (Some(b), Some(t)) => {
             let cells = diff_cells(b, t);
+            let merges = diff_merges(b, t);
             let (old_visibility, new_visibility) = if b.visibility != t.visibility {
                 (
                     Some(visibility_tag(b.visibility)),
@@ -97,7 +132,7 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
             } else {
                 (None, None)
             };
-            if cells.is_empty() && old_visibility.is_none() {
+            if cells.is_empty() && merges.is_empty() && old_visibility.is_none() {
                 return None;
             }
             Some(SheetDiff {
@@ -106,6 +141,7 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
                 old_visibility,
                 new_visibility,
                 cells,
+                merges,
             })
         }
         (None, None) => None,
@@ -125,27 +161,27 @@ fn diff_cells(base: &Sheet, target: &Sheet) -> Vec<CellDiff> {
         match (b.peek(), t.peek()) {
             (Some(&(br, bc)), Some(&(tr, tc))) => match br.cmp(&tr) {
                 Ordering::Less => {
-                    out.push(cell_diff(br, DiffStatus::Deleted, Some(bc), None));
+                    out.push(cell_diff_deleted(br, bc));
                     b.next();
                 }
                 Ordering::Greater => {
-                    out.push(cell_diff(tr, DiffStatus::Added, None, Some(tc)));
+                    out.push(cell_diff_added(tr, tc));
                     t.next();
                 }
                 Ordering::Equal => {
                     if bc.value != tc.value || bc.style != tc.style {
-                        out.push(cell_diff(br, DiffStatus::Modified, Some(bc), Some(tc)));
+                        out.push(cell_diff_modified(br, bc, tc));
                     }
                     b.next();
                     t.next();
                 }
             },
             (Some(&(br, bc)), None) => {
-                out.push(cell_diff(br, DiffStatus::Deleted, Some(bc), None));
+                out.push(cell_diff_deleted(br, bc));
                 b.next();
             }
             (None, Some(&(tr, tc))) => {
-                out.push(cell_diff(tr, DiffStatus::Added, None, Some(tc)));
+                out.push(cell_diff_added(tr, tc));
                 t.next();
             }
             (None, None) => break,
@@ -155,19 +191,144 @@ fn diff_cells(base: &Sheet, target: &Sheet) -> Vec<CellDiff> {
     out
 }
 
-fn cell_diff(r: CellRef, status: DiffStatus, old: Option<&Cell>, new: Option<&Cell>) -> CellDiff {
+fn cell_diff_added(r: CellRef, new: &Cell) -> CellDiff {
     CellDiff {
         row: r.row,
         col: r.col,
-        status,
-        old_value: old.map(|c| cell_value_to_json(c.value.as_ref())),
-        new_value: new.map(|c| cell_value_to_json(c.value.as_ref())),
+        status: DiffStatus::Added,
+        old_value: None,
+        new_value: Some(cell_value_to_json(new.value.as_ref())),
+        old_style: None,
+        new_style: new.style.as_deref().map(style_to_json),
     }
+}
+
+fn cell_diff_deleted(r: CellRef, old: &Cell) -> CellDiff {
+    CellDiff {
+        row: r.row,
+        col: r.col,
+        status: DiffStatus::Deleted,
+        old_value: Some(cell_value_to_json(old.value.as_ref())),
+        new_value: None,
+        old_style: old.style.as_deref().map(style_to_json),
+        new_style: None,
+    }
+}
+
+/// See this module's doc comment ("Style diffs: sparser than value diffs")
+/// for why `old_style`/`new_style` are populated only when `old.style !=
+/// new.style`, unlike `old_value`/`new_value` (always both present here).
+fn cell_diff_modified(r: CellRef, old: &Cell, new: &Cell) -> CellDiff {
+    let style_changed = old.style != new.style;
+    CellDiff {
+        row: r.row,
+        col: r.col,
+        status: DiffStatus::Modified,
+        old_value: Some(cell_value_to_json(old.value.as_ref())),
+        new_value: Some(cell_value_to_json(new.value.as_ref())),
+        old_style: style_changed
+            .then(|| old.style.as_deref().map(style_to_json))
+            .flatten(),
+        new_style: style_changed
+            .then(|| new.style.as_deref().map(style_to_json))
+            .flatten(),
+    }
+}
+
+/// Diffs `base`/`target`'s merged regions (Issue #8), matched by origin
+/// coordinate (a merge's `start`) — the same coordinate-based matching
+/// `diff_cells` uses for values. `Sheet::merged_regions` is a `HashMap`
+/// with no guaranteed order (unlike `cells`'s `BTreeMap`, kept ordered for
+/// Issue #87's determinism reasons), so this deliberately does *not* sort
+/// every merge up front the way `diff_cells` can rely on `iter_cells`
+/// already being sorted: it instead does an average-O(1) `HashMap` lookup
+/// per `base` merge (catching `Modified`/`Deleted`) plus a `contains_key`
+/// scan of `target` for merges absent from `base` (catching `Added`),
+/// average O(base_merges + target_merges) overall, and sorts only the
+/// (typically far smaller) set of actual differences at the end — paying
+/// for a full sort of every unchanged merge would be wasted work on a
+/// sheet with many merges but few actual changes.
+fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
+    let base_merges = base.merged_regions();
+    let target_merges = target.merged_regions();
+
+    let mut out = Vec::new();
+    for (&origin, base_region) in base_merges {
+        match target_merges.get(&origin) {
+            Some(target_region) if target_region.end != base_region.end => {
+                out.push(MergeDiff {
+                    status: DiffStatus::Modified,
+                    start: origin.into(),
+                    old_end: Some(base_region.end.into()),
+                    new_end: Some(target_region.end.into()),
+                });
+            }
+            Some(_) => {}
+            None => out.push(MergeDiff {
+                status: DiffStatus::Deleted,
+                start: origin.into(),
+                old_end: Some(base_region.end.into()),
+                new_end: None,
+            }),
+        }
+    }
+    for (&origin, target_region) in target_merges {
+        if !base_merges.contains_key(&origin) {
+            out.push(MergeDiff {
+                status: DiffStatus::Added,
+                start: origin.into(),
+                old_end: None,
+                new_end: Some(target_region.end.into()),
+            });
+        }
+    }
+
+    out.sort_by_key(|m| (m.start.row, m.start.col));
+    out
+}
+
+/// Every merge on `sheet`, reported as `Added` — used when the whole sheet
+/// is new (`diff_sheet`'s `(None, Some(t))` case). Sorted by origin
+/// coordinate for the same reason `diff_merges` sorts its own output:
+/// `Sheet::merged_regions` is a `HashMap` with no guaranteed order (code
+/// review on PR #10 — this and `all_merges_deleted` originally iterated it
+/// directly, producing nondeterministic `SheetDiff::merges` ordering).
+fn all_merges_added(sheet: &Sheet) -> Vec<MergeDiff> {
+    let mut out: Vec<MergeDiff> = sheet
+        .merged_regions()
+        .iter()
+        .map(|(&origin, region)| MergeDiff {
+            status: DiffStatus::Added,
+            start: origin.into(),
+            old_end: None,
+            new_end: Some(region.end.into()),
+        })
+        .collect();
+    out.sort_by_key(|m| (m.start.row, m.start.col));
+    out
+}
+
+/// The `Deleted` counterpart of [`all_merges_added`], used when the whole
+/// sheet was removed (`diff_sheet`'s `(Some(b), None)` case).
+fn all_merges_deleted(sheet: &Sheet) -> Vec<MergeDiff> {
+    let mut out: Vec<MergeDiff> = sheet
+        .merged_regions()
+        .iter()
+        .map(|(&origin, region)| MergeDiff {
+            status: DiffStatus::Deleted,
+            start: origin.into(),
+            old_end: Some(region.end.into()),
+            new_end: None,
+        })
+        .collect();
+    out.sort_by_key(|m| (m.start.row, m.start.col));
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diff::model::CellPos;
     use crate::model::{CellValue, SheetVisibility};
 
     fn sheet_with_cells(name: &str, vis: SheetVisibility, cells: &[(u32, u32, f64)]) -> Sheet {
@@ -376,7 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn style_only_change_is_reported_as_modified() {
+    fn style_only_change_is_reported_as_modified_with_new_style_populated() {
+        use crate::json::style_to_json;
         use crate::model::ResolvedStyle;
         use std::sync::Arc;
 
@@ -399,6 +561,275 @@ mod tests {
 
         let diff = diff_workbooks(&workbook(vec![base_sheet]), &workbook(vec![target_sheet]));
         assert_eq!(diff.sheets[0].cells.len(), 1);
-        assert_eq!(diff.sheets[0].cells[0].status, DiffStatus::Modified);
+        let cell = &diff.sheets[0].cells[0];
+        assert_eq!(cell.status, DiffStatus::Modified);
+        // Base had no style at all -> old_style stays None (there is
+        // nothing to report on that side), while new_style carries the
+        // style that was actually added.
+        assert_eq!(cell.old_style, None);
+        assert_eq!(
+            cell.new_style,
+            Some(style_to_json(&ResolvedStyle::default()))
+        );
+        // Value never changed -> old_value == new_value, unchanged from
+        // the pre-Issue-#8 behavior this test used to lock in.
+        assert_eq!(cell.old_value, cell.new_value);
+    }
+
+    #[test]
+    fn value_only_change_carries_no_style_diff() {
+        // The asymmetric counterpart of the test above: when only the
+        // value changes and the style is identical on both sides,
+        // old_style/new_style must both stay None (this module's doc
+        // comment "Style diffs: sparser than value diffs" documents why).
+        let base = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 100.0)],
+        )]);
+        let target = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 120.0)],
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let cell = &diff.sheets[0].cells[0];
+        assert_eq!(cell.status, DiffStatus::Modified);
+        assert_eq!(cell.old_style, None);
+        assert_eq!(cell.new_style, None);
+    }
+
+    #[test]
+    fn added_cell_with_a_style_reports_new_style_only() {
+        use crate::json::style_to_json;
+        use crate::model::ResolvedStyle;
+        use std::sync::Arc;
+
+        let base = workbook(vec![]);
+        let mut target_sheet = Sheet::new("Sheet1".into(), SheetVisibility::Visible);
+        target_sheet.insert_cell(
+            CellRef { row: 1, col: 1 },
+            Cell {
+                value: Some(CellValue::Number(1.0)),
+                style: Some(Arc::new(ResolvedStyle::default())),
+            },
+        );
+        let target = workbook(vec![target_sheet]);
+
+        let diff = diff_workbooks(&base, &target);
+        let cell = &diff.sheets[0].cells[0];
+        assert_eq!(cell.status, DiffStatus::Added);
+        assert_eq!(cell.old_style, None);
+        assert_eq!(
+            cell.new_style,
+            Some(style_to_json(&ResolvedStyle::default()))
+        );
+    }
+
+    fn sheet_with_merge(
+        name: &str,
+        vis: SheetVisibility,
+        cell: (u32, u32, f64),
+        merge: (CellRef, CellRef),
+    ) -> Sheet {
+        let mut sheet = sheet_with_cells(name, vis, &[cell]);
+        sheet.insert_merge(crate::model::MergedRegion {
+            start: merge.0,
+            end: merge.1,
+        });
+        sheet.finalize_merges();
+        sheet
+    }
+
+    #[test]
+    fn merge_added_is_detected_even_with_no_cell_changes() {
+        let base = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 1.0)],
+        )]);
+        let target = workbook(vec![sheet_with_merge(
+            "Sheet1",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        assert_eq!(
+            diff.sheets.len(),
+            1,
+            "a merge-only change must still surface a SheetDiff"
+        );
+        let sheet_diff = &diff.sheets[0];
+        assert!(sheet_diff.cells.is_empty());
+        assert_eq!(sheet_diff.merges.len(), 1);
+        let m = &sheet_diff.merges[0];
+        assert_eq!(m.status, DiffStatus::Added);
+        assert_eq!(m.start, CellPos { row: 1, col: 1 });
+        assert_eq!(m.old_end, None);
+        assert_eq!(m.new_end, Some(CellPos { row: 1, col: 2 }));
+    }
+
+    #[test]
+    fn merge_deleted_is_detected() {
+        let base = workbook(vec![sheet_with_merge(
+            "Sheet1",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+        let target = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 1.0)],
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let merges = &diff.sheets[0].merges;
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0].status, DiffStatus::Deleted);
+        assert_eq!(merges[0].old_end, Some(CellPos { row: 1, col: 2 }));
+        assert_eq!(merges[0].new_end, None);
+    }
+
+    #[test]
+    fn merge_extent_change_is_reported_as_modified() {
+        let base = workbook(vec![sheet_with_merge(
+            "Sheet1",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+        let target = workbook(vec![sheet_with_merge(
+            "Sheet1",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 3 }),
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let merges = &diff.sheets[0].merges;
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0].status, DiffStatus::Modified);
+        assert_eq!(merges[0].old_end, Some(CellPos { row: 1, col: 2 }));
+        assert_eq!(merges[0].new_end, Some(CellPos { row: 1, col: 3 }));
+    }
+
+    #[test]
+    fn unchanged_merge_produces_no_diff_at_all() {
+        let base = workbook(vec![sheet_with_merge(
+            "Sheet1",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+        let target = workbook(vec![sheet_with_merge(
+            "Sheet1",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        assert!(
+            diff.sheets.is_empty(),
+            "an identical merge must not produce a SheetDiff at all"
+        );
+    }
+
+    #[test]
+    fn sheet_added_reports_its_merges_as_added_too() {
+        let base = workbook(vec![]);
+        let target = workbook(vec![sheet_with_merge(
+            "New",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let sheet_diff = &diff.sheets[0];
+        assert_eq!(sheet_diff.status, DiffStatus::Added);
+        assert_eq!(sheet_diff.merges.len(), 1);
+        assert_eq!(sheet_diff.merges[0].status, DiffStatus::Added);
+    }
+
+    #[test]
+    fn sheet_deleted_reports_its_merges_as_deleted_too() {
+        let base = workbook(vec![sheet_with_merge(
+            "Gone",
+            SheetVisibility::Visible,
+            (1, 1, 1.0),
+            (CellRef { row: 1, col: 1 }, CellRef { row: 1, col: 2 }),
+        )]);
+        let target = workbook(vec![]);
+
+        let diff = diff_workbooks(&base, &target);
+        let sheet_diff = &diff.sheets[0];
+        assert_eq!(sheet_diff.status, DiffStatus::Deleted);
+        assert_eq!(sheet_diff.merges.len(), 1);
+        assert_eq!(sheet_diff.merges[0].status, DiffStatus::Deleted);
+    }
+
+    fn sheet_with_merges_at(name: &str, vis: SheetVisibility, origins: &[(u32, u32)]) -> Sheet {
+        let mut sheet = Sheet::new(name.to_string(), vis);
+        for &(row, col) in origins {
+            sheet.insert_cell(
+                CellRef { row, col },
+                Cell {
+                    value: Some(CellValue::Number(1.0)),
+                    style: None,
+                },
+            );
+            sheet.insert_merge(crate::model::MergedRegion {
+                start: CellRef { row, col },
+                end: CellRef { row, col: col + 1 },
+            });
+        }
+        sheet.finalize_merges();
+        sheet
+    }
+
+    #[test]
+    fn sheet_added_reports_multiple_merges_in_deterministic_row_col_order() {
+        // Regression test for code review on PR #10: an earlier
+        // implementation built this list by iterating
+        // `Sheet::merged_regions()` (a HashMap) directly, so with more
+        // than one merge the output order could vary run to run.
+        // Origins deliberately inserted out of row order.
+        let base = workbook(vec![]);
+        let target = workbook(vec![sheet_with_merges_at(
+            "New",
+            SheetVisibility::Visible,
+            &[(5, 1), (1, 1), (3, 1)],
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let starts: Vec<(u32, u32)> = diff.sheets[0]
+            .merges
+            .iter()
+            .map(|m| (m.start.row, m.start.col))
+            .collect();
+        assert_eq!(starts, vec![(1, 1), (3, 1), (5, 1)]);
+    }
+
+    #[test]
+    fn sheet_deleted_reports_multiple_merges_in_deterministic_row_col_order() {
+        let base = workbook(vec![sheet_with_merges_at(
+            "Gone",
+            SheetVisibility::Visible,
+            &[(5, 1), (1, 1), (3, 1)],
+        )]);
+        let target = workbook(vec![]);
+
+        let diff = diff_workbooks(&base, &target);
+        let starts: Vec<(u32, u32)> = diff.sheets[0]
+            .merges
+            .iter()
+            .map(|m| (m.start.row, m.start.col))
+            .collect();
+        assert_eq!(starts, vec![(1, 1), (3, 1), (5, 1)]);
     }
 }
