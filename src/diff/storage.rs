@@ -306,6 +306,8 @@ mod tests {
                         status: DiffStatus::Added,
                         old_value: None,
                         new_value: Some(JsonCellValue::Number(1.0)),
+                        old_style: None,
+                        new_style: None,
                     },
                     CellDiff {
                         row: 2,
@@ -313,8 +315,11 @@ mod tests {
                         status: DiffStatus::Deleted,
                         old_value: Some(JsonCellValue::Number(2.0)),
                         new_value: None,
+                        old_style: None,
+                        new_style: None,
                     },
                 ],
+                merges: Vec::new(),
             }],
         };
         store.save_diff(base_id, target_id, &diff).unwrap();

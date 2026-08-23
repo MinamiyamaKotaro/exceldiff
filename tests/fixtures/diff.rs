@@ -166,3 +166,31 @@ pub fn style_only_change() -> (Vec<u8>, Vec<u8>) {
         build(r#"<row r="1"><c r="A1" s="1"><v>1</v></c></row>"#),
     )
 }
+
+/// A1:B1 is merged only in the target — no cell value changes at all
+/// (Issue #8). Verifies a merge-only change surfaces as a `SheetDiff` with
+/// an empty `cells` list and one `Added` entry in `merges`.
+pub fn merge_added() -> (Vec<u8>, Vec<u8>) {
+    let rows = r#"<row r="1"><c r="A1"><v>1</v></c></row>"#;
+    (
+        single_sheet("Sheet1", None, rows),
+        build_zip(&[
+            (
+                "xl/_rels/workbook.xml.rels",
+                rels_xml(&[("rId1", "worksheet", "worksheets/sheet1.xml")]).as_bytes(),
+            ),
+            (
+                "xl/workbook.xml",
+                workbook_xml(&[("Sheet1", "rId1", None)]).as_bytes(),
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                worksheet_xml(
+                    rows,
+                    r#"<mergeCells count="1"><mergeCell ref="A1:B1"/></mergeCells>"#,
+                )
+                .as_bytes(),
+            ),
+        ]),
+    )
+}

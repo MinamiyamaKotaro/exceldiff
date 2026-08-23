@@ -2,19 +2,21 @@
 
 *[English](model.en.md)*
 
-`src/diff/model.rs` に対応する設計書。[`diff/engine.rs`](engine.md) が生成し、[`diff/storage.rs`](storage.md) が永続化する差分結果の出力形（`WorkbookDiff`/`SheetDiff`/`CellDiff`/`DiffStatus`）を定義する（[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)）。[`json.rs`](../json.md) が `model::Workbook` の完全なスナップショットをJSON化するのに対し、本ファイルはその**差分**をJSON化可能な形で表現する、いわば「json.rsの差分版」に相当する。
+`src/diff/model.rs` に対応する設計書。[`diff/engine.rs`](engine.md) が生成し、[`diff/storage.rs`](storage.md) が永続化する差分結果の出力形（`WorkbookDiff`/`SheetDiff`/`CellDiff`/`MergeDiff`/`CellPos`/`DiffStatus`）を定義する（[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)、スタイル・セル結合差分は[Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)）。[`json.rs`](../json.md) が `model::Workbook` の完全なスナップショットをJSON化するのに対し、本ファイルはその**差分**をJSON化可能な形で表現する、いわば「json.rsの差分版」に相当する。
 
 ## 責務・スコープ
 
-- 差分結果の型を定義する: セル1件の変更を表す `CellDiff`、シート1枚の変更（可視性変更・セル変更の集合）を表す `SheetDiff`、ワークブック全体の差分を表す `WorkbookDiff`、変更種別を表す `DiffStatus`（`Added`/`Modified`/`Deleted`）
-- `CellDiff::old_value`/`new_value` の型として、[`json.rs`](../json.md) の `JsonCellValue`（本ファイルの都合で `pub` へ変更——依存関係セクション参照）をそのまま再利用する。独自の値表現を新設しない
-- `serde::Serialize` を各型へ導出し、`WorkbookDiff` がそのままJSONへシリアライズ可能であることを保証する（[`diff/storage.rs`](storage.md) が `CellDiff::old_value`/`new_value` を個別に `serde_json::to_string` する際にもこの導出を利用する）
-- 「報告すべき情報が無ければフィールド自体を省略する」という [json.rs](../json.md) 既存の疎な出力方針（`JsonCell::style` 等）を踏襲し、`CellDiff::old_value`/`new_value`（`Added`では`old_value`が、`Deleted`では`new_value`が存在しない）と `SheetDiff::old_visibility`/`new_visibility`（可視性に変更が無ければ両方とも省略）に `#[serde(skip_serializing_if = "Option::is_none")]` を適用する
-- **含まない責務**: 差分の計算ロジックそのもの（これらの型を実際にどう構築するかは[`diff/engine.rs`](engine.md)の責務）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)）
+- 差分結果の型を定義する: セル1件の変更を表す `CellDiff`、結合セル1件の変更を表す `MergeDiff`、シート1枚の変更（可視性変更・セル変更・結合変更の集合）を表す `SheetDiff`、ワークブック全体の差分を表す `WorkbookDiff`、変更種別を表す `DiffStatus`（`Added`/`Modified`/`Deleted`）、座標を表す `CellPos`
+- `CellDiff::old_value`/`new_value` の型として [`json.rs`](../json.md) の `JsonCellValue` を、`CellDiff::old_style`/`new_style` の型として同じく `JsonStyle` を再利用する（いずれも本ファイルの都合で `pub` へ変更——依存関係セクション参照）。独自の値・スタイル表現を新設しない
+- `serde::Serialize` を各型へ導出し、`WorkbookDiff` がそのままJSONへシリアライズ可能であることを保証する
+- 「報告すべき情報が無ければフィールド自体を省略する」という [json.rs](../json.md) 既存の疎な出力方針を踏襲しつつ、`old_value`/`new_value` と `old_style`/`new_style` とで**意図的に粒度を変える**（詳細は`CellDiff`のdocコメントおよび[engine.md](engine.md)「スタイル差分の疎さ」参照）
+- **含まない責務**: 差分の計算ロジックそのもの（これらの型を実際にどう構築するかは[`diff/engine.rs`](engine.md)の責務）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。`old_style`/`new_style`/`merges` は現状永続化されない——[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)）
 
-## 主要な型・関数（案）
+## 主要な型・関数
 
 ```rust
+use crate::json::JsonStyle;
+use crate::model::CellRef;
 use crate::JsonCellValue;
 use serde::Serialize;
 
@@ -27,10 +29,7 @@ pub enum DiffStatus {
     Deleted,
 }
 
-/// 変更されたセル1件。`row`/`col` は両リビジョンで共通の座標——行/列挿入
-/// アライメントを行わないデフォルトのエンジン（`diff::engine::diff_workbooks`）
-/// はセルが座標を移動したと報告することが無い(詳細は同関数のdocコメント
-/// 参照)ため、旧/新座標のペアを別々に保持する必要が無い。
+/// 変更されたセル1件。`row`/`col` は両リビジョンで共通の座標。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CellDiff {
@@ -40,36 +39,74 @@ pub struct CellDiff {
     /// `Modified`/`Deleted` では存在し、`Added` では存在しない。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_value: Option<JsonCellValue>,
-    /// `Modified`/`Added` では存在し、`Deleted` では存在しない。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_value: Option<JsonCellValue>,
+    /// `Added`(スタイルを持つ場合)と、スタイルが実際に変わった`Modified`
+    /// のみ存在する——`old_value`/`new_value`とは異なり「値が同じでも
+    /// Modifiedなら常に両方出力」ではない、意図的により疎な規約
+    /// （Issue #8。理由は`diff::engine`のdocコメント参照）。`Deleted`
+    /// では存在しない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_style: Option<JsonStyle>,
+    /// `Deleted`(スタイルを持っていた場合)と、スタイルが実際に変わった
+    /// `Modified`のみ存在する。`Added`では存在しない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_style: Option<JsonStyle>,
 }
 
-/// 1シート分の変更。実際に変更があったシートについてのみ構築される——
-/// `diff::engine::diff_workbooks` は両側に同名シートが存在し、可視性が
-/// 同一かつセル差分が0件の場合、そのシートを `WorkbookDiff::sheets` へ
-/// 一切含めない（`json.rs` が `JsonCell::style` 等に既に適用している
-/// 「報告すべき情報が無ければ何も出力しない」という規約と同一）。
+/// `MergeDiff`が報告する座標。`model::CellRef`を直接使わないのは、
+/// `model/`にserde依存を持ち込まない方針を守るため（json.rsの
+/// `alignment_tag`等の変換関数群と同じ理由）。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CellPos {
+    pub row: u32,
+    pub col: u32,
+}
+
+impl From<CellRef> for CellPos {
+    fn from(r: CellRef) -> Self {
+        CellPos { row: r.row, col: r.col }
+    }
+}
+
+/// 変更された結合範囲1件。起点座標（`start`）でリビジョン間を対応付ける
+/// ——`Modified`でも`old_start`/`new_start`のような別々の対を持たない
+/// (常に同一の`start`になるため。詳細は`diff::engine::diff_merges`の
+/// docコメント参照)。
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeDiff {
+    pub status: DiffStatus,
+    pub start: CellPos,
+    /// `Modified`/`Deleted`で存在。`old_value`と同じ対称性。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_end: Option<CellPos>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_end: Option<CellPos>,
+}
+
+/// 1シート分の変更。実際に変更があったシートについてのみ構築される。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetDiff {
     pub name: String,
     pub status: DiffStatus,
-    /// 変更前にシートが存在した場合（`Modified`/`Deleted`）のみ存在し、
-    /// `Modified` の場合はさらに `new_visibility` と実際に異なる場合のみ
-    /// 存在する。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_visibility: Option<&'static str>,
-    /// 変更後にシートが存在する場合（`Modified`/`Added`）のみ存在し、
-    /// `Modified` の場合はさらに `old_visibility` と実際に異なる場合のみ
-    /// 存在する。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_visibility: Option<&'static str>,
     pub cells: Vec<CellDiff>,
+    /// このシートの結合範囲の変更(Issue #8)。セル単位の`CellDiff`には
+    /// 折り込まず、シート単位の配列として持つ——完全スナップショットの
+    /// JSON（`json.rs`）が結合を起点セルの`rowSpan`/`colSpan`として
+    /// 埋め込むのとは意図的に異なる表現（理由は`diff::engine`のdoc
+    /// コメント参照）。変更が無ければ空（JSON上も省略）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub merges: Vec<MergeDiff>,
 }
 
-/// 2つのワークブック間の差分全体——`diff::engine::diff_workbooks`/
-/// `diff_paths` の返り値の型。
+/// 2つのワークブック間の差分全体。
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct WorkbookDiff {
     pub sheets: Vec<SheetDiff>,
@@ -78,12 +115,12 @@ pub struct WorkbookDiff {
 
 ## 依存関係
 
-- 依存先: [`json.rs`](../json.md)（`JsonCellValue`）。`JsonCellValue` はこのファイルからの再利用のために、[json.mdの主要な型](../json.md) が本来 `to_json_writer`/`to_json_string` 実装専用の内部詳細として非公開のままにしていたところを、`pub` へ変更した（[json.rs 未決事項](../json.md)にはこの変更は反映されていない——json.rs自体の設計意図を変えるものではなく、本ファイルからの再利用要求により事後的に可視性のみを緩和したもの）。外部クレート `serde`（`Serialize` の導出）に依存する。
-- 依存元: [`diff/engine.rs`](engine.md)（各型を構築して返す）、[`diff/storage.rs`](storage.md)（`CellDiff::old_value`/`new_value`・`DiffStatus` をSQLへ変換する際に参照する）、[`lib.rs`](../lib.md)（`diff::model::{CellDiff, DiffStatus, SheetDiff, WorkbookDiff}` を[`diff/mod.rs`](mod.md)経由でクレートルートへ再エクスポートする）
+- 依存先: [`json.rs`](../json.md)（`JsonCellValue`、`JsonStyle`——いずれも`pub`化して再利用。`JsonStyle`が内部で持つ`JsonFont`/`JsonColorRef`/`JsonBorders`も同様に`pub`化し、かつ構造体の全フィールドを`pub`にした——`CellDiff`/`SheetDiff`同様、外部からフィールドを直接読める全公開データ型という設計方針にJsonStyle一族を揃えるため）、[`model/cell.rs`](../model/cell.md)（`CellRef`——`CellPos`への変換元）。外部クレート`serde`。
+- 依存元: [`diff/engine.rs`](engine.md)（各型を構築して返す）、[`diff/storage.rs`](storage.md)（`CellDiff::old_value`/`new_value`・`DiffStatus`をSQLへ変換する際に参照——`old_style`/`new_style`/`merges`は現状参照しない、[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)参照）、[`lib.rs`](../lib.md)（`CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff`を[`diff/mod.rs`](mod.md)経由でクレートルートへ再エクスポート）
 
-`JsonCellValue` を独自に複製せず再利用する設計は、[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) のPoC（`poc/issue3-poc`）が独自の `JsonValue` enumを新設していた点からの意図的な変更である。同一のセル値が `to_json_string`（完全スナップショット）経由でも `diff_workbooks`（差分）経由でも同じ形でシリアライズされることを型レベルで保証し、2つの独立した値表現が将来ズレていく（例えば `DateTime` のフォーマットが片方だけ変更される）リスクを構造的に排除する。
+`JsonCellValue`/`JsonStyle`を独自に複製せず再利用する設計は、同一のセル値・スタイルが`to_json_string`（完全スナップショット）経由でも`diff_workbooks`（差分）経由でも同じ形でシリアライズされることを型レベルで保証し、2つの独立した表現が将来ズレていくリスクを構造的に排除する（[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)のPoCが独自の`JsonValue`型を新設していた点からの意図的な変更を、スタイルにも一貫して適用したもの）。
 
-`CellDiff`/`SheetDiff` に `old_row`/`old_col`（座標が移動した場合の旧座標）を持たせなかったのは、現状のデフォルトエンジンがそもそも座標移動を検出しない設計であるため（[engine.md](engine.md) 参照）——使われない見込みのフィールドを先回りして追加しない、という判断（Issue #4/#5のアライメントモードが実装される際に必要になれば、その時点で追加する）。
+`CellDiff`に`old_row`/`old_col`を持たせず、`MergeDiff`にも`old_start`/`new_start`の別対を持たせなかったのは、現状のデフォルトエンジンが座標移動を検出しない設計であるため（[engine.md](engine.md)参照）。
 
 ## エラー処理方針
 
@@ -91,9 +128,10 @@ pub struct WorkbookDiff {
 
 ## テスト方針
 
-- 本ファイル単体の直接テストは持たない(型定義とderiveのみのため)。各型が期待通り構築・シリアライズされることは、[`diff/engine.rs`](engine.md) と [`diff/storage.rs`](storage.md) それぞれの単体テスト、および[`tests/diff.rs`](../../../tests/diff.rs) の実パースパイプライン経由の統合テストで間接的に検証する。
+- 本ファイル単体の直接テストは持たない。各型が期待通り構築・シリアライズされることは、[`diff/engine.rs`](engine.md)の単体テスト（`style_only_change_is_reported_as_modified_with_new_style_populated`、`value_only_change_carries_no_style_diff`、`added_cell_with_a_style_reports_new_style_only`、`merge_added_is_detected_even_with_no_cell_changes`、`merge_deleted_is_detected`、`merge_extent_change_is_reported_as_modified`、`unchanged_merge_produces_no_diff_at_all`、`sheet_added_reports_its_merges_as_added_too`、`sheet_deleted_reports_its_merges_as_deleted_too`）、および[`tests/diff.rs`](../../../tests/diff.rs)の実パースパイプライン経由の統合テスト（`style_only_change_is_reported_as_modified_end_to_end`、`merge_addition_is_detected_even_with_no_cell_changes_end_to_end`）で間接的に検証する。
 
 ## 未決事項 / オープンクエスチョン
 
-1. **行/列挿入アライメントモード導入時の型拡張**: [Issue #4](https://github.com/MinamiyamaKotaro/xlsxparser/issues/4)/[Issue #5](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5) が要求するアライメントベースの差分を実装する場合、`CellDiff` に `old_row`/`old_col` を追加する（既存の `row`/`col` は新座標を表すよう再解釈する）か、別の型（例 `AlignedCellDiff`）を新設するかは未決定。前者は既存フィールドの意味が「デフォルトエンジンでは常に同一座標」から「アライメントエンジンでは移動しうる」へ変わるため、後方互換性への影響を実装時に評価する必要がある。
-2. **スタイル・数式・列幅・画像の差分**: [Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) の検討事項3が挙げる「セル値に加えて、スタイル・数式・結合セル・画像・列幅の差分を含める範囲」は未着手。現状 `CellDiff` はセル値のみを `old_value`/`new_value` として保持し、[`diff/engine.rs`](engine.md) はスタイルの変更を検知して `Modified` フラグは立てるものの、何がどう変わったか（フォントサイズが変わったのか塗り色が変わったのか等）はJSON上に表現されない。フロントエンド側が実際に必要とする粒度が判明した時点で `CellDiff` へフィールドを追加するか検討する。
+1. **行/列挿入アライメントモード導入時の型拡張**: [Issue #4](https://github.com/MinamiyamaKotaro/xlsxparser/issues/4)/[Issue #5](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5)が要求するアライメントベースの差分を実装する場合、`CellDiff`/`MergeDiff`の座標フィールドをどう拡張するかは未決定（変更なし）。
+2. ~~スタイル・結合セルの差分~~ → **部分的に解決**（[Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)）: `CellDiff::old_style`/`new_style`（fill色・フォント・罫線・配置・書式）と`SheetDiff::merges`を追加した。数式・列幅・画像の差分は依然未着手。
+3. **SQLite永続化へのスタイル・結合差分の反映**: [Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)で別途追跡。`diff::storage::DiffStore::save_diff`は現状`old_style`/`new_style`/`merges`を一切保存しない。

@@ -20,6 +20,6 @@ pub mod model;
 pub mod storage;
 
 pub use engine::{diff_paths, diff_workbooks};
-pub use model::{CellDiff, DiffStatus, SheetDiff, WorkbookDiff};
+pub use model::{CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff};
 #[cfg(feature = "diff-storage")]
 pub use storage::DiffStore;

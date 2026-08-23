@@ -116,10 +116,35 @@ fn style_only_change_is_reported_as_modified_end_to_end() {
 
     let cells = &result.sheets[0].cells;
     assert_eq!(cells.len(), 1);
-    assert_eq!(cells[0].status, DiffStatus::Modified);
+    let cell = &cells[0];
+    assert_eq!(cell.status, DiffStatus::Modified);
     // The value itself never changed (1 on both sides) — only the style
     // did, and that alone must still be enough to flag Modified.
-    assert_eq!(cells[0].old_value, cells[0].new_value);
+    assert_eq!(cell.old_value, cell.new_value);
+    // Issue #8: the style change itself must be recoverable from the
+    // diff, not just its presence as a Modified flag. FONT_STYLES_XML's
+    // style id 0 -> 1 goes from an 11pt/non-bold font to a 14pt/bold one.
+    let old_style = cell.old_style.as_ref().expect("style changed");
+    let new_style = cell.new_style.as_ref().expect("style changed");
+    assert_eq!(old_style.font.size_pt, 11.0);
+    assert!(!old_style.font.bold);
+    assert_eq!(new_style.font.size_pt, 14.0);
+    assert!(new_style.font.bold);
+}
+
+#[test]
+fn merge_addition_is_detected_even_with_no_cell_changes_end_to_end() {
+    let result = diff_pair(diff::merge_added());
+
+    assert_eq!(result.sheets.len(), 1);
+    let sheet_diff = &result.sheets[0];
+    assert!(sheet_diff.cells.is_empty());
+    assert_eq!(sheet_diff.merges.len(), 1);
+    let m = &sheet_diff.merges[0];
+    assert_eq!(m.status, DiffStatus::Added);
+    assert_eq!(m.start, exceldiff::CellPos { row: 1, col: 1 });
+    assert_eq!(m.old_end, None);
+    assert_eq!(m.new_end, Some(exceldiff::CellPos { row: 1, col: 2 }));
 }
 
 #[test]

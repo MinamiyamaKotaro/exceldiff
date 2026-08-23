@@ -344,6 +344,28 @@ impl Sheet {
         self.merged_regions.get(&origin)
     }
 
+    /// The sheet's full set of merged regions, keyed by origin coordinate.
+    /// `pub(crate)`: used by `diff::engine` to diff two sheets' merges in
+    /// O(base_merges + target_merges) via direct `HashMap` lookups, rather
+    /// than O(cells) by re-deriving them through `iter_cells` +
+    /// `merged_region_at` per cell (Issue #8's PoC used the latter, being
+    /// external to the crate — `poc/issue8-poc` measured that approach at
+    /// several milliseconds for a few hundred thousand cells even with a
+    /// mere handful of actual merges). Never made fully `pub`, matching
+    /// `Sheet::new`/`insert_cell`/`insert_merge`/`finalize_merges`'s
+    /// existing `pub(crate)` surface — no external demand for this has
+    /// arisen the way `merged_region_at`'s single-lookup form has.
+    ///
+    /// Unlike `cells` (a `BTreeMap`, deterministically ordered for Issue
+    /// #87's sake), this is backed by a plain `HashMap` and has no
+    /// guaranteed iteration order — a caller that needs deterministic
+    /// output (e.g. `diff::engine::diff_merges`, which must not have a
+    /// changed diff's ordering vary run to run) is responsible for sorting
+    /// whatever it extracts from this itself.
+    pub(crate) fn merged_regions(&self) -> &HashMap<CellRef, MergedRegion> {
+        &self.merged_regions
+    }
+
     /// Runs once, after every `<mergeCell>` on this sheet has been
     /// registered via `insert_merge` (called by `resolve::merge::resolve`
     /// as its last step). Batch-resolves every currently-inserted cell key
