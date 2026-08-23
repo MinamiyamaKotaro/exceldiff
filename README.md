@@ -1,71 +1,44 @@
 # exceldiff
 
+*[English](README.en.md)*
+
 [![Rust CI](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/rust-ci.yml)
 [![Docs](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/docs.yml/badge.svg)](https://github.com/MinamiyamaKotaro/exceldiff/actions/workflows/docs.yml)
 [![exceldiff on crates.io](https://img.shields.io/crates/v/exceldiff.svg)](https://crates.io/crates/exceldiff)
 [![codecov](https://codecov.io/gh/MinamiyamaKotaro/exceldiff/branch/master/graph/badge.svg)](https://codecov.io/gh/MinamiyamaKotaro/exceldiff)
 [![License](https://img.shields.io/github/license/MinamiyamaKotaro/exceldiff)](LICENSE)
 
-A lightweight, high-performance `.xlsx` (OOXML) parser library written in Rust.
+Rustで書かれた、軽量・高速な `.xlsx`(OOXML)パーサーライブラリです。
 
-## Motivation
+## 開発動機
 
-`exceldiff` aims to be a fast, low-memory `.xlsx` parser, purpose-built for
-the kind of files common in Japanese business systems: sheets with an
-extreme number of rows/columns ("方眼紙Excel") and heavy use of merged
-cells. The
-goal is to parse and analyze such files without loading a full in-memory
-grid, and to expose the result as JSON that's easy to consume from a
-frontend or another system.
+`exceldiff` は、日本のビジネスシステムでよく見られるような、行・列数が極端に多い(「方眼紙Excel」)シートや結合セルを多用したファイルを主な対象に、高速・低メモリで動作する `.xlsx` パーサーを目指しています。フルのインメモリ2次元グリッドを構築せずにこの種のファイルをパース・解析し、フロントエンドや他システムから扱いやすいJSONとして結果を出力することがゴールです。
 
-## Status
+## ステータス
 
-Core implementation complete — every module in the planned architecture
-below is implemented and tested against the design in `docs/design/`. The
-public API (`parse_workbook`, `parse_workbook_reader`, `to_json_string`,
-`to_json_writer`, `resolve_color`) is wired up in `src/lib.rs`.
+コア実装は完了しています——以下に示す設計上の全モジュールが実装済みで、`docs/design/` の設計書どおりにテストされています。公開API(`parse_workbook`、`parse_workbook_reader`、`to_json_string`、`to_json_writer`、`resolve_color`)は `src/lib.rs` に結線されています。
 
 ```rust
 let workbook = exceldiff::parse_workbook("book.xlsx")?;
 let json = exceldiff::to_json_string(&workbook)?;
 ```
 
-- [docs/requirement/requirements.en.md](docs/requirement/requirements.en.md) —
-  the functional requirements and the 5-phase pipeline summarized below
-  (also available in [Japanese](docs/requirement/requirements.md)).
-- [docs/design/architecture.en.md](docs/design/architecture.en.md) — the
-  overall `src/` directory layout, module responsibilities, and design
-  principles (also available in [Japanese](docs/design/architecture.md)).
-  It links out to a per-module design doc for every file, covering
-  responsibility/scope, key types and function signatures, dependencies,
-  error handling policy, testing strategy, and open questions — each doc
-  written in both Japanese and English (`*.md` / `*.en.md`). Where
-  implementation diverged from a design doc's draft (an external API
-  detail settled differently than planned, a bug found while writing
-  tests, etc.), the doc was updated in place to record what changed and why.
+- [docs/requirement/requirements.md](docs/requirement/requirements.md) —
+  機能要件と、後述する5フェーズ・パイプラインの要約([English](docs/requirement/requirements.en.md)版もあります)。
+- [docs/design/architecture.md](docs/design/architecture.md) — `src/`
+  ディレクトリ全体の構成・各モジュールの責務・設計方針([English](docs/design/architecture.en.md)版もあります)。
+  ここから、全ファイルそれぞれの設計書(責務・スコープ、主要な型・関数シグネチャ、依存関係、エラー処理方針、テスト方針、未決事項を記載)にリンクしており、各設計書は日英両方(`*.md` / `*.en.md`)で書かれています。実装が設計書のドラフトと異なる形に落ち着いた場合(外部APIの詳細が想定と違う形で確定した、テスト作成中にバグが見つかった等)は、何がどう変わったかを記録するため設計書自体をその場で更新しています。
 
-## Input / Output
+## 入出力
 
-**Input**: a `.xlsx` file, via one of two entry points —
+**入力**: `.xlsx` ファイルを、2つのエントリポイントのいずれかで受け取ります——
 
-- `parse_workbook(path)` — the common case, reads from a filesystem path.
-- `parse_workbook_reader(reader)` — from anything `Read + Seek` (an
-  in-memory buffer, a fully-read HTTP response body, ...), for callers that
-  don't go through the filesystem.
+- `parse_workbook(path)` — 一般的なケース。ファイルシステムのパスから読み込みます。
+- `parse_workbook_reader(reader)` — `Read + Seek` を実装する任意の入力(インメモリバッファ、読み切ったHTTPレスポンスボディなど)から読み込みます。ファイルシステムを経由しない呼び出し元向けです。
 
-Both return `Result<Workbook, Error>`, a fully resolved in-memory
-representation of every sheet (visible, hidden, and veryHidden alike). Each
-has a `_with_limits` variant taking an explicit `SizeLimits` to override the
-defaults: a 512 MiB Zip Bomb cap per ZIP entry, 2 GiB cumulative, and a
-5,000,000-cell cap per sheet (`Error::TooManyCells`) — the cell cap bounds
-a sheet's in-memory footprint independently of its raw XML byte size,
-since a pathologically cell-dense file can stay well under the byte-size
-cap while still costing gigabytes once every `<c>` materializes.
+いずれも `Result<Workbook, Error>` を返します。これは全シート(可視・非表示・完全非表示のいずれも含む)を完全に解決したインメモリ表現です。それぞれに `_with_limits` 版があり、既定値(ZIPエントリごとに512MiBのZip Bomb上限、累計2GiB、シートあたり500万セル上限——`Error::TooManyCells`)を明示的な `SizeLimits` で上書きできます。セル数上限は、生のXMLバイトサイズとは独立にシートのメモリ使用量を制限します——病的にセル密度の高いファイルは、バイトサイズ上限を余裕で下回りつつも、`<c>` 要素が一つずつ実体化されるにつれ数GBのコストがかかることがあるためです。
 
-**Output**: `to_json_string(&workbook)` / `to_json_writer(&workbook,
-writer)` serialize the resolved `Workbook` into JSON shaped like this
-(real output, from `tests/fixtures/complex/houganshi_merged.xlsx` — a
-sheet with a single merged region, `A1:C3`, holding one text cell):
+**出力**: `to_json_string(&workbook)` / `to_json_writer(&workbook, writer)` は、解決済みの `Workbook` を以下のような形のJSONへシリアライズします(実際の出力例。単一の結合範囲 `A1:C3` に1つのテキストセルを持つシートである `tests/fixtures/complex/houganshi_merged.xlsx` から取得):
 
 ```json
 {
@@ -92,88 +65,32 @@ sheet with a single merged region, `A1:C3`, holding one text cell):
 }
 ```
 
-- `visibility` is `"visible"`, `"hidden"`, or `"veryHidden"` (from `<sheet
-  state="...">`).
-- `maxRow`/`maxCol` are the sheet's bounding box (the highest populated or
-  merged coordinate) — not the OOXML `<dimension>` value, which isn't read
-  at all.
-- `columns` is the sheet's `<cols>` ranges (`{"min", "max", "width"}`,
-  1-based and inclusive), each entry covering every column in that range —
-  not one `columnWidth` value duplicated onto every cell, since that would
-  multiply output size for no benefit (see
-  [Sparse merged-cell arrangements](#sparse-merged-cell-arrangements)
-  below for the same principle applied to merged cells). `defaultColumnWidth`
-  is `<sheetFormatPr defaultColWidth="..">`'s value, or `null` if the
-  workbook doesn't set one; a column not covered by any `columns` entry
-  falls back to it. Neither fixture used in these two examples declares
-  `<cols>`, so both show the empty/absent case.
-- `cells` only contains populated coordinates: a blank cell in between is
-  simply absent, never emitted as a `null`/`"empty"` entry (see
-  [Motivation](#motivation)). Cells are ordered row-major, then
-  column-major (matching reading order), regardless of the order they
-  appear in the source XML — the sheet is backed by a `BTreeMap`, keyed
-  on `(row, col)`.
-- Each cell's `value` is tagged by `type`:
+- `visibility` は `<sheet state="...">` に対応し `"visible"` / `"hidden"` / `"veryHidden"` のいずれかです。
+- `maxRow`/`maxCol` はシートのバウンディングボックス(値が入っているか結合されている最大座標)です——OOXMLの `<dimension>` の値ではなく、そちらは一切読みません。
+- `columns` はシートの `<cols>` 範囲(`{"min", "max", "width"}`、1始まり・両端含む)で、各エントリはその範囲内の全列をカバーします——全セルに `columnWidth` の値を複製するのではありません。複製すると出力サイズが無駄に肥大化するためです(後述の[疎な結合セル配置](#疎な結合セル配置)で結合セルにも同じ原則を適用しています)。`defaultColumnWidth` は `<sheetFormatPr defaultColWidth="..">` の値、未設定なら `null` です。`columns` のどの範囲にも含まれない列はこれにフォールバックします。この2つの例で使ったフィクスチャはどちらも `<cols>` を宣言していないため、空/不在のケースを示しています。
+- `cells` には値が入っている座標のみが含まれます。空白セルは単に存在しないだけで、`null`/`"empty"` エントリとして出力されることはありません([開発動機](#開発動機)参照)。セルは行優先・列優先(読み順どおり)で並びます。ソースXML内での出現順に関わらず、シートは `(row, col)` をキーとする `BTreeMap` で保持されているためです。
+- 各セルの `value` は `type` でタグ付けされます:
   `"number"` | `"text"` | `"boolean"` | `"error"` | `"dateTime"` |
-  `"empty"` (a cell with formatting only, or a value JSON can't
-  represent — `NaN`/`±Infinity`).
-  `"dateTime"` serializes as ISO 8601 with no timezone designator or
-  fractional seconds (e.g. `"2023-06-15T00:00:00"`; a date-only cell gets a
-  midnight time component, since Excel itself doesn't distinguish
-  date-only from date+time as a type).
-- `rowSpan`/`colSpan` are present (and `> 1`) only on a merged region's
-  anchor cell; every other coordinate inside the region resolves to that
-  same anchor and is not emitted as a separate JSON cell.
-- `style` is present only when the cell carries a resolved style at all
-  (omitted entirely otherwise, not emitted as `"style": {}`):
-  - `font`: `{"sizePt": 11.0, "bold": false}`.
-  - `wrapText`: boolean.
-  - `alignment`: the horizontal alignment as a string — `"general"` |
+  `"empty"`(書式のみのセル、またはJSONで表現できない値——`NaN`/`±Infinity`)。
+  `"dateTime"` はタイムゾーン指定子・小数秒なしのISO 8601形式でシリアライズされます(例: `"2023-06-15T00:00:00"`。日付のみのセルも時刻部分が深夜0時になります。Excel自体が日付のみと日付+時刻を型として区別しないためです)。
+- `rowSpan`/`colSpan` は結合範囲の起点セルにのみ存在し(値は `> 1`)、範囲内の他の座標は全てこの同じ起点セルに解決され、別のJSONセルとしては出力されません。
+- `style` はセルが解決済みのスタイルを何かしら持つ場合のみ存在します(それ以外は完全に省略され、`"style": {}` として出力されることはありません):
+  - `font`: `{"sizePt": 11.0, "bold": false}`。
+  - `wrapText`: 真偽値。
+  - `alignment`: 水平方向の配置を表す文字列——`"general"` |
     `"left"` | `"center"` | `"right"` | `"fill"` | `"justify"` |
-    `"centerContinuous"` | `"distributed"`. Always present (unlike
-    `numberFormat` below, `"general"` is itself a meaningful value, not
-    "nothing to report").
-  - `numberFormat`: the resolved format code as a string (e.g. `"0%"`,
-    `"yyyy-mm-dd"`), covering both the built-in numFmtId table
-    (ECMA-376 §18.8.30) and custom `<numFmt>` codes. Omitted when the
-    format is `"General"` (no special formatting to report).
-  - `fillFgColor`/`fillBgColor`: the cell's fill color, tagged by `type`
-    exactly as `<fgColor>`/`<bgColor>` specify it — `{"type": "rgb",
+    `"centerContinuous"` | `"distributed"`。常に存在します(後述の `numberFormat` と異なり、`"general"` 自体が意味のある値であり「報告すべき情報なし」ではないため)。
+  - `numberFormat`: 解決済みの書式コードを文字列で表したもの(例: `"0%"`、`"yyyy-mm-dd"`)。組み込みnumFmtIdテーブル(ECMA-376 §18.8.30)とカスタム `<numFmt>` コードの両方をカバーします。書式が `"General"` の場合は省略されます(報告すべき特別な書式なし)。
+  - `fillFgColor`/`fillBgColor`: セルの塗りつぶし色。`<fgColor>`/`<bgColor>` が指定するそのままの形で `type` タグ付けされます——`{"type": "rgb",
     "value": "FFFF0000"}` | `{"type": "theme", "value": {"index": 4,
-    "tint": -0.25}}` | `{"type": "indexed", "value": 64}`. Kept in this
-    raw, unresolved form rather than converted to a final displayed RGB
-    value: exceldiff's output is for diffing, so knowing *that* a fill
-    color changed doesn't require knowing what it actually renders as.
-    Omitted when the fill has no foreground/background color at all. When
-    the actual displayed color *is* needed, `resolve_color` converts any
-    of these three forms to a real RGB value on demand — see
-    [Resolving display colors](#resolving-display-colors) below.
+    "tint": -0.25}}` | `{"type": "indexed", "value": 64}`。最終的な表示RGB値に変換せず、この生の未解決形式のまま保持しています。exceldiffの出力は差分検出が主目的であり、塗りつぶし色が*変わったこと*を知るのに実際どんな色に見えるかを知る必要はないためです。塗りつぶしに前景/背景色が全く無い場合は省略されます。実際の表示色が必要な場合は、`resolve_color` がこの3形式のいずれもオンデマンドで実RGB値に変換します——後述の[表示色の解決](#表示色の解決)参照。
   - `borders`: `{"top": bool, "right": bool, "bottom": bool, "left": bool}`
-    — whether each side carries a border at all (line style/weight/color
-    are not reported; `<diagonal>` is not tracked). Omitted entirely when
-    no side has one, the same "nothing to report" treatment as
-    `fillFgColor`/`fillBgColor` — never emitted as all-`false`.
-- `hyperlink` is present only when the cell carries one (omitted
-  otherwise, not emitted as `"hyperlink": {}`): `{"target": "...",
-  "location": "...", "tooltip": "..."}`, each field itself omitted when
-  absent. `target` is the resolved external URL or internal part path
-  (from the worksheet's own relationships); `location` is an in-workbook
-  jump (e.g. `"Sheet2!A1"`) present on internal hyperlinks instead of, or
-  alongside, `target`. Kept raw, exactly like `fillFgColor`/`fillBgColor`
-  — the target/location string is never checked for existence and never
-  fetched, so a hyperlink pointing at a since-deleted sheet or a dead URL
-  still round-trips unchanged (diffing, not following, is the point). A
-  `ref` spanning multiple cells (`<hyperlink ref="A1:B1">`) attaches
-  independently to every cell in the range that already carries a value
-  or style of its own; a cell with no value/style/hyperlink of its own is
-  never materialized, even inside such a range.
-- `images` is the sheet's cell-anchored embedded images (always present,
-  even as an empty array — unlike `style`, which is omitted per-cell when
-  absent). See [Embedded images](#embedded-images) below for its shape.
+    ——各辺に罫線があるかどうか(線のスタイル/太さ/色は報告されません。`<diagonal>` も追跡しません)。どの辺にも罫線が無い場合は完全に省略されます。`fillFgColor`/`fillBgColor` と同じ「報告すべき情報なし」の扱いで、全て`false`として出力されることはありません。
+- `hyperlink` はセルがハイパーリンクを持つ場合のみ存在します(それ以外は省略され、`"hyperlink": {}` として出力されることはありません): `{"target": "...",
+  "location": "...", "tooltip": "..."}`、各フィールドは無い場合それぞれ省略されます。`target` は解決済みの外部URLまたは内部パーツパス(ワークシート自身のリレーションシップから)です。`location` はワークブック内ジャンプ(例: `"Sheet2!A1"`)で、内部ハイパーリンクで `target` の代わりに、またはそれと一緒に存在します。`fillFgColor`/`fillBgColor` と同様に生のまま保持しています——target/location文字列は存在確認もフェッチも一切行わないため、削除済みシートや無効なURLを指すハイパーリンクもそのまま無変換で往復します(追跡ではなく差分検出が目的です)。複数セルにまたがる `ref`(`<hyperlink ref="A1:B1">`)は、その範囲内で既に値かスタイルを持つ各セルへ独立に紐付きます。値・スタイル・ハイパーリンクのいずれも持たないセルは、そのような範囲内であっても実体化されません。
+- `images` はシートのセル固定の埋め込み画像です(`style` と異なり、無い場合も空配列として常に存在します)。形については後述の[埋め込み画像](#埋め込み画像)参照。
 
-A second real example — every `CellValue` variant in one row
-(`tests/fixtures/normal/basic_types.xlsx`; cells re-ordered by column here
-for readability, since actual order is unspecified):
+2つ目の実例——1行に全ての `CellValue` バリアントを持つケース(`tests/fixtures/normal/basic_types.xlsx`。可読性のため列順に並べ替えていますが、実際の順序は不定です):
 
 ```json
 {
@@ -209,14 +126,10 @@ for readability, since actual order is unspecified):
 }
 ```
 
-(Column 4 is a date cell — its `numberFormat` comes from the cell's
-`<xf numFmtId="...">`, resolved against `xl/styles.xml`'s built-in/custom
-`<numFmt>` table; `openpyxl`'s default date format is `"yyyy-mm-dd"`.)
+(列4は日付セルです——`numberFormat` はセルの `<xf numFmtId="...">` から、`xl/styles.xml` の組み込み/カスタム `<numFmt>` テーブルに対して解決されます。`openpyxl` の既定日付書式は `"yyyy-mm-dd"` です。)
 
-A third real example — a sheet that does declare `<cols>`
-(`tests/fixtures/normal.rs`'s `column_widths()`: `<col min="1" max="3"
-width="12.5"/>`, `<col min="5" max="5" width="30"/>`, and
-`<sheetFormatPr defaultColWidth="9.1"/>`):
+3つ目の実例——`<cols>` を宣言しているシート(`tests/fixtures/normal.rs` の `column_widths()`: `<col min="1" max="3"
+width="12.5"/>`、`<col min="5" max="5" width="30"/>`、`<sheetFormatPr defaultColWidth="9.1"/>`):
 
 ```json
 {
@@ -234,16 +147,11 @@ width="12.5"/>`, `<col min="5" max="5" width="30"/>`, and
 }
 ```
 
-Column 4 falls in the gap between the two `columns` ranges, so a cell there
-(none exist in this example) would fall back to `defaultColumnWidth`
-(9.1) rather than either range's `width`.
+列4は2つの `columns` 範囲の間の隙間にあるため、そこにセルがあれば(この例には存在しません)どちらの範囲の `width` でもなく `defaultColumnWidth`(9.1)にフォールバックします。
 
-## Embedded images
+## 埋め込み画像
 
-`images` is a sheet-level array of cell-anchored embedded images
-(`xl/drawings/drawingN.xml`) — real output, from
-`tests/fixtures/complex/embedded_image.xlsx` (one image anchored `B2:E9`
-with a hyperlink; `cells`/`columns` omitted below for brevity):
+`images` はシート単位の、セルに固定された埋め込み画像(`xl/drawings/drawingN.xml`)の配列です——実際の出力例(`tests/fixtures/complex/embedded_image.xlsx` から。`B2:E9` に固定されハイパーリンクを持つ画像が1つ。以下では簡潔さのため `cells`/`columns` を省略しています):
 
 ```json
 {
@@ -261,36 +169,14 @@ with a hyperlink; `cells`/`columns` omitted below for brevity):
 }
 ```
 
-- `anchor` is tagged by `type`: `"twoCell"` (stretches between two cell
-  corners, `from`/`to`) or `"oneCell"` (`from` plus an `ext: {"cx", "cy"}`
-  size in EMU — a `oneCell` anchor has no `to` marker, since its size is
-  independent of any cell boundary). `row`/`col` are 1-based, matching
-  every other cell coordinate this crate emits; `colOff`/`rowOff` are the
-  EMU-unit offset *within* that cell (kept rather than rounded away, so a
-  diff can distinguish an image nudged a few pixels from one that hasn't
-  moved).
-- `target` is the embedded media part's resolved path (e.g.
-  `"xl/media/image1.png"`) — never the image's own bytes, which stay
-  entirely out of scope (a diff-oriented tool has no use for pixel data,
-  and reading it would scale memory use with image count rather than
-  cell count).
-- `hyperlink` is the image's own hyperlink (`a:hlinkClick`), distinct from
-  a cell hyperlink (a `JsonCell`-level field — see above). Omitted when the
-  image carries none. An `Internal` (in-package) target resolves to a
-  ZIP-entry-name-equivalent path the same way `target` does; an
-  `External` one (a URL, as above) is kept verbatim.
-- Grouped images (`<xdr:grpSp>`) resolve each contained `<xdr:pic>`'s
-  anchor relative to its enclosing group, flattened into this same
-  per-sheet `images` array — no separate group structure is exposed.
+- `anchor` は `type` でタグ付けされます: `"twoCell"`(2つのセル角の間に伸びる、`from`/`to`)または `"oneCell"`(`from` に加えEMU単位のサイズ `ext: {"cx", "cy"}`——`oneCell` アンカーはどのセル境界にもサイズが依存しないため `to` マーカーを持ちません)。`row`/`col` は1始まりで、本crateが出力する他の全セル座標と同じです。`colOff`/`rowOff` はそのセル*内*でのEMU単位オフセットです(丸めて捨てずに保持することで、数ピクセルずれた画像と全く動いていない画像を差分で区別できます)。
+- `target` は埋め込みメディアパーツの解決済みパス(例: `"xl/media/image1.png"`)です——画像自体のバイト列は完全にスコープ外です(差分検出ツールにピクセルデータは不要であり、読み込むとメモリ使用量がセル数ではなく画像数にスケールしてしまいます)。
+- `hyperlink` は画像自身のハイパーリンク(`a:hlinkClick`)で、セルのハイパーリンク(`JsonCell` レベルのフィールド。前述)とは別物です。画像がハイパーリンクを持たない場合は省略されます。`Internal`(パッケージ内)ターゲットは `target` と同じ方法でZIPエントリ名相当のパスへ解決され、`External`(上記のようなURL)はそのまま保持されます。
+- グループ化された画像(`<xdr:grpSp>`)は、内包する各 `<xdr:pic>` のアンカーを所属グループ相対で解決した上で、同じシート単位の `images` 配列に平坦化されます——別途グループ構造が公開されることはありません。
 
-## Resolving display colors
+## 表示色の解決
 
-`fillFgColor`/`fillBgColor` above are kept raw because exceldiff's
-primary purpose is diffing, not rendering — but when a caller does need
-to know the actual color a cell displays as (not just whether it
-changed), `resolve_color` converts any of the three `ColorRef` forms
-(`rgb` / `theme`+`tint` / `indexed`) into a real `Rgb { r, g, b }` value
-on demand:
+上記の `fillFgColor`/`fillBgColor` は、exceldiffの主目的が描画ではなく差分検出であるため生のまま保持されています——しかし、呼び出し側がセルの実際の表示色を(変化したかどうかだけでなく)知る必要がある場合、`resolve_color` が3つの `ColorRef` 形式(`rgb` / `theme`+`tint` / `indexed`)のいずれもオンデマンドで実際の `Rgb { r, g, b }` 値に変換します:
 
 ```rust
 use exceldiff::{parse_workbook, resolve_color, CellRef};
@@ -301,125 +187,61 @@ let cell = sheet.get(CellRef { row: 1, col: 1 }).unwrap();
 
 if let Some(color_ref) = cell.style.as_ref().and_then(|s| s.fill_fg_color.as_ref()) {
     let rgb = resolve_color(color_ref, workbook.theme());
-    // e.g. Some(Rgb { r: 0x4F, g: 0x81, b: 0xBD })
+    // 例: Some(Rgb { r: 0x4F, g: 0x81, b: 0xBD })
 }
 ```
 
-- `theme`+`tint` references resolve against the workbook's
-  `xl/theme/theme{N}.xml` `<clrScheme>` (`Workbook::theme()`), applying
-  ECMA-376's tint luminance correction, and return `None` if the
-  workbook has no theme part at all or the referenced slot index is out
-  of range.
-- `indexed` references resolve against the legacy ECMA-376 64-color
-  palette; `indexed=64`/`65` (the "system foreground"/"system
-  background" special values) resolve to fixed `#000000`/`#FFFFFF`,
-  independent of any OS system palette (this crate runs headless).
-- `resolve_color` never panics on malformed input (an out-of-range theme
-  index, a non-finite `tint`, malformed hex) — it returns `None` instead.
-- `xl/theme/theme{N}.xml` is read and parsed only if the workbook's
-  stylesheet actually references a theme color at all
-  ("pay-for-what-you-use") — a workbook that never uses one pays zero
-  added I/O or CPU cost for this feature, even when the part is present
-  in the file.
+- `theme`+`tint` 参照は、ワークブックの `xl/theme/theme{N}.xml` の `<clrScheme>`(`Workbook::theme()`)に対して解決され、ECMA-376のtint輝度補正を適用します。ワークブックにテーマパーツが全く無い場合や、参照先のスロットインデックスが範囲外の場合は `None` を返します。
+- `indexed` 参照はレガシーなECMA-376の64色パレットに対して解決されます。`indexed=64`/`65`(「システム前景色」/「システム背景色」の特殊値)は、OSのシステムパレットに依存せず固定の `#000000`/`#FFFFFF` に解決されます(本crateはヘッドレスで動作するため)。
+- `resolve_color` は不正な入力(範囲外のテーマインデックス、非有限な `tint`、不正な16進数)に対してパニックせず、代わりに `None` を返します。
+- `xl/theme/theme{N}.xml` は、ワークブックのスタイルシートが実際にテーマ色を参照している場合のみ読み込み・パースされます(「使う分だけ払う」)——一度もテーマ色を使わないワークブックは、ファイル内にパーツが存在していてもこの機能のI/O・CPUコストを一切払いません。
 
-## Architecture
+## アーキテクチャ
 
-1. **Relationship resolution** — parse `_rels` parts to build a routing map
-   from sheet `r:id` to worksheet file path, then discard the intermediate
-   data immediately.
-2. **Sanitization** — guard against zip bombs, zip-slip path traversal, and
-   XXE before any untrusted content is parsed.
-3. **Streaming parse** — a SAX-style reader processes `<sheetData>` one
-   `<row>` at a time, without holding the sheet's full XML DOM in memory.
-4. **Resolution** — shared strings (`t="s"`) and cell styles are resolved
-   against the SST/stylesheet, and `<mergeCells>` ranges are resolved
-   against the collected cells after the stream pass completes.
-5. **JSON output** — the resolved data model is serialized to structured
-   JSON (including `row_span`/`col_span` for merged cells) for downstream
-   consumption, as a separate step from the primary `Workbook`-returning API.
+1. **リレーションシップ解決** — `_rels` パーツをパースし、シートの `r:id` からワークシートファイルパスへのルーティングマップを構築した上で、中間データを即座に破棄します。
+2. **サニタイズ** — 信頼できないコンテンツをパースする前に、zip bomb・zip-slipパストラバーサル・XXEから防御します。
+3. **ストリームパース** — SAXスタイルのリーダーが `<sheetData>` を `<row>` 単位で処理し、シート全体のXML DOMをメモリ上に保持しません。
+4. **解決** — 共有文字列(`t="s"`)とセルスタイルはSST/スタイルシートに対して解決され、`<mergeCells>` 範囲はストリームパス完了後に収集済みセルに対して解決されます。
+5. **JSON出力** — 解決済みのデータモデルは(結合セル用の `row_span`/`col_span` を含む)構造化JSONへシリアライズされます。これは主要な `Workbook` を返すAPIとは別の独立したステップです。
 
-Core requirements driving the design:
+設計を駆動する中核要件:
 
-- **Sparse storage** — cells are kept in a coordinate-keyed map, never a
-  dense 2D array, so sparse "grid-paper" sheets stay cheap to hold in memory.
-- **Merge-cell transparency** — any coordinate inside a merged range
-  resolves (via an O(1) bounding-box pre-check plus a geometric containment
-  scan over the sheet's merged regions) to the same value and merge
-  metadata as the range's anchor cell.
-- **I/O and domain logic stay separated** — XML/ZIP handling (`container/`,
-  `parse/`) never mixes with the resolution logic (`resolve/`), which
-  operates purely on in-memory data and needs no I/O to unit test.
+- **疎なストレージ** — セルは密な2次元配列ではなく座標キー付きマップに保持されるため、疎な「方眼紙」シートもメモリ上で低コストに保持できます。
+- **結合セルの透過性** — 結合範囲内の任意の座標は(バウンディングボックスによるO(1)事前チェックとシートの結合範囲群に対する幾何的包含スキャンにより)、その範囲の起点セルと同じ値・結合メタデータに解決されます。
+- **I/Oとドメインロジックの分離を維持** — XML/ZIP処理(`container/`、`parse/`)は解決ロジック(`resolve/`)と決して混在しません。解決ロジックはインメモリデータのみで純粋に動作し、単体テストにI/Oを必要としません。
 
-The module layout (see
-[docs/design/architecture.en.md](docs/design/architecture.en.md) for the
-full breakdown of each file's responsibility):
+モジュール構成(各ファイルの責務の完全な内訳は [docs/design/architecture.md](docs/design/architecture.md) 参照):
 
 ```text
 src/
-  lib.rs        # public API entry point (parse_workbook, parse_workbook_reader, to_json_string, ...)
-  error.rs      # crate-wide error type
-  pipeline.rs   # orchestrates the 5-phase pipeline and resource lifetimes
+  lib.rs        # 公開APIのエントリポイント (parse_workbook, parse_workbook_reader, to_json_string, ...)
+  error.rs      # クレート全体の共通エラー型
+  pipeline.rs   # 5フェーズ・パイプラインとリソースの生存期間のオーケストレーション
 
-  container/    # ZIP (OPC) extraction, zip-bomb/zip-slip guarding
-  parse/        # XML parsing (quick-xml usage is confined here), XXE mitigation
-  model/        # pure data structures (Workbook, Sheet, Cell, CellValue, ...)
-  resolve/      # shared-string/style/merge-cell resolution + on-demand color resolution, I/O-independent
+  container/    # ZIP (OPC) 展開、zip-bomb/zip-slip防御
+  parse/        # XMLパース (quick-xml の使用はここに閉じ込める)、XXE対策
+  model/        # 純粋なデータ構造 (Workbook, Sheet, Cell, CellValue, ...)
+  resolve/      # 共有文字列/スタイル/結合セルの解決 + オンデマンドの色解決、I/O非依存
 
-  json.rs       # serializes a resolved Workbook to JSON
+  json.rs       # 解決済み Workbook を JSON へシリアライズ
 ```
 
-## OOXML parts covered
+## 対応OOXMLパーツ
 
 - `xl/_rels/workbook.xml.rels`
-- `xl/workbook.xml` (including `<workbookPr date1904="...">`, needed to
-  resolve a date/time cell's serial value under the 1900 vs. 1904 date
-  system)
-- `xl/sharedStrings.xml` (rich-text run concatenation, `xml:space="preserve"`
-  handling, CDATA runs, and the `_x000D_` escape Excel uses for a literal CR)
-- `xl/styles.xml` (font size/bold, horizontal alignment, wrap text,
-  number format — both the built-in numFmtId table (ECMA-376 §18.8.30) and
-  custom `<numFmt>` codes — fill color, kept in its raw `rgb`/
-  `theme`+`tint`/`indexed` form (see
-  [Resolving display colors](#resolving-display-colors) for converting it
-  to a real RGB value), and border presence per side — line style/weight/
-  color and `<diagonal>` are not read)
-- `xl/theme/theme{N}.xml` (`<clrScheme>`'s 12 colors — read only when a
-  style actually references a theme color; see
-  [Resolving display colors](#resolving-display-colors))
-- `xl/worksheets/sheetX.xml` (`<sheetData>` — including `t="d"` ISO 8601
-  date cells alongside the numeric-serial dates every other date/time
-  cell uses, both unified into the same `"dateTime"` output —
-  `<mergeCells>`, and `<hyperlinks>`, kept raw/unresolved — see the
-  `hyperlink` field above)
-- `xl/worksheets/_rels/sheetX.xml.rels` (resolves a `<hyperlink r:id="...">`
-  to its raw Target string — read only when the sheet declares at least
-  one hyperlink with an `r:id`; a `location`-only internal hyperlink never
-  triggers this read)
-- `xl/drawings/drawingN.xml` and its own `_rels` (cell-anchored embedded
-  images — anchor geometry, the embedded media's resolved path, and the
-  image's own hyperlink, including images nested in `<xdr:grpSp>` groups;
-  see [Embedded images](#embedded-images) below)
+- `xl/workbook.xml`(`<workbookPr date1904="...">` を含む。日付/時刻セルのシリアル値を1900年方式/1904年方式のどちらで解決するか判定するのに必要)
+- `xl/sharedStrings.xml`(リッチテキストランの連結、`xml:space="preserve"` の処理、CDATAラン、Excelがリテラルな改行に使う `_x000D_` エスケープ)
+- `xl/styles.xml`(フォントサイズ/太字、水平方向配置、折り返し、書式コード——組み込みnumFmtIdテーブル(ECMA-376 §18.8.30)とカスタム `<numFmt>` コード両方——塗りつぶし色(生の `rgb`/`theme`+`tint`/`indexed` 形式のまま保持。実RGB値への変換は前述の[表示色の解決](#表示色の解決)参照)、辺ごとの罫線有無——線のスタイル/太さ/色や `<diagonal>` は読みません)
+- `xl/theme/theme{N}.xml`(`<clrScheme>` の12色。スタイルが実際にテーマ色を参照している場合のみ読み込みます。前述の[表示色の解決](#表示色の解決)参照)
+- `xl/worksheets/sheetX.xml`(`<sheetData>`——他の全ての日付/時刻セルが使う数値シリアル日付と並んで、`t="d"` のISO 8601日付セルも同じ `"dateTime"` 出力に統一されます——`<mergeCells>`、および生のまま未解決で保持する `<hyperlinks>`(前述の `hyperlink` フィールド参照))
+- `xl/worksheets/_rels/sheetX.xml.rels`(`<hyperlink r:id="...">` を生のTarget文字列に解決します——シートが `r:id` 付きのハイパーリンクを少なくとも1つ宣言している場合のみ読み込みます。`location` のみの内部ハイパーリンクではこの読み込みは発生しません)
+- `xl/drawings/drawingN.xml` とその `_rels`(セルに固定された埋め込み画像——アンカー形状、埋め込みメディアの解決済みパス、画像自身のハイパーリンク。`<xdr:grpSp>` グループにネストした画像を含む。後述の[埋め込み画像](#埋め込み画像)参照)
 
-`[Content_Types].xml` is not read at all — the workbook part's actual path
-is resolved via `_rels/.rels`'s `officeDocument` relationship rather than
-assumed to be the conventional `xl/workbook.xml` (Issue #55), but that
-resolution never cross-checks a part's declared Content-Type against
-`[Content_Types].xml` (see
-[pipeline.en.md Open Question 3](docs/design/pipeline.en.md) for the
-rationale and the strict-OPC-conformance tradeoff this makes).
+`[Content_Types].xml` は一切読みません——ワークブックパーツの実際のパスは、慣習的な `xl/workbook.xml` と仮定するのではなく `_rels/.rels` の `officeDocument` リレーションシップ経由で解決します(Issue #55)が、この解決はパーツの宣言されたContent-Typeを `[Content_Types].xml` と突き合わせて検証することは一切ありません(この判断の理由と厳密なOPC準拠とのトレードオフについては [pipeline.md 未決事項3](docs/design/pipeline.md) 参照)。
 
-## Benchmarks
+## ベンチマーク
 
-The benchmarking was done using [`hyperfine`](https://github.com/sharkdp/hyperfine)
-with `--warmup 3` on an `Apple M2 Pro` running `macOS 26.6.1`, comparing
-`exceldiff` (via `parse_workbook`) against
-[`calamine`](https://github.com/tafia/calamine) `0.26.1` (via
-`worksheet_range`) — a widely-used pure-Rust `.xlsx` reader — both built in
-release mode, on `tests/fixtures/complex/extreme_sparse.xlsx`: a real,
-openpyxl-authored file where only two cells are populated, `A1` and
-`XFD1048576` (Excel's actual maximum: row 1,048,576, column 16,384) — the
-sparse "grid-paper Excel" shape this library is purpose-built for (see
-[Motivation](#motivation)).
+ベンチマークは [`hyperfine`](https://github.com/sharkdp/hyperfine) を用い、`macOS 26.6.1` 上の `Apple M2 Pro` で `--warmup 3` オプションで実施しました。`exceldiff`(`parse_workbook` 経由)と、広く使われている純Rust製 `.xlsx` リーダーである [`calamine`](https://github.com/tafia/calamine) `0.26.1`(`worksheet_range` 経由)をどちらもreleaseビルドで比較しています。対象は `tests/fixtures/complex/extreme_sparse.xlsx`——実際にopenpyxlで作成した、`A1` と `XFD1048576`(Excelの実際の最大値: 行1,048,576、列16,384)の2セルにしか値が入っていないファイルです。これは本ライブラリが対象とする、疎な「方眼紙Excel」の形そのものです([開発動機](#開発動機)参照)。
 
 ```bash
 exceldiff
@@ -427,55 +249,22 @@ exceldiff
   Range (min … max):     2.1 ms …  18.3 ms    410 runs
 ```
 
-`calamine` isn't shown as a completed hyperfine run because it never
-completed one: across repeated runs it was killed by the OS for excessive
-memory use after roughly 23-24 seconds, having grown to multiple GB of
-resident memory. The cause is structural, not a fluke: `calamine`'s
-`Range<T>` (the type `worksheet_range` returns) always backs onto a single
-dense `Vec<T>` sized to the *bounding box* of the populated cells —
-`Range::from_sparse` (`calamine` `0.26.1`, `src/lib.rs`) computes
-`cols * rows` from that bounding box and allocates `vec![T::default();
-cols * rows]` regardless of how few cells are actually non-empty. Here the
-two populated corners span the full sheet, so that bounding box *is*
-1,048,576 x 16,384 = 17,179,869,184 elements, and the allocation attempt
-is what gets the process killed.
+`calamine` は完走したhyperfineの実行として示されていません。なぜなら一度も完走しなかったからです: 繰り返し実行するたびに、常駐メモリが数GBまで膨れ上がった末、約23〜24秒後にOSにより過剰メモリ使用でkillされました。原因は偶然ではなく構造的なものです: `calamine` の `Range<T>`(`worksheet_range` が返す型)は常に、値が入っているセルの*バウンディングボックス*サイズに合わせた単一の密な `Vec<T>` を裏側に持ちます——`Range::from_sparse`(`calamine` `0.26.1` の `src/lib.rs`)はこのバウンディングボックスから `cols * rows` を計算し、実際に値が入っているセルがどれだけ少なくても `vec![T::default();
+cols * rows]` を確保します。今回は値の入った2つの角がシート全体に及んでいるため、そのバウンディングボックスは 1,048,576 x 16,384 = 17,179,869,184 要素そのものであり、この確保の試みがプロセスをkillさせる原因です。
 
-`exceldiff` doesn't hit this because cells are kept in a coordinate-keyed
-`BTreeMap<CellRef, Cell>` (see [Architecture](#architecture) above) sized to
-the number of populated cells, never to the sheet's addressable bounding
-box — so `extreme_sparse.xlsx` costs `exceldiff` exactly 2 map entries.
+`exceldiff` がこの問題に陥らないのは、セルが座標キー付きの `BTreeMap<CellRef, Cell>`(前述の[アーキテクチャ](#アーキテクチャ)参照)に、シートのアドレス可能なバウンディングボックスではなく実際に値が入っているセル数に応じたサイズで保持されているためです——そのため `extreme_sparse.xlsx` は `exceldiff` にとって正確に2つのマップエントリのコストしかかかりません。
 
-The same run, visualized: resident memory (`ps -o rss`, sampled every
-100 ms) for each process from launch to exit —
+同じ実行を可視化したもの: 各プロセスの起動から終了までの常駐メモリ(`ps -o rss` を100ms間隔でサンプリング)——
 
-![exceldiff finishes in well under a second at 32 KB resident; calamine climbs to 2.35 GB over 32 seconds before the OS kills it](docs/benchmarks/extreme_sparse_memory.svg)
+![exceldiffは32KB常駐のまま1秒未満で完了する一方、calamineは32秒かけて2.35GBまで増加した末にOSにkillされる](docs/benchmarks/extreme_sparse_memory.svg)
 
-`exceldiff`'s line is flat at 32 KB because there's nothing to allocate
-beyond the 2 map entries above; `calamine`'s climbs — noisily, as `Vec`
-reallocates while growing — until the OS sends `SIGKILL` at 32.2 s, peaking
-at 2.35 GB resident on a machine with roughly 58 MB free at the start of
-the run (16 GB total). Sampled at 100 ms granularity via a shell loop
-polling `ps`, not a profiler, so brief spikes between samples aren't
-captured and the true peak may be marginally higher than shown.
+`exceldiff` の線が32KBでフラットなのは、上記の2マップエントリ以外に確保するものが何も無いためです。`calamine` の線は(`Vec` が拡張のたびに再確保するためノイズを伴いながら)上昇し続け、32.2秒でOSが `SIGKILL` を送るまでに常駐メモリのピークは2.35GBに達しました(実行開始時点の空きメモリは約58MB、総メモリ16GBのマシン)。100ms粒度でシェルループから `ps` をポーリングして採取したものでありプロファイラではないため、サンプル間の短いスパイクは捕捉できておらず、実際のピークは示した値よりわずかに高い可能性があります。
 
-### Sparse merged-cell arrangements
+### 疎な結合セル配置
 
-A merge-heavy file could hit an unrelated cost even while respecting every
-existing limit ([Issue #43](https://github.com/MinamiyamaKotaro/xlsxparser/issues/43)):
-two 1x1 merges placed at opposite corners of a sheet stretch the merged-cell
-bounding box to cover virtually the whole sheet, so every other cell fell
-back to a linear scan over every merged region when resolving its origin —
-turning a legitimate file into an O(cells × merged regions) cost during JSON
-generation. `Sheet::finalize_merges` closes this with a single sweep-line
-pass, independent of how the merges are arranged in space (see
-[docs/design/model/sheet.md](docs/design/model/sheet.md)'s "修正:
-`finalize_merges`" section for the full story).
+既存の全ての上限を守っていても、結合セルの多いファイルは無関係な別のコストにぶつかることがあります([Issue #43](https://github.com/MinamiyamaKotaro/xlsxparser/issues/43)): シートの対角にある2つの1x1結合を配置するだけで、結合セルのバウンディングボックスがシートのほぼ全体を覆うように広がり、それ以外の全セルが起点解決の際に結合範囲全体への線形スキャンにフォールバックしてしまう——正当なファイルがJSON生成時にO(セル数 × 結合範囲数)のコストになってしまう問題です。`Sheet::finalize_merges` は、結合が空間上どう配置されていても影響を受けない単一のスイープラインパスでこれを解決します(詳細な経緯は [docs/design/model/sheet.md](docs/design/model/sheet.md) の「修正: `finalize_merges`」節参照)。
 
-Measured the same way as above (`hyperfine`, `--warmup 1`, same machine), on
-a generated 838 KB file with 300,000 distinct populated cells and 20,000
-merges (`resolve::merge::MAX_MERGE_REGIONS`, the current cap) arranged to
-maximize the bounding box (`tests/fixtures/security.rs`'s
-`sparse_merge_bounding_box_amplification`):
+上記と同じ方法(`hyperfine`、`--warmup 1`、同一マシン)で、300,000個の値入りセルと20,000件の結合(`resolve::merge::MAX_MERGE_REGIONS`、現在の上限)をバウンディングボックスが最大化するよう配置して生成した838KBのファイル(`tests/fixtures/security.rs` の `sparse_merge_bounding_box_amplification`)で計測:
 
 ```bash
 before (pre-#43 fix, v0.10.0)
@@ -485,82 +274,45 @@ after (this fix, v0.10.1)
   Time (mean ± σ):     600.6 ms ±   7.9 ms    4 runs
 ```
 
-### Real-world merge-heavy worksheet vs. calamine
+### 実際の結合セルの多いワークシート vs. calamine
 
-> **Note: Different Goals, Different Results**
+> **注: 目的が異なれば結果も異なります**
 >
-> `calamine` specializes in raw data extraction, so it ignores blank cells
-> that carry only styling. `exceldiff`, by contrast, aims for complete
-> reproduction of appearance and diffs, so it keeps every blank cell that
-> carries nothing but a background fill or a border. In the real-world-file
-> benchmark below, note that the two libraries are extracting a fundamentally
-> different amount of information (resolution).
+> `calamine` は生データ抽出に特化しており、スタイルのみを持つ空白セルは無視します。対照的に `exceldiff` は見た目と差分の完全な再現を目指しているため、背景の塗りつぶしや罫線しか持たない空白セルも全て保持します。以下の実ファイルベンチマークでは、2つのライブラリが本質的に異なる量の情報(解像度)を抽出していることに注意してください。
 
-The two benchmarks above are synthetic stress tests. This one is a real,
-hand-authored file: `tests/fixtures/other/standard_skill_sheet.xlsx`, a
-skills-matrix spreadsheet with 155 merged cells arranged irregularly (`A1:D11`,
-`H3:Q3`, `J36:J39`, ...) — the kind of layout that shows up in an actual
-business template, not a stress-test generator.
+上記2つのベンチマークは合成的なストレステストです。こちらは実際に手作業で作成されたファイルです: `tests/fixtures/other/standard_skill_sheet.xlsx`——`A1:D11`、`H3:Q3`、`J36:J39` など不規則に配置された155個の結合セルを持つスキルマトリクス形式のスプレッドシートで、ストレステスト生成器ではなく実際の業務テンプレートに現れるようなレイアウトです。
 
-Comparing `exceldiff` (`parse_workbook` + `iter_cells`) against `calamine`
-`0.36.1` (`worksheet_range` + `merge_cells_by_sheet_name`, walked and
-merge-resolved the same way), 500 parses averaged in release mode
-(`poc/skillsheet-bench-poc/`, a throwaway comparison crate — `calamine` is
-not, and was never added as, a dependency of the published package):
+`exceldiff`(`parse_workbook` + `iter_cells`)と `calamine` `0.36.1`(`worksheet_range` + `merge_cells_by_sheet_name`。同じ方法で走査・結合解決)を比較し、releaseビルドで500回のパースを平均した結果です(`poc/skillsheet-bench-poc/` という使い捨ての比較用crateで計測——`calamine` は公開パッケージの依存関係には追加されておらず、今後も追加されません):
 
 | | `exceldiff` | `calamine` |
 |---|---|---|
-| wall time / parse | 16.96 ms | 7.38 ms |
-| instructions / parse | 200,474,727 | 84,912,087 |
-| peak memory footprint | 6.73 MB | 2.38 MB |
-| cells walked | 25,517 | 663 |
-| **time / cell walked** | **665 ns** | 11.13 µs |
-| **instructions / cell walked** | **7,858** | 128,073 |
-| block I/O (read + write ops, 500 iterations) | 0 | 0 |
+| パースあたりの実行時間 | 16.96 ms | 7.38 ms |
+| パースあたりの命令数 | 200,474,727 | 84,912,087 |
+| ピークメモリ使用量 | 6.73 MB | 2.38 MB |
+| 走査したセル数 | 25,517 | 663 |
+| **走査セルあたりの時間** | **665 ns** | 11.13 µs |
+| **走査セルあたりの命令数** | **7,858** | 128,073 |
+| ブロックI/O(read+write操作、500回分) | 0 | 0 |
 
-![exceldiff vs calamine, scope: exceldiff walked 25,517 cells, calamine's used-range detection saw only 663 — 38.5x the work, because exceldiff retains style-only blank cells that calamine never sees](docs/benchmarks/merge_cell_benchmark_scope.png)
+![exceldiff vs calamine、走査範囲: exceldiffは25,517セルを走査したが、calamineの使用範囲検出では663セルしか見えなかった——38.5倍の作業量。exceldiffはcalamineが決して見ないスタイルのみの空白セルも保持するため](docs/benchmarks/merge_cell_benchmark_scope.png)
 
-Read as a straight wall-clock race, this looks like a 2.3x loss for
-`exceldiff`. It isn't the same amount of work: `exceldiff` walked 25,517
-cells, `calamine`'s used-range detection saw only 663. The sheet's real data
-is 38 rows, but whoever authored it in Excel applied fill/border styling
-roughly 1,500 rows deep — `exceldiff` keeps every one of those style-bearing
-blank cells (retaining exactly this kind of cell-level state is the library's
-purpose; see [Motivation](#motivation)), while `calamine`'s `Range<Data>` has
-no concept of style and never sees them.
+単純な実時間の比較として読むと、`exceldiff` が2.3倍遅く見えます。しかしこれは同じ量の作業ではありません: `exceldiff` は25,517セルを走査し、`calamine` の使用範囲検出は663セルしか見ていません。このシートの実データは38行分ですが、Excelで作成した人が塗りつぶし/罫線のスタイルを約1,500行分まで適用していました——`exceldiff` はそのスタイルを持つ空白セルを全て保持します(このようなセル単位の状態を正確に保持することこそが本ライブラリの目的です。[開発動機](#開発動機)参照)。一方 `calamine` の `Range<Data>` はスタイルという概念を持たず、それらを一切見ません。
 
-Normalized per cell actually walked, the result flips: `exceldiff` costs
-665 ns and 7,858 instructions per cell against `calamine`'s 11.13 µs and
-128,073 instructions per cell — roughly **16.7x cheaper per cell**.
-`calamine`'s larger per-cell figure isn't inefficiency; it's fixed
-zip-decompression and XML-parse overhead amortized over a denominator 38x
-smaller. On the other two axes both held up cleanly: peak RSS stayed flat
-across all 500 iterations for both (no leak), and `/usr/bin/time -l`'s block
-I/O counters read zero for both, confirming neither ever spills to a temp
-file (see [Architecture](#architecture)).
+実際に走査したセルあたりで正規化すると、結果は逆転します: `exceldiff` はセルあたり665ns・7,858命令であるのに対し、`calamine` はセルあたり11.13µs・128,073命令——およそ**セルあたり16.7倍安価**です。`calamine` のセルあたりの数値が大きいのは非効率だからではなく、38倍小さい分母に固定のzip展開・XMLパースのオーバーヘッドが償却されているためです。残る2つの軸もどちらもクリーンでした: ピークRSSは500回の全イテレーションを通じてどちらもフラットのまま(リークなし)、`/usr/bin/time -l` のブロックI/Oカウンタもどちらもゼロで、どちらも一時ファイルへスピルしていないことを確認しています([アーキテクチャ](#アーキテクチャ)参照)。
 
-![exceldiff vs calamine, wall-clock time: exceldiff 16.96ms/parse (25,517 cells) vs calamine 7.38ms/parse (663 cells) — but normalized per cell walked, exceldiff is about 16.7x cheaper (665ns vs 11.13µs)](docs/benchmarks/merge_cell_benchmark_time.png)
+![exceldiff vs calamine、実時間: exceldiffは16.96ms/パース(25,517セル)、calamineは7.38ms/パース(663セル)——しかし走査セルあたりで正規化すると、exceldiffは約16.7倍安価(665ns対11.13µs)](docs/benchmarks/merge_cell_benchmark_time.png)
 
-## Security notes
+## セキュリティに関する注記
 
-- **Zip Bomb / Zip Slip / XXE**: guarded against at parse time (see
-  [Architecture](#architecture) above and
-  [docs/security/design-review.md](docs/security/design-review.md) for the
-  full analysis).
-- **CSV / formula injection**: cell string values (including formula-computed
-  result strings) pass through unchanged, with no escaping at any stage —
-  this is safe as JSON output, but callers who re-export parsed values into
-  CSV or another spreadsheet format are responsible for their own
-  formula-injection mitigations (e.g. escaping a value that starts with `=`,
-  `+`, `-`, or `@`), since a `.xlsx` input is untrusted and this library
-  performs no rewriting of cell content.
+- **Zip Bomb / Zip Slip / XXE**: パース時に防御しています(前述の[アーキテクチャ](#アーキテクチャ)、および完全な分析は [docs/security/design-review.md](docs/security/design-review.md) 参照)。
+- **CSV / 数式インジェクション**: セルの文字列値(数式の計算結果文字列を含む)は、いかなる段階でもエスケープされず、そのまま通過します——これはJSON出力としては安全ですが、パース結果をCSVや他のスプレッドシート形式へ再出力する呼び出し側は、自身で数式インジェクション対策(`=`、`+`、`-`、`@` で始まる値のエスケープなど)を行う責任があります。`.xlsx` 入力は信頼できないものであり、本ライブラリはセル内容の書き換えを一切行わないためです。
 
-## License
+## ライセンス
 
-This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for details.
+本プロジェクトは GNU Affero General Public License v3.0(AGPL-3.0)の下でライセンスされています。詳細は [LICENSE](LICENSE) ファイルを参照してください。
 
-### Commercial Licensing
+### 商用ライセンス
 
-`exceldiff` is dual-licensed: the AGPL-3.0 terms above apply by default, but if you wish to use this software in a closed-source / proprietary system, or otherwise without the copyleft and network-source-disclosure obligations of the AGPL-3.0, a separate commercial license is available.
+`exceldiff` はデュアルライセンスです: 上記のAGPL-3.0の条件が既定で適用されますが、クローズドソース/プロプライエタリなシステムで、またはAGPL-3.0のコピーレフト・ネットワーク経由でのソース公開義務なしに本ソフトウェアを利用したい場合、別途商用ライセンスをご利用いただけます。
 
-See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) for what a commercial license covers and how to request one.
+商用ライセンスが具体的に何をカバーするか、また申請方法については [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) を参照してください。
