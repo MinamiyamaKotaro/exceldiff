@@ -561,6 +561,6 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 ### Commercial Licensing
 
-If you wish to use this software in a proprietary system or without the copyleft obligations of the AGPL-3.0, commercial licenses are available.
+`exceldiff` is dual-licensed: the AGPL-3.0 terms above apply by default, but if you wish to use this software in a closed-source / proprietary system, or otherwise without the copyleft and network-source-disclosure obligations of the AGPL-3.0, a separate commercial license is available.
 
-Please contact the author via [GitHub Profile](https://github.com/MinamiyamaKotaro) or open an inquiry on [GitHub Discussions](https://github.com/MinamiyamaKotaro/xlsxparser/discussions).
+See [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) for what a commercial license covers and how to request one.
