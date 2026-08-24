@@ -34,7 +34,7 @@ For this reason, this file does **not** port the PoC's 2D LCS alignment as-is, a
 - Walks the union of both sides' sheet names, handling a sheet present on only one side (`Added`/`Deleted`) and a sheet present on both (`Modified` — judging whether visibility changed and/or any cell/merge diffs exist)
 - Computes one sheet's cell diffs via a "merge-join" that advances two iterators over `Sheet::iter_cells`'s `CellRef`-ascending (row-then-col) order in lockstep (`diff_cells`): compares coordinates, and where they match, compares value/style to decide whether `Modified` applies; a coordinate present on only one side is `Added`/`Deleted` directly
 - Computes one sheet's merge diffs (`diff_merges`) by looking up `Sheet::merged_regions()` (a new `pub(crate)` accessor, Issue #8) — a `HashMap<CellRef, MergedRegion>` — keyed by origin coordinate; see below for granularity and complexity
-- **Not responsible for**: the diff result type definitions ([`diff/model.rs`](model.en.md)), SQLite persistence ([`diff/storage.rs`](storage.en.md) — style/merge diffs are not currently persisted, see [Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)), an alignment-based diff that detects row/column insertion (Open Question 1, Issue #4/#5)
+- **Not responsible for**: the diff result type definitions ([`diff/model.rs`](model.en.md)), SQLite persistence ([`diff/storage.rs`](storage.en.md) — style/merge diffs are also persisted now, as of [Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)), an alignment-based diff that detects row/column insertion (Open Question 1, Issue #4/#5)
 
 ## Key Types / Functions (draft)
 

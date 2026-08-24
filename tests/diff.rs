@@ -205,3 +205,41 @@ fn diff_store_round_trips_a_real_parsed_workbook_as_head_json() {
     let expected = exceldiff::to_json_string(&target).unwrap();
     assert_eq!(store.head_json().unwrap(), Some(expected));
 }
+
+#[cfg(feature = "diff-storage")]
+#[test]
+fn diff_store_saves_style_and_merge_diffs_from_a_real_parsed_workbook_without_error() {
+    // Issue #9: `save_diff` must persist `CellDiff::old_style`/`new_style`
+    // and `SheetDiff::merges` (Issue #8) rather than silently dropping
+    // them. `src/diff/storage.rs`'s own unit tests already verify the
+    // persisted column/row content in detail (hand-built `WorkbookDiff`s,
+    // module-private access to the underlying connection); this
+    // complements them by confirming `save_diff` also succeeds — no
+    // `serde_json`/`rusqlite` binding failure — when the style/merge data
+    // comes from the real parse pipeline instead, exactly as
+    // `diff_store_round_trips_a_real_parsed_workbook_as_head_json` above
+    // does for plain value diffs.
+    use exceldiff::DiffStore;
+
+    let (base_bytes, target_bytes) = diff::style_only_change();
+    let base = parse_workbook_reader(Cursor::new(base_bytes)).unwrap();
+    let target = parse_workbook_reader(Cursor::new(target_bytes)).unwrap();
+    let style_diff = diff_workbooks(&base, &target);
+    assert!(style_diff.sheets[0].cells[0].old_style.is_some());
+
+    let mut store = DiffStore::open(":memory:").unwrap();
+    let base_id = store.save_revision("base", false, &base).unwrap();
+    let target_id = store.save_revision("target", true, &target).unwrap();
+    store.save_diff(base_id, target_id, &style_diff).unwrap();
+
+    let (base_bytes, target_bytes) = diff::merge_added();
+    let base = parse_workbook_reader(Cursor::new(base_bytes)).unwrap();
+    let target = parse_workbook_reader(Cursor::new(target_bytes)).unwrap();
+    let merge_diff = diff_workbooks(&base, &target);
+    assert_eq!(merge_diff.sheets[0].merges.len(), 1);
+
+    let mut store = DiffStore::open(":memory:").unwrap();
+    let base_id = store.save_revision("base", false, &base).unwrap();
+    let target_id = store.save_revision("target", true, &target).unwrap();
+    store.save_diff(base_id, target_id, &merge_diff).unwrap();
+}
