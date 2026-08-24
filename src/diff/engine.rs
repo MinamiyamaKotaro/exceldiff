@@ -83,6 +83,14 @@ pub fn diff_paths(
 /// Diffs two already-parsed `Workbook`s sheet by sheet (matched by name).
 /// See this module's doc comment for the coordinate-based algorithm and its
 /// tradeoffs.
+///
+/// Every sheet is diffed regardless of `SheetVisibility` — `Hidden`/
+/// `VeryHidden` sheets get their cells and merges compared exactly like
+/// `Visible` ones (see `hidden_sheet_cell_changes_are_diffed_just_like_visible_ones`
+/// below). This is a deliberate default kept in the absence of any actual
+/// request to exclude hidden sheets, not an oversight — whether to add an
+/// opt-in filter is an open question, tracked as Issue #16 (see
+/// `engine.md`'s Open Questions for the full writeup).
 pub fn diff_workbooks(base: &Workbook, target: &Workbook) -> WorkbookDiff {
     let mut sheet_names: BTreeSet<&str> = BTreeSet::new();
     sheet_names.extend(base.sheets().iter().map(|s| s.name.as_str()));
@@ -507,6 +515,31 @@ mod tests {
         assert_eq!(sheet_diff.old_visibility, Some("visible"));
         assert_eq!(sheet_diff.new_visibility, Some("hidden"));
         assert!(sheet_diff.cells.is_empty());
+    }
+
+    #[test]
+    fn hidden_sheet_cell_changes_are_diffed_just_like_visible_ones() {
+        // Issue #16 (open question, docs/design/diff/engine.md): whether
+        // hidden/veryHidden sheets should ever be *excludable* from a diff
+        // is unresolved, but the current default — every sheet is diffed
+        // regardless of visibility — is a deliberate decision, not an
+        // accidental gap. Locks that contract in for both `Hidden` and
+        // `VeryHidden` so a future change can't silently start skipping
+        // hidden-sheet content without a test failing here first.
+        for hidden_vis in [SheetVisibility::Hidden, SheetVisibility::VeryHidden] {
+            let base = workbook(vec![sheet_with_cells("Hidden", hidden_vis, &[(1, 1, 1.0)])]);
+            let target = workbook(vec![sheet_with_cells("Hidden", hidden_vis, &[(1, 1, 2.0)])]);
+
+            let diff = diff_workbooks(&base, &target);
+            assert_eq!(diff.sheets.len(), 1, "visibility = {hidden_vis:?}");
+            let sheet_diff = &diff.sheets[0];
+            // Visibility itself didn't change (same on both sides) — only
+            // the cell value did, and that alone must still surface.
+            assert_eq!(sheet_diff.old_visibility, None);
+            assert_eq!(sheet_diff.new_visibility, None);
+            assert_eq!(sheet_diff.cells.len(), 1);
+            assert_eq!(sheet_diff.cells[0].status, DiffStatus::Modified);
+        }
     }
 
     #[test]

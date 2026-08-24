@@ -135,6 +135,23 @@ pub fn sheet_visibility_changed() -> (Vec<u8>, Vec<u8>) {
     )
 }
 
+/// A1's value changes 1 -> 2 on a sheet that is `state="hidden"` on *both*
+/// sides — unlike [`sheet_visibility_changed`], visibility never changes
+/// here at all; only the cell content does. Verifies (Issue #16 open
+/// question, `docs/design/diff/engine.md`) that a hidden sheet's own
+/// content changes are diffed exactly like a visible sheet's, through the
+/// real parse pipeline (`hidden_and_very_hidden_sheets_are_all_included` in
+/// `src/pipeline.rs` already confirms hidden sheets survive parsing at
+/// all; this confirms diffing doesn't separately skip them).
+pub fn hidden_sheet_cell_modified() -> (Vec<u8>, Vec<u8>) {
+    let base_rows = r#"<row r="1"><c r="A1"><v>1</v></c></row>"#;
+    let target_rows = r#"<row r="1"><c r="A1"><v>2</v></c></row>"#;
+    (
+        single_sheet("Hidden", Some("hidden"), base_rows),
+        single_sheet("Hidden", Some("hidden"), target_rows),
+    )
+}
+
 /// A1's value is unchanged (`1` on both sides) but its style id changes
 /// from 0 (default, not bold) to 1 (bold) — verifies a style-only change
 /// (no value change) still surfaces as `Modified`.
