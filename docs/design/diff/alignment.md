@@ -51,13 +51,13 @@ pub fn diff_workbooks_aligned_columns(
 1. `iter_cells()`を1回走査し、distinct列インデックスの集合をbase/target双方について求める。
 2. 予算チェックは2段階（PR #20のレビューで判明——後述「実装レビューで見つかった問題」参照）: まず`cols_base.len() * cols_target.len() > limits.max_column_pairs`（行数に依存しない、`scores`/`dp`行列のメモリ上限）、次に`cols_base.len() * cols_target.len() * sample_rows > limits.max_cost`（照合時間の上限）。いずれかを超えたら、O(cols²)の照合処理を始める前に即座にエラーを返す。
 3. 列ごとの内容を抽出する（`ColumnContent`: 行→セルの`Vec`（`iter_cells()`が既に行昇順であることを利用し、`BTreeMap`より安い）、ヘッダー(1行目の`Text`値のみ——数値データが1行目から始まる「ヘッダー無し」シートで数値の偶然一致を誤ってヘッダー一致と扱わないため)、コンテンツ照合可否(`MIN_DISTINCT_FOR_CONTENT_MATCH`以上のdistinct値を持つか))。
-4. 候補ペアをスコアリング(`column_match_score`): ヘッダーが一致すれば無条件で候補（他のどんなコンテンツスコアより優先されるボーナス`HEADER_MATCH_BONUS`を加点）。双方が`MIN_DISTINCT_FOR_CONTENT_MATCH`以上のdistinct値を持つ場合、一致セル数が閾値（列長の20%、最小2）以上なら候補とする。どちらにも該当しない（低カーディナリティ）場合でも、**完全一致**（両側の行数が等しく、全populated行が一致）なら候補とする——後述「実装レビューで見つかった問題」参照。
+4. 候補ペアをスコアリング(`column_match_score`): スコアは単一の`u64`ではなく、レキシコグラフィック（辞書式）に比較される`(u64, u64)`のタプル(`Score`)。両側のヘッダーが一意かつ一致すれば`(1, match_count)`（第1要素`1`により、他のどんな量のコンテンツ一致の合計よりも常に優先される——後述「実装レビューで見つかった問題」18番参照）。双方が`MIN_DISTINCT_FOR_CONTENT_MATCH`以上のdistinct値を持ち、一致セル数が閾値（列長の20%、最小2）以上なら`(0, match_count)`。どちらにも該当しない（低カーディナリティ）場合でも、**完全一致**（両側の行数が等しく、全populated行が一致）なら`(0, populated_count)`として候補とする——後述「実装レビューで見つかった問題」参照。
 5. 候補ペアの重み付きLCS的DPで、順序を保ったまま最適な列対応付けを求める（`align_columns`）。DPの遷移は各セルで「対角線（マッチ採用）」「上」「左」の3値の最大値を取る標準的な重み付きLCS漸化式——これも後述のレビューで修正した箇所。
 6. マッチした列ペアはマージジョインでセル差分を計算し(`diff_matched_columns`)、列がシフトしていれば`CellDiff::old_col`を付与する。マッチしなかった列のうち、同一の列番号を共有するDeleted/Insertedペアは座標ベースで直接diffし(上記「実装レビューで見つかった問題」10番参照)、それ以外は全セルをAdded/Deleted扱いにする。
 
 ## 実装レビューで見つかった問題（PR #20）
 
-GitHub Copilotの自動PRレビューが5ラウンドにわたり計14件の重大な問題を指摘し、いずれも検証の上で修正した:
+GitHub Copilotの自動PRレビューが6ラウンドにわたり計18件の重大な問題を指摘し、いずれも検証の上で修正した:
 
 1. **DPの遷移が正しい重み付きLCS漸化式になっていなかった**: `score > 0`の場合に無条件で対角線を採用しており、「上」「左」との比較を行っていなかった。1つの base 列に対し複数の候補 target 列があり、弱いマッチ（例: スコア2）が強いマッチ（例: スコア10）より先に評価されると、弱い方が採用され、本来の強いマッチが誤って挿入として報告される具体的な反例が指摘された。3値の`max`を取る標準的な漸化式に修正。
 2. **書式のみのセル（値が`None`）が誤って「一致」扱いされていた**: `Option<CellValue>`の派生`PartialEq`では`None == None`が`true`になるため、`count_matching_rows`が値の無い書式専用セル同士を無条件に一致カウントしていた。両側とも`Some`である場合のみ一致とみなすよう修正。
@@ -73,6 +73,10 @@ GitHub Copilotの自動PRレビューが5ラウンドにわたり計14件の重�
 12. **重複ヘッダーが無条件のマッチとして扱われていた**: `header_match`は「行1のヘッダーが一致すれば、コンテンツの一致度に関わらず`HEADER_MATCH_BONUS`（他のどんなスコアより優先される）を与える」という設計だったが、これは列見出しが**重複**する場合（例: 「備考」列が2つある）に破綻する——変化したbase列と、たまたま同じ見出しを持つ無関係なtarget列とがDPにより誤って結び付けられ、その列の本当の継続（実際に変化した可能性もある）が未整列のまま残り、実際の変化が「新規追加」として誤報告される恐れがある。`ColumnContent::header_is_unique`（そのシート内で同じヘッダー値を持つ列が他に無いか、列全体を対象に事後計算）を追加し、`header_match`は両側のヘッダーが一意である場合のみ成立するよう修正した。重複ヘッダーの列同士は、通常のコンテンツベースマッチング（閾値経路または完全一致救済）で競い合う扱いになる。
 13. **行アライメント統合時の主張が不正確だった**: 本モジュールのdocコメントは「Issue #4実装時は`diff_matched_columns`のマージジョインに行マッピングを渡すだけでよく、列マッチング自体の作り直しは不要」と述べていたが、`column_match_score`が閾値経路・完全一致救済の両方で使う`count_matching_rows`自体も同じ「同一行番号での値比較」を行っているため、行がシフトした場合はこちらも更新しないと、`diff_matched_columns`に到達する前の時点で一致スコアが低すぎて一致と認識されない。docコメントを修正し、両方の更新が必要であることを明記した。
 14. **`CellDiff::old_col`追加はバージョンポリシー上明示すべき破壊的変更**: [model.md](model.md)の未決事項1に追記——既存の慣例（Issue #8）に従いバージョンは上げず、方針を明示的に記録するのみとした。
+15. **予算チェックより先にO(cols²)の`mark_unique_headers`が走っていた**: `align_sheet_columns`は予算チェックの前に`column_contents`（内部で重複ヘッダー検出のためO(headered_cols²)の`mark_unique_headers`後処理を行う）を呼んでいたため、上限を超える幅の広いシートに対しても、エラーを返す前にこの二次コストを支払ってしまっていた。行数非依存の軽量な`distinct_column_count`（`BTreeSet<u32>`によるO(cells)走査）を新設し、`align_sheet_columns`をこの安価な集計→両予算チェック→（両方通過した場合のみ）`column_contents`の順に並べ替えた。
+16. **モジュールdocコメントの誤字（"same same"）**: 上記「行は再整列しない」節に対応するdocコメント内の説明で単語が重複していた。修正。
+17. **座標ベースフォールバックのdocコメントが過剰に一般化されていた**: 「未マッチの列は座標ベース差分にフォールバックする」という記述が無条件であるかのように読めたが、実際にこのフォールバックが働くのは上記10番の通り**同一の列番号を共有する**Deleted/Insertedペアに限られる（列番号が異なる未整列列同士は対象外で、丸ごとAdded/Deleted扱いになる）。docコメントをこの条件付きの挙動が明確に伝わるよう修正した。
+18. **集約スコアリングが単一の`u64`ボーナスに依存しており、規模次第でヘッダー一致が負けうる**: `HEADER_MATCH_BONUS`（固定値`2,000,000`）は「他のどんなコンテンツ一致の組み合わせよりボーナスの方が大きい」という前提の上に成り立っていたが、この前提はExcelの実際の行数上限（1,048,576行）では崩れる——20%閾値の下でも2つの通常コンテンツマッチが合計で約2,097,150の一致セル数に達し得る一方、ボーナス込みのヘッダー一致は約2,000,001に留まる（base=[H, B, C], target=[X, Y, H]の例で、LCSの順序保存制約によりH↔HとB↔X・C↔Yは両立できない）。この場合、DPは正しいヘッダー一致ではなく2つの誤ったコンテンツ一致を選んでしまう。固定ボーナスを撤廃し、`(u64, u64)`のレキシコグラフィックな`Score`タプルに置き換えた——第1要素（ヘッダー一致なら`1`、それ以外は`0`）が常に第2要素（一致セル数）より優先されるため、この種の「ボーナスが十分大きいか」というクラスの不具合自体を構造的に排除した。回帰テスト`a_unique_header_match_outranks_a_larger_combined_content_match_score`を追加。
 
 ## 依存関係
 
@@ -96,6 +100,7 @@ GitHub Copilotの自動PRレビューが5ラウンドにわたり計14件の重�
 - 定数列の多様性ゲート（上記8番）: 全行同一値の列が、無関係な別の定数列と誤って完全一致救済されず、本当の変化（0→1）を握りつぶさないこと（`constant_column_exact_match_rescue_requires_at_least_two_distinct_values`）
 - 同一座標での座標ベースフォールバック（上記10番）: シフトしていない低カーディナリティ・ヘッダー無し列が1セルだけ変化した場合に、列全体の削除+再追加ではなく`diff_workbooks`と同じ「1件のModified」になること（`unmatched_low_cardinality_column_at_the_same_coordinate_falls_back_to_coordinate_diffing`）
 - 重複ヘッダーの非優遇（上記12番）: 同じ見出しを持つ列が複数ある場合、コンテンツの裏付けが無ければ無条件マッチにならず、無関係な列への誤った対応付け（Modifiedの誤帰属）が起きないこと（`duplicate_header_does_not_win_an_unconditional_match`）
+- レキシコグラフィックなScoreによる集約安全性（上記18番）: 一意なヘッダー一致が、規模の大きい（合計一致セル数が上回る）2つの通常コンテンツマッチの組み合わせより常に優先されること（`a_unique_header_match_outranks_a_larger_combined_content_match_score`）
 - マージジョインの全分岐（`count_matching_rows`/`diff_matched_columns`の行が一方にしか存在しないケース含む、`matched_columns_with_sparse_non_overlapping_rows_exercise_every_merge_join_branch`）、片側のみに存在するシートがアライメント経由でも座標一致エンジンへ委譲されること（`sheet_present_on_only_one_side_reuses_the_coordinate_engine_through_alignment`）——いずれも`cargo-llvm-cov`が未到達と検出したことを契機に追加
 - 2種類の予算超過が正しく`Error::ColumnAlignmentCostTooHigh`を返すこと（行数加重コスト: `distinct_column_cost_over_the_limit_is_column_alignment_cost_too_high`、行数非依存のペア数: `column_pair_count_over_the_limit_is_column_alignment_cost_too_high_even_with_one_row`）
 - `diff_workbooks`（デフォルトエンジン）が本機能の追加によって挙動を変えていないこと（`diff_workbooks_default_behavior_is_unaffected_by_alignment_existing`）

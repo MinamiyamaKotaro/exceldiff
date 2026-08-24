@@ -59,8 +59,15 @@
 //! that happens to still be all `0`) — a Copilot review caught this
 //! concretely. Anything short of the full requirement — a genuinely
 //! changed, too-short-to-trust, or constant low-cardinality column — is
-//! left unmatched, falling through to ordinary per-column coordinate
-//! diffing (the safe default rather than a wrong guess).
+//! left unmatched by content. If it also happens to sit at the *same*
+//! column index on both sides (nothing else shifted it), `align_sheet_columns`'s
+//! coordinate-based fallback (see that function's doc comment) still
+//! diffs it as ordinary per-column coordinate diffing would; a column
+//! that both fails content matching *and* genuinely moved to a different
+//! index has no such fallback and is reported as a wholesale delete/add
+//! instead (a Copilot review flagged an earlier version of this comment
+//! for implying the coordinate fallback covers every unmatched
+//! low-cardinality column unconditionally, which overstates it).
 //!
 //! # Rows are not realigned (Issue #4 is separate and unimplemented)
 //!
@@ -77,8 +84,8 @@
 //! `base_row` against whatever target row it's been aligned to instead of
 //! assuming identity), but also `count_matching_rows` — which
 //! `column_match_score` relies on for *both* the threshold path and the
-//! exact-match rescue — since it does the exact same same-row-number
-//! comparison to decide whether two columns' content matches at all. A
+//! exact-match rescue — since it does the same same-row-number
+//! comparison too, to decide whether two columns' content matches. A
 //! Copilot review correctly flagged an earlier version of this comment
 //! for claiming column matching itself would need no rework; that was
 //! inaccurate — without also updating `count_matching_rows`, row-shifted
@@ -117,12 +124,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// size for its *exact*-match rescue below the eligibility floor — see
 /// that function's doc comment.
 const MIN_DISTINCT_FOR_CONTENT_MATCH: usize = 8;
-
-/// Score bonus for an exact header match, large enough to outrank any
-/// purely content-based match regardless of column length — bigger than
-/// Excel's absolute maximum row count (1,048,576), which upper-bounds any
-/// possible `match_count`.
-const HEADER_MATCH_BONUS: u64 = 2_000_000;
 
 /// Cap on `distinct_cols_base * distinct_cols_target * sample_rows`, the
 /// measured cost driver of `align_columns` below (O(distinct_cols_base ×
@@ -275,8 +276,9 @@ struct ColumnContent<'a> {
     /// requires this (on both sides) before ever treating a header match
     /// as an unconditional identity: with a duplicated header (e.g. two
     /// columns both titled "Notes"), giving every same-header pair the
-    /// same overwhelming `HEADER_MATCH_BONUS` makes the choice among them
-    /// depend only on incidental content overlap, which can pair a
+    /// same top-tier priority in `align_columns`'s scoring makes the
+    /// choice among them depend only on incidental content overlap, which
+    /// can pair a
     /// genuinely changed base column with an unrelated same-header column
     /// and leave the column's real (possibly also changed) continuation
     /// unmatched — misreporting a real change as a fresh addition instead
@@ -321,14 +323,21 @@ fn align_sheet_columns(
     target: &Sheet,
     limits: ColumnAlignmentLimits,
 ) -> Result<Option<SheetDiff>> {
-    let base_cols = column_contents(base);
-    let target_cols = column_contents(target);
+    // Budget check comes first, using only a cheap O(cells) distinct-
+    // column *count* — not the full `column_contents` build below, which
+    // does O(cols²) work of its own (`mark_unique_headers`) to compute
+    // `header_is_unique`. Building that before checking the budget would
+    // let a wide sheet with many distinct text headers pay an unbounded
+    // quadratic pass even when the configured budget would immediately
+    // reject the alignment (a Copilot review caught this concretely).
+    let base_col_count = distinct_column_count(base);
+    let target_col_count = distinct_column_count(target);
 
     // Memory bound first: independent of row count, so it must be checked
     // even when the rows-weighted time budget below would otherwise pass
     // (see MAX_COLUMN_PAIR_COUNT's doc comment for why a low-row, many-column
     // sheet needs this separately).
-    let pair_count = base_cols.len().saturating_mul(target_cols.len());
+    let pair_count = base_col_count.saturating_mul(target_col_count);
     if pair_count > limits.max_column_pairs {
         return Err(Error::ColumnAlignmentCostTooHigh {
             cost: pair_count,
@@ -344,6 +353,12 @@ fn align_sheet_columns(
             limit: limits.max_cost,
         });
     }
+
+    // Only now, with the budget confirmed, do the O(cols²) work: building
+    // each column's full content (`column_contents`, including the
+    // header-uniqueness pass) and scoring/aligning them below.
+    let base_cols = column_contents(base);
+    let target_cols = column_contents(target);
 
     let alignments = align_columns(&base_cols, &target_cols);
 
@@ -425,6 +440,17 @@ fn align_sheet_columns(
         cells,
         merges,
     }))
+}
+
+/// The number of distinct columns `sheet` has cells in, in O(cells) —
+/// cheap enough to call before the budget check in `align_sheet_columns`,
+/// unlike `column_contents` below (which does O(cols²) work of its own).
+fn distinct_column_count(sheet: &Sheet) -> usize {
+    let mut cols: BTreeSet<u32> = BTreeSet::new();
+    for (r, _) in sheet.iter_cells() {
+        cols.insert(r.col);
+    }
+    cols.len()
 }
 
 /// Buckets `sheet.iter_cells()` by column in one O(cells) pass, then builds
@@ -514,11 +540,44 @@ enum ColumnAlignment {
     Deleted { base_idx: usize },
 }
 
+/// A candidate pair's score, as `(header_matches, content_score)` —
+/// compared and summed *lexicographically*, not as a single scalar. See
+/// `align_columns`'s doc comment for why: a plain per-pair bonus for
+/// header matches (this module's earlier design) isn't aggregate-safe,
+/// since `align_columns` maximizes the sum across every matched pair in
+/// the whole alignment, not any single pair's score in isolation.
+type Score = (u64, u64);
+
+fn add_score(a: Score, b: Score) -> Score {
+    (a.0 + b.0, a.1 + b.1)
+}
+
 /// Matches `base_cols` against `target_cols` by content, preserving
 /// relative order (a weighted longest-common-subsequence alignment over
 /// the O(cols²) score matrix `column_match_score` builds) — the same
 /// structure validated across every round of Issue #5's PoC investigation,
-/// adapted to plain `Vec<Vec<u64>>` DP with no external dependencies.
+/// adapted to plain `Vec<Vec<Score>>` DP with no external dependencies.
+///
+/// Scores are lexicographic `(header_matches, content_score)` pairs, not
+/// plain `u64`s, specifically so a header match can never be "outvoted" by
+/// a large enough number of ordinary content matches. An earlier version
+/// scored a header match as `match_count + HEADER_MATCH_BONUS` (a huge
+/// flat constant, chosen to exceed any single column's possible
+/// `match_count`) — but because this DP maximizes the *sum* of scores
+/// across the whole alignment, that bonus only had to beat one other
+/// pair's score, not the combined score of however many *other* pairs
+/// choosing it would have to give up. A Copilot review gave a concrete
+/// counterexample at Excel's real row-count scale: base `[H, B, C]`,
+/// target `[X, Y, H]`, with `B`↔`X` and `C`↔`Y` each matching on nearly
+/// every one of Excel's 1,048,576 rows. Matching `H`↔`H` is only
+/// possible if `B`/`C` are left unmatched (target's `H` is *after* `X`/`Y`,
+/// so aligning `H` first would violate the monotonic ordering LCS
+/// alignment requires) — so the DP would compare one header bonus
+/// (~2,000,001) against the *sum* of two independent near-maximal content
+/// matches (~2,097,150) and — wrongly — prefer sacrificing the header
+/// match. Comparing `header_matches` first makes this impossible: no
+/// number of ordinary matches can ever look better than one more header
+/// match, regardless of how large their combined content score gets.
 fn align_columns(
     base_cols: &[ColumnContent],
     target_cols: &[ColumnContent],
@@ -526,14 +585,15 @@ fn align_columns(
     let n = base_cols.len();
     let m = target_cols.len();
 
-    let mut scores = vec![vec![0u64; m]; n];
-    for (i, b) in base_cols.iter().enumerate() {
-        for (j, t) in target_cols.iter().enumerate() {
-            if let Some(score) = column_match_score(b, t) {
-                scores[i][j] = score;
-            }
-        }
-    }
+    let scores: Vec<Vec<Option<Score>>> = base_cols
+        .iter()
+        .map(|b| {
+            target_cols
+                .iter()
+                .map(|t| column_match_score(b, t))
+                .collect()
+        })
+        .collect();
 
     // Standard weighted-LCS recurrence: dp[i+1][j+1] is the best of taking
     // the (i,j) match (if it's a candidate at all) or skipping either
@@ -542,11 +602,16 @@ fn align_columns(
     // (e.g. score 2) block a much stronger one available by skipping past
     // it first (e.g. score 10 one column further along), silently
     // reporting the correct match as a spurious Insert/Delete pair.
-    let mut dp = vec![vec![0u64; m + 1]; n + 1];
+    // "Best"/"weak"/"stronger" compare lexicographically — see this
+    // function's doc comment.
+    let zero: Score = (0, 0);
+    let mut dp = vec![vec![zero; m + 1]; n + 1];
     for i in 0..n {
         for j in 0..m {
-            let score = scores[i][j];
-            let diagonal = if score > 0 { dp[i][j] + score } else { 0 };
+            let diagonal = match scores[i][j] {
+                Some(score) => add_score(dp[i][j], score),
+                None => zero,
+            };
             dp[i + 1][j + 1] = diagonal.max(dp[i + 1][j]).max(dp[i][j + 1]);
         }
     }
@@ -556,8 +621,9 @@ fn align_columns(
     let mut j = m;
     while i > 0 || j > 0 {
         if i > 0 && j > 0 {
-            let score = scores[i - 1][j - 1];
-            if score > 0 && dp[i][j] == dp[i - 1][j - 1] + score {
+            let is_match = scores[i - 1][j - 1]
+                .is_some_and(|score| dp[i][j] == add_score(dp[i - 1][j - 1], score));
+            if is_match {
                 aligned.push(ColumnAlignment::Match {
                     base_idx: i - 1,
                     target_idx: j - 1,
@@ -583,7 +649,7 @@ fn align_columns(
 /// aren't a candidate at all. See this module's doc comment ("Matching
 /// heuristic") for the reasoning behind the header-match escape hatch and
 /// the `MIN_DISTINCT_FOR_CONTENT_MATCH` gate.
-fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
+fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<Score> {
     // Only trusted as an unconditional identity when the header is unique
     // on both sides — see `ColumnContent::header_is_unique`'s doc comment
     // for why a duplicated header (e.g. two columns both titled "Notes")
@@ -594,7 +660,10 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     let match_count = count_matching_rows(b, t);
 
     if header_match {
-        return Some(match_count + HEADER_MATCH_BONUS);
+        // `(1, ..)`: top scoring tier — see `Score`/`align_columns`'s doc
+        // comment for why a header match must never be expressible as a
+        // plain `u64` a sum of ordinary matches could someday outscore.
+        return Some((1, match_count));
     }
 
     if b.eligible_for_content_match && t.eligible_for_content_match {
@@ -605,7 +674,7 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
         // beyond what the *actual* matching evidence could ever clear.
         let min_len = b.populated_count.min(t.populated_count) as u64;
         let required = ((min_len as f64 * 0.2).ceil() as u64).max(2);
-        return (match_count >= required).then_some(match_count);
+        return (match_count >= required).then_some((0, match_count));
     }
 
     // Below MIN_DISTINCT_FOR_CONTENT_MATCH, no *partial* overlap can be
@@ -647,8 +716,9 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     // candidate scores highest, so scoring this on raw cell-map size
     // (inflatable by an arbitrarily large formatted-but-blank range)
     // could let a padded exact match outrank a smaller but genuine
-    // threshold-path match for a competing column pair.
-    Some(b.populated_count as u64)
+    // threshold-path match for a competing column pair. `(0, ..)`: same
+    // tier as an ordinary threshold-path match, not the header tier.
+    Some((0, b.populated_count as u64))
 }
 
 /// Whether `b` and `t` are byte-for-byte identical: same row keys in the
@@ -1504,8 +1574,8 @@ mod tests {
         // Regression test for a Copilot review finding: treating every
         // same-header pair as an unconditional identity breaks down once
         // the header is *duplicated* — e.g. two columns both titled
-        // "Status". Giving every same-header pair the same overwhelming
-        // HEADER_MATCH_BONUS regardless of duplication could pair a
+        // "Status". Giving every same-header pair the same top-tier
+        // header-match score regardless of duplication could pair a
         // changed base column with an unrelated same-header target column
         // purely because of the shared title, leaving the column's real
         // continuation unmatched and misreporting a real change as a
@@ -1553,6 +1623,110 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn a_unique_header_match_outranks_a_larger_combined_content_match_score() {
+        // Regression test for a Copilot review finding: scoring with a
+        // plain scalar `u64` (a fixed HEADER_MATCH_BONUS added to a
+        // content match_count) is only safe as long as no combination of
+        // ordinary content matches can add up to more than the bonus. At
+        // Excel's real row-count scale, two ordinary content matches can
+        // comfortably outscore the old bonus, so the DP would choose two
+        // lower-priority content matches over one correct header match
+        // whenever both are mutually exclusive under the LCS's
+        // order-preserving constraint. `align_columns` now scores with a
+        // lexicographic `(tier, match_count)` tuple instead, so a header
+        // match (tier 1) always outranks any number of content matches
+        // (tier 0), regardless of magnitude — this test proves that with
+        // small, unit-test-friendly numbers precisely because the fix is
+        // scale-independent: it doesn't depend on reproducing millions of
+        // rows, only on the combined content score being numerically
+        // larger than the header pair's own trivial content contribution.
+        //
+        // Base:  [H (header "H"), B (rich content), C (rich content)]
+        // Target: [B' (same content as B), C' (same content as C), H' (header "H")]
+        //
+        // The LCS ordering constraint makes {H<->H'} and {B<->B', C<->C'}
+        // mutually exclusive: matching H to H' (base index 1 -> target
+        // index 12) forces every later base column's match to land at a
+        // later target index than 12, which target indices 10 and 11
+        // cannot satisfy. So the DP must pick one side or the other, and
+        // the combined B+C content score (two full 10-row matches) is far
+        // larger than H's own incidental content score (the shared header
+        // cell text itself) — exactly the shape of Copilot's counterexample.
+        let mut base_cells: Vec<(u32, u32, CellValue)> = vec![
+            (1, 1, CellValue::Text("H".into())),
+            (2, 1, CellValue::Number(999.0)),
+            (3, 1, CellValue::Number(998.0)),
+        ];
+        base_cells.extend(
+            rich_column(2, 0.0)
+                .into_iter()
+                .map(|(r, c, v)| (r, c, CellValue::Number(v))),
+        );
+        base_cells.extend(
+            rich_column(3, 100.0)
+                .into_iter()
+                .map(|(r, c, v)| (r, c, CellValue::Number(v))),
+        );
+        let base = workbook(vec![sheet_with_values("Sheet1", &base_cells)]);
+
+        let mut target_cells: Vec<(u32, u32, CellValue)> = vec![
+            (1, 12, CellValue::Text("H".into())),
+            (2, 12, CellValue::Number(799.0)),
+            (3, 12, CellValue::Number(798.0)),
+        ];
+        target_cells.extend(
+            rich_column(10, 0.0)
+                .into_iter()
+                .map(|(r, c, v)| (r, c, CellValue::Number(v))),
+        );
+        target_cells.extend(
+            rich_column(11, 100.0)
+                .into_iter()
+                .map(|(r, c, v)| (r, c, CellValue::Number(v))),
+        );
+        let target = workbook(vec![sheet_with_values("Sheet1", &target_cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+
+        // H matched H': the two differing data rows (2, 3) show up as
+        // Modified at target column 12, carrying old_col back to base's
+        // column 1 — proof the header pair won the alignment despite B/C's
+        // much larger combined content score.
+        let header_modified: Vec<_> = cells
+            .iter()
+            .filter(|c| c.status == DiffStatus::Modified)
+            .collect();
+        assert_eq!(header_modified.len(), 2);
+        assert!(header_modified
+            .iter()
+            .all(|c| c.col == 12 && c.old_col == Some(1)));
+
+        // B and C were left unmatched (sacrificed to the header match), so
+        // every one of their cells is a plain Added/Deleted, never
+        // Modified and never carrying old_col.
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Modified || c.old_col.is_none()));
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Added)
+                .count(),
+            20
+        );
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Deleted)
+                .count(),
+            20
+        );
+        assert_eq!(cells.len(), 42);
     }
 
     #[test]
