@@ -492,10 +492,28 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     // floor — to bring that chance below 1/256). A column too short to
     // clear that floor is left unmatched, the same safe default as
     // before.
-    let exact_match = b.cells.len() >= MIN_DISTINCT_FOR_CONTENT_MATCH
-        && b.cells.len() == t.cells.len()
-        && match_count == b.cells.len() as u64;
-    exact_match.then_some(match_count)
+    let long_enough = b.cells.len() >= MIN_DISTINCT_FOR_CONTENT_MATCH;
+    (long_enough && columns_are_exact_match(b, t)).then_some(b.cells.len() as u64)
+}
+
+/// Whether `b` and `t` are byte-for-byte identical: same row keys in the
+/// same order, same value at every row. Deliberately a *different* check
+/// from `count_matching_rows == len` — this counts two formatting-only
+/// (`value: None`) cells at the same row as consistent (a real part of
+/// being identical), where `count_matching_rows` deliberately does not
+/// (see that function's doc comment): the two checks serve different
+/// purposes. `count_matching_rows`'s exclusion exists to stop a
+/// *coincidental* shared blank range from inflating a *partial*-overlap
+/// score; that risk doesn't apply here, since this function already
+/// requires every single row to agree before returning `true` at all.
+fn columns_are_exact_match(b: &ColumnContent, t: &ColumnContent) -> bool {
+    if b.cells.len() != t.cells.len() {
+        return false;
+    }
+    b.cells
+        .iter()
+        .zip(t.cells.iter())
+        .all(|(&(b_row, b_cell), &(t_row, t_cell))| b_row == t_row && b_cell.value == t_cell.value)
 }
 
 /// Counts rows where both columns have a cell and its value matches
@@ -858,6 +876,26 @@ mod tests {
     }
 
     #[test]
+    fn different_length_low_cardinality_columns_are_never_an_exact_match() {
+        // columns_are_exact_match's length check must reject a pair before
+        // ever comparing content — two low-cardinality, headerless columns
+        // long enough to reach the exact-match rescue (>= 8 rows) but with
+        // *different* row counts can never be identical, so they must fall
+        // back to plain coordinate diffing rather than being aligned.
+        let base_cells = boolean_column(1, 0); // 10 rows
+        let mut target_cells = boolean_column(1, 0);
+        target_cells.push((11, 1, 1.0)); // 11 rows: same prefix, one longer
+        let base = workbook(vec![sheet_with_cells("Sheet1", &base_cells)]);
+        let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        assert_eq!(cells.len(), 21); // 10 base cells deleted + 11 target cells added
+        assert!(cells.iter().all(|c| c.old_col.is_none()));
+    }
+
+    #[test]
     fn shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match() {
         // Same underlying bug as identical_low_cardinality_headerless_column_produces_no_diff,
         // but with a genuine column shift: the low-cardinality column is
@@ -884,6 +922,159 @@ mod tests {
         assert!(cells
             .iter()
             .all(|c| c.col == 1 && c.status == DiffStatus::Added));
+    }
+
+    fn sheet_with_optional_cells(name: &str, cells: &[(u32, u32, Option<CellValue>)]) -> Sheet {
+        let mut sheet = Sheet::new(name.to_string(), SheetVisibility::Visible);
+        for &(row, col, ref value) in cells {
+            sheet.insert_cell(
+                CellRef { row, col },
+                Cell {
+                    value: value.clone(),
+                    style: None,
+                },
+            );
+        }
+        sheet
+    }
+
+    #[test]
+    fn formatting_only_blank_cells_do_not_inflate_the_partial_match_threshold() {
+        // Regression test for a bug a Copilot review caught (PR #20):
+        // Option<CellValue>'s derived equality makes None == None true, so
+        // two formatting-only (value: None) cells at the same row were
+        // counted as a "matching" value in count_matching_rows, letting a
+        // shared blank range alone push unrelated columns over the 20%
+        // partial-match threshold. Two genuinely unrelated columns, each
+        // with 10 distinct real values (so both clear
+        // MIN_DISTINCT_FOR_CONTENT_MATCH and use the threshold path, not
+        // the exact-match rescue) plus 3 shared blank rows, must NOT be
+        // aligned: 3 blank-row "matches" alone would have cleared the
+        // threshold (20% of 13 populated rows, rounded up, is 3) before
+        // this fix.
+        fn column(col: u32, value_offset: f64) -> Vec<(u32, u32, Option<CellValue>)> {
+            let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=10)
+                .map(|row| (row, col, Some(CellValue::Number(row as f64 + value_offset))))
+                .collect();
+            cells.extend((11..=13).map(|row| (row, col, None)));
+            cells
+        }
+
+        let base = workbook(vec![sheet_with_optional_cells("Sheet1", &column(1, 0.0))]);
+        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &column(1, 500.0))]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Not aligned: every materialized cell on each side (10 real
+        // values + 3 formatting-only blanks = 13 per side) is reported
+        // via plain coordinate-based Added/Deleted — a formatting-only
+        // cell still exists in the sparse cell map, so it still gets a
+        // diff entry of its own (an "empty" old/new value) when its whole
+        // column is treated as wholesale added/deleted.
+        assert_eq!(cells.len(), 26);
+        assert!(cells.iter().all(|c| c.old_col.is_none()));
+    }
+
+    #[test]
+    fn identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff() {
+        // Complements formatting_only_blank_cells_do_not_inflate_the_partial_match_threshold:
+        // the fix there must not overcorrect into treating two genuinely
+        // identical columns, that happen to share a blank row, as
+        // non-identical. columns_are_exact_match (unlike
+        // count_matching_rows) counts a shared blank row as consistent —
+        // it already requires every row to agree before returning `true`
+        // at all, so the coincidental-match risk that motivated excluding
+        // blanks from count_matching_rows doesn't apply here.
+        let cells: Vec<(u32, u32, Option<CellValue>)> = (1..=7)
+            .map(|row| (row, 1, Some(CellValue::Number(row as f64))))
+            .chain(std::iter::once((8, 1, None)))
+            .collect();
+        let base = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
+        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        assert!(diff.sheets.is_empty());
+    }
+
+    #[test]
+    fn sheet_present_on_only_one_side_reuses_the_coordinate_engine_through_alignment() {
+        // Exercises diff_workbooks_aligned_columns's one-sided-sheet
+        // branch, which delegates directly to diff::engine::diff_sheet
+        // (see this module's doc comment) — a whole new/gone sheet has
+        // nothing to align, so it behaves identically to diff_workbooks.
+        let base = workbook(vec![]);
+        let target = workbook(vec![sheet_with_cells("New", &[(1, 1, 1.0), (1, 2, 2.0)])]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        assert_eq!(diff.sheets.len(), 1);
+        let sheet_diff = &diff.sheets[0];
+        assert_eq!(sheet_diff.status, DiffStatus::Added);
+        assert_eq!(sheet_diff.cells.len(), 2);
+        assert!(sheet_diff
+            .cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added));
+    }
+
+    #[test]
+    fn matched_columns_with_sparse_non_overlapping_rows_exercise_every_merge_join_branch() {
+        // count_matching_rows and diff_matched_columns each merge-join two
+        // row-sorted slices; a header match forces alignment regardless of
+        // content, so row presence can be deliberately non-overlapping
+        // here to exercise every branch of both merge-joins in one test:
+        // rows present on both sides (Equal), rows present on only one
+        // side while the other iterator is still non-empty (the Less/
+        // Greater arms), and rows left over after one side's iterator is
+        // fully exhausted (the trailing (Some, None) and (None, Some)
+        // arms) — column 1 ends with base exhausting first, column 2 ends
+        // with target exhausting first, so both trailing arms fire.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, CellValue::Text("Header1".into())),
+                (3, 1, CellValue::Number(30.0)),
+                (5, 1, CellValue::Number(50.0)),
+                (6, 1, CellValue::Number(60.0)),
+                (8, 1, CellValue::Number(80.0)),
+                (1, 2, CellValue::Text("Header2".into())),
+                (3, 2, CellValue::Number(1.0)),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, CellValue::Text("Header1".into())),
+                (2, 1, CellValue::Number(20.0)),
+                (5, 1, CellValue::Number(50.0)),
+                (7, 1, CellValue::Number(70.0)),
+                (1, 2, CellValue::Text("Header2".into())),
+                (3, 2, CellValue::Number(1.0)),
+                (9, 2, CellValue::Number(9.0)),
+            ],
+        )]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Column 1 (base exhausts first): row1 & row5 match (no diff);
+        // row2 & row7 are target-only (Added); row3, row6, row8 are
+        // base-only (Deleted, row8 via the trailing arm) = 5 cells.
+        // Column 2 (target exhausts first): row1 & row3 match (no diff);
+        // row9 is target-only (Added, via the trailing arm) = 1 cell.
+        assert_eq!(cells.len(), 6);
+        let added = cells
+            .iter()
+            .filter(|c| c.status == DiffStatus::Added)
+            .count();
+        let deleted = cells
+            .iter()
+            .filter(|c| c.status == DiffStatus::Deleted)
+            .count();
+        assert_eq!(added, 3); // col1 rows 2,7 + col2 row9
+        assert_eq!(deleted, 3); // col1 rows 3,6,8
     }
 
     #[test]
@@ -939,13 +1130,13 @@ mod tests {
             max_column_pairs: MAX_COLUMN_PAIR_COUNT,
         };
         let err = diff_workbooks_aligned_columns(&base, &target, limits).unwrap_err();
-        match err {
-            Error::ColumnAlignmentCostTooHigh { cost, limit } => {
-                assert_eq!(cost, 10_000);
-                assert_eq!(limit, 9_999);
+        assert!(matches!(
+            err,
+            Error::ColumnAlignmentCostTooHigh {
+                cost: 10_000,
+                limit: 9_999
             }
-            other => panic!("expected ColumnAlignmentCostTooHigh, got {other:?}"),
-        }
+        ));
     }
 
     #[test]
@@ -965,13 +1156,13 @@ mod tests {
             max_column_pairs: 39_999, // 200 * 200 = 40,000 > 39,999
         };
         let err = diff_workbooks_aligned_columns(&base, &target, limits).unwrap_err();
-        match err {
-            Error::ColumnAlignmentCostTooHigh { cost, limit } => {
-                assert_eq!(cost, 40_000);
-                assert_eq!(limit, 39_999);
+        assert!(matches!(
+            err,
+            Error::ColumnAlignmentCostTooHigh {
+                cost: 40_000,
+                limit: 39_999
             }
-            other => panic!("expected ColumnAlignmentCostTooHigh, got {other:?}"),
-        }
+        ));
     }
 
     #[test]
