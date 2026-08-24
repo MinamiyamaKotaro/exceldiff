@@ -687,6 +687,147 @@ mod tests {
     }
 
     #[test]
+    fn save_diff_keeps_two_sheets_diffs_distinguishable_at_identical_coordinates() {
+        // `save_diff` commits at the Workbook level — a single call always
+        // walks every sheet in `diff.sheets` together, there is no
+        // per-sheet commit. That must never blur two different sheets'
+        // diffs together: "SheetA" and "SheetB" here each carry a cell
+        // diff AND a merge diff at the exact same (row, col)/start
+        // coordinate but with different old/new content, which would be
+        // indistinguishable if `sheet_name` weren't part of every row (or
+        // weren't threaded through correctly by the `for sheet in
+        // &diff.sheets` loop).
+        use crate::diff::model::{CellDiff, CellPos, MergeDiff, SheetDiff};
+        use crate::JsonCellValue;
+
+        let mut store = DiffStore::open(":memory:").unwrap();
+        let base = Workbook::new(
+            vec![
+                sheet_with_one_cell("SheetA", 1.0),
+                sheet_with_one_cell("SheetB", 10.0),
+            ],
+            None,
+        );
+        let target = Workbook::new(
+            vec![
+                sheet_with_one_cell("SheetA", 2.0),
+                sheet_with_one_cell("SheetB", 20.0),
+            ],
+            None,
+        );
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+
+        let sheet_diff = |name: &str, old: f64, new: f64, merge_new_end_col: u32| SheetDiff {
+            name: name.to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: vec![CellDiff {
+                row: 1,
+                col: 1,
+                status: DiffStatus::Modified,
+                old_value: Some(JsonCellValue::Number(old)),
+                new_value: Some(JsonCellValue::Number(new)),
+                old_style: None,
+                new_style: None,
+            }],
+            merges: vec![MergeDiff {
+                status: DiffStatus::Added,
+                start: CellPos { row: 1, col: 1 },
+                old_end: None,
+                new_end: Some(CellPos {
+                    row: 1,
+                    col: merge_new_end_col,
+                }),
+            }],
+        };
+        let diff = WorkbookDiff {
+            sheets: vec![
+                sheet_diff("SheetA", 1.0, 2.0, 2),
+                sheet_diff("SheetB", 10.0, 20.0, 3),
+            ],
+        };
+        store.save_diff(base_id, target_id, &diff).unwrap();
+
+        #[derive(Debug, PartialEq)]
+        struct CellRow {
+            sheet_name: String,
+            old_value_json: String,
+            new_value_json: String,
+        }
+        let mut cell_stmt = store
+            .conn
+            .prepare(
+                "SELECT sheet_name, old_value_json, new_value_json FROM diff_records
+                 WHERE row = 1 AND col = 1 ORDER BY sheet_name",
+            )
+            .unwrap();
+        let cell_rows: Vec<CellRow> = cell_stmt
+            .query_map([], |row| {
+                Ok(CellRow {
+                    sheet_name: row.get(0)?,
+                    old_value_json: row.get(1)?,
+                    new_value_json: row.get(2)?,
+                })
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            cell_rows,
+            vec![
+                CellRow {
+                    sheet_name: "SheetA".to_string(),
+                    old_value_json: serde_json::to_string(&JsonCellValue::Number(1.0)).unwrap(),
+                    new_value_json: serde_json::to_string(&JsonCellValue::Number(2.0)).unwrap(),
+                },
+                CellRow {
+                    sheet_name: "SheetB".to_string(),
+                    old_value_json: serde_json::to_string(&JsonCellValue::Number(10.0)).unwrap(),
+                    new_value_json: serde_json::to_string(&JsonCellValue::Number(20.0)).unwrap(),
+                },
+            ]
+        );
+
+        #[derive(Debug, PartialEq)]
+        struct MergeRow {
+            sheet_name: String,
+            new_end_col: u32,
+        }
+        let mut merge_stmt = store
+            .conn
+            .prepare(
+                "SELECT sheet_name, new_end_col FROM merge_diff_records
+                 WHERE start_row = 1 AND start_col = 1 ORDER BY sheet_name",
+            )
+            .unwrap();
+        let merge_rows: Vec<MergeRow> = merge_stmt
+            .query_map([], |row| {
+                Ok(MergeRow {
+                    sheet_name: row.get(0)?,
+                    new_end_col: row.get(1)?,
+                })
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            merge_rows,
+            vec![
+                MergeRow {
+                    sheet_name: "SheetA".to_string(),
+                    new_end_col: 2,
+                },
+                MergeRow {
+                    sheet_name: "SheetB".to_string(),
+                    new_end_col: 3,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn open_adds_style_columns_and_merge_table_to_a_pre_issue_9_database() {
         // A database file created by a crate version predating Issue #9
         // has `diff_records` without `old_style_json`/`new_style_json` and
