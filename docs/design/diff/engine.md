@@ -2,11 +2,11 @@
 
 *[English](engine.en.md)*
 
-`src/diff/engine.rs` に対応する設計書。[`diff/model.rs`](model.md) が定義する `WorkbookDiff` を、2つの `model::Workbook` から実際に計算するロジックを担う（[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)、スタイル・セル結合差分は[Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)）。
+`src/diff/engine.rs` に対応する設計書。[`diff/model.rs`](model.md) が定義する `WorkbookDiff` を、2つの `model::Workbook` から実際に計算するロジックを担う（[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3)、スタイル・セル結合差分は[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)）。
 
 ## アルゴリズム選定の経緯
 
-[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) のPoC（`poc/issue3-poc`）は、行/列の挿入・削除によるセル座標のシフトを検出する「2D LCSアライメント」（列のLCS→行のLCSの2段階）を実装していた。これを実際にビルド・実行して機能面での正しさを検証した結果、小規模サンプルでは主張通り正しく動作することを確認した（[Issue #3コメント](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3#issuecomment-5382524419)、`poc/issue3-poc/output/verification_report.md`）一方、`align_columns`/`align_rows_2d` を直接ベンチマークしたところ、明確な **O(distinct_rows² + distinct_cols²)** の時間・メモリ挙動を実測した:
+[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) のPoC（`poc/issue3-poc`）は、行/列の挿入・削除によるセル座標のシフトを検出する「2D LCSアライメント」（列のLCS→行のLCSの2段階）を実装していた。これを実際にビルド・実行して機能面での正しさを検証した結果、小規模サンプルでは主張通り正しく動作することを確認した（[Issue #3コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/3#issuecomment-5382524419)、`poc/issue3-poc/output/verification_report.md`）一方、`align_columns`/`align_rows_2d` を直接ベンチマークしたところ、明確な **O(distinct_rows² + distinct_cols²)** の時間・メモリ挙動を実測した:
 
 | 対象 | 入力サイズ | 実行時間 |
 |---|---|---|
@@ -17,7 +17,7 @@
 
 サイズを倍にする度に実行時間が約4倍（=2²）で増加しており、dpテーブル自体のメモリも `(R+1)×(R+1)` の `usize` で行数の2乗に比例する（4,000行で約128MB、100,000行では約80GB相当と試算）。これは `lib.rs` が明言する「行・列数が極端に多い方眼紙Excelに最適化」という本クレートの設計目標と正面から矛盾し、また `resolve::merge::MAX_MERGE_REGIONS`/`resolve::column_width::MAX_COLUMN_WIDTH_RANGES`（[resolve/merge.md](../resolve/merge.md)/[resolve/column_width.md](../resolve/column_width.md)）が「O(N²)になりうる構造には上限を設けてfail-fastする」と既に確立している防御パターンとも整合しない。
 
-このため、本ファイルはPoCの2D LCSアライメントをそのまま移植せず、**座標一致ベースの軽量差分をデフォルトとして採用**した。行/列挿入検出（アライメントベースの差分）は上限付きオプトイン機能として別issue（[#4](https://github.com/MinamiyamaKotaro/xlsxparser/issues/4) 行、[#5](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5) 列）で管理し、本ファイルのスコープには含めない。
+このため、本ファイルはPoCの2D LCSアライメントをそのまま移植せず、**座標一致ベースの軽量差分をデフォルトとして採用**した。行/列挿入検出（アライメントベースの差分）は上限付きオプトイン機能として別issue（[#4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4) 行、[#5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5) 列）で管理し、本ファイルのスコープには含めない。
 
 ## スタイル差分の疎さ（Issue #8）
 
@@ -34,7 +34,7 @@
 - シート名の和集合を走査し、片側にのみ存在するシート（`Added`/`Deleted`）、両側に存在するシート（`Modified`——可視性変更やセル/結合差分の有無を判定）をそれぞれ処理する
 - 1シート内のセル差分を、`Sheet::iter_cells` が返す `CellRef` 昇順（行→列）のイテレータを2本同時に前進させる「マージジョイン」方式で計算する（`diff_cells`）。座標を比較し、一致すれば値・スタイルを比較して `Modified` の要否を判定、片側にしか無い座標はそのまま `Added`/`Deleted` とする
 - 1シート内の結合差分を、`Sheet::merged_regions()`（Issue #8で新設した `pub(crate)` アクセサ）が返す `HashMap<CellRef, MergedRegion>` を起点座標でルックアップ・比較することで計算する（`diff_merges`）。詳細度・計算量は下記参照
-- **含まない責務**: 差分結果の型定義そのもの（[`diff/model.rs`](model.md)）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。スタイル・結合差分も[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)で永続化された）、行/列挿入を検出するアライメントベースの差分（未決事項1、Issue #4/#5参照）
+- **含まない責務**: 差分結果の型定義そのもの（[`diff/model.rs`](model.md)）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。スタイル・結合差分も[Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)で永続化された）、行/列挿入を検出するアライメントベースの差分（未決事項1、Issue #4/#5参照）
 
 ## 主要な型・関数（案）
 
@@ -199,9 +199,9 @@ fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
 
 ## 未決事項 / オープンクエスチョン
 
-1. **行/列挿入アライメントモードの実装場所・API形状**: [Issue #4](https://github.com/MinamiyamaKotaro/xlsxparser/issues/4)（行）・[Issue #5](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5)（列）が要求する上限付きオプトインのアライメントベース差分を、本ファイルへ関数追加（例: `diff_workbooks_aligned(base, target, limits) -> Result<WorkbookDiff, Error>`）する形にするか、独立したサブモジュール（`diff::alignment`）に分離するかは未決定。後者を選ぶ場合、[diff/mod.md 未決事項1](mod.md)と連動する。
-2. **`similarity_score` ヒューリスティックの頑健性**: PoCの列アライメントが採用していた「1セルでも値が一致すれば候補」という緩い一致判定は、疎/重複値の多いシートで誤マッチする懸念がある（[Issue #5 検討事項](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5)参照）。アライメントモードを実装する際、より頑健な列/行シグネチャ（例: 複数セルのハッシュ組み合わせ）に置き換えるかは実装時に検討する。
-3. ~~スタイル差分の詳細化~~ → **解決**（[Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)）: `CellDiff::old_style`/`new_style` を追加し、fill色・フォント・罫線・配置・書式の新旧を出力するようにした（本ファイル「スタイル差分の疎さ」節参照）。
+1. **行/列挿入アライメントモードの実装場所・API形状**: [Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)（行）・[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)（列）が要求する上限付きオプトインのアライメントベース差分を、本ファイルへ関数追加（例: `diff_workbooks_aligned(base, target, limits) -> Result<WorkbookDiff, Error>`）する形にするか、独立したサブモジュール（`diff::alignment`）に分離するかは未決定。後者を選ぶ場合、[diff/mod.md 未決事項1](mod.md)と連動する。
+2. **`similarity_score` ヒューリスティックの頑健性**: PoCの列アライメントが採用していた「1セルでも値が一致すれば候補」という緩い一致判定は、疎/重複値の多いシートで誤マッチする懸念がある（[Issue #5 検討事項](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)参照）。アライメントモードを実装する際、より頑健な列/行シグネチャ（例: 複数セルのハッシュ組み合わせ）に置き換えるかは実装時に検討する。
+3. ~~スタイル差分の詳細化~~ → **解決**（[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)）: `CellDiff::old_style`/`new_style` を追加し、fill色・フォント・罫線・配置・書式の新旧を出力するようにした（本ファイル「スタイル差分の疎さ」節参照）。
 4. **シート順序変更の扱い**: `diff_workbooks` はシートを名前（`BTreeSet<&str>` によるソート順）で対応付けており、`workbook.xml` の `<sheets>` 定義順が入れ替わった場合でも「シート順序が変わった」という差分は一切報告しない（同名シートの中身が同一なら無視される）。ワークブックレベルでシート順序の変更を追跡する要求が生じた場合、`WorkbookDiff` へ別途フィールドを追加するかは未決定。
 5. **`MergeDiff` の上限**: `diff_merges` 自体には `resolve::merge::MAX_MERGE_REGIONS` のような専用の上限チェックは無い——ただし結合登録自体が `resolve::merge::resolve` の時点で既にその上限（20,000件）で制限されているため、diff計算時点で追加の上限を設ける必要は無いと判断した（実測上も20,000件で1.5ms程度）。将来的に上限自体が緩和された場合は再検討が必要。
 6. **非表示（hidden/veryHidden）シートを差分対象から除外するオプションの要否**（[Issue #16](https://github.com/MinamiyamaKotaro/exceldiff/issues/16)）: `diff_workbooks`/`diff_sheet` は現状 `SheetVisibility` によるフィルタを一切行わず、`Hidden`/`VeryHidden` のシートも `Visible` のシートと全く同じにセル差分・結合差分の対象にする（`hidden_and_very_hidden_sheets_are_all_included`（`src/pipeline.rs`）が示す通り、パース段階でも非表示シートは除外されない）。これは「非表示シートだから除外する」という要求が現時点で無いことによる、意図的な現状維持の判断——将来「非表示シートは差分ノイズになるので除外したい」あるいは逆に「非表示シートにこそ意図的に隠された変更が多い」といった要求が具体化した場合、オプトインのフィルタ（例: `veryHidden`/`hidden`を個別に制御可能な引数）を追加するかを検討する。`hidden_sheet_cell_changes_are_diffed_just_like_visible_ones`（`src/diff/engine.rs`）がこの「常時対象」という現在の契約を固定するリグレッションテストとして機能する。

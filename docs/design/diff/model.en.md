@@ -2,7 +2,7 @@
 
 *[日本語](model.md)*
 
-Design doc for `src/diff/model.rs`. Defines the output shape ([`diff/engine.rs`](engine.en.md) produces, [`diff/storage.rs`](storage.en.md) persists) of a diff result — `WorkbookDiff`/`SheetDiff`/`CellDiff`/`MergeDiff`/`CellPos`/`DiffStatus` ([Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3); style and merged-cell diffs added by [Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)). Where [`json.rs`](../json.en.md) turns a full `model::Workbook` snapshot into JSON, this file makes its **diff** representable as JSON — effectively "json.rs's diff counterpart."
+Design doc for `src/diff/model.rs`. Defines the output shape ([`diff/engine.rs`](engine.en.md) produces, [`diff/storage.rs`](storage.en.md) persists) of a diff result — `WorkbookDiff`/`SheetDiff`/`CellDiff`/`MergeDiff`/`CellPos`/`DiffStatus` ([Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3); style and merged-cell diffs added by [Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)). Where [`json.rs`](../json.en.md) turns a full `model::Workbook` snapshot into JSON, this file makes its **diff** representable as JSON — effectively "json.rs's diff counterpart."
 
 ## Responsibility / Scope
 
@@ -10,7 +10,7 @@ Design doc for `src/diff/model.rs`. Defines the output shape ([`diff/engine.rs`]
 - Reuses [`json.rs`](../json.en.md)'s `JsonCellValue` for `CellDiff::old_value`/`new_value` and its `JsonStyle` for `old_style`/`new_style` (both widened to `pub` for this purpose — see Dependencies) rather than defining its own value/style representations
 - Derives `serde::Serialize` on every type, guaranteeing `WorkbookDiff` is directly JSON-serializable
 - Follows [json.rs](../json.en.md)'s existing sparse-output convention, but **deliberately uses a different granularity** for `old_value`/`new_value` versus `old_style`/`new_style` (see `CellDiff`'s doc comment and [engine.md](engine.en.md)'s "Style diffs are sparser" section)
-- **Not responsible for**: the diff computation logic itself ([`diff/engine.rs`](engine.en.md)), persistence to SQLite ([`diff/storage.rs`](storage.en.md) — `old_style`/`new_style`/`merges` are also persisted now, as of [Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9))
+- **Not responsible for**: the diff computation logic itself ([`diff/engine.rs`](engine.en.md)), persistence to SQLite ([`diff/storage.rs`](storage.en.md) — `old_style`/`new_style`/`merges` are also persisted now, as of [Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9))
 
 ## Key Types / Functions
 
@@ -119,9 +119,9 @@ pub struct WorkbookDiff {
 ## Dependencies
 
 - Depends on: [`json.rs`](../json.en.md) (`JsonCellValue`, `JsonStyle` — both widened to `pub` for reuse; `JsonStyle`'s own nested `JsonFont`/`JsonColorRef`/`JsonBorders` were likewise widened to `pub`, with every field of these structs made `pub` too — aligning the whole `JsonStyle` family with `CellDiff`/`SheetDiff`'s "fully public plain data" design), [`model/cell.rs`](../model/cell.en.md) (`CellRef` — the conversion source for `CellPos`). Depends on the external crate `serde`.
-- Depended on by: [`diff/engine.rs`](engine.en.md) (constructs and returns each type), [`diff/storage.rs`](storage.en.md) (reads `CellDiff::old_value`/`new_value`/`old_style`/`new_style`/`DiffStatus`/`SheetDiff::merges` when converting to SQL rows — style and merge diffs joined the set read here as of [Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)), [`lib.rs`](../lib.en.md) (re-exports `CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff` onto the crate root via [`diff/mod.rs`](mod.en.md))
+- Depended on by: [`diff/engine.rs`](engine.en.md) (constructs and returns each type), [`diff/storage.rs`](storage.en.md) (reads `CellDiff::old_value`/`new_value`/`old_style`/`new_style`/`DiffStatus`/`SheetDiff::merges` when converting to SQL rows — style and merge diffs joined the set read here as of [Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)), [`lib.rs`](../lib.en.md) (re-exports `CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff` onto the crate root via [`diff/mod.rs`](mod.en.md))
 
-Reusing `JsonCellValue`/`JsonStyle` rather than duplicating them guarantees, at the type level, that the same cell value/style serializes identically whether it reaches JSON via `to_json_string` (a full snapshot) or via `diff_workbooks` (a diff) — extending to style the same departure from [Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)'s PoC (which defined its own parallel `JsonValue` type) that `CellDiff::old_value`/`new_value` already made.
+Reusing `JsonCellValue`/`JsonStyle` rather than duplicating them guarantees, at the type level, that the same cell value/style serializes identically whether it reaches JSON via `to_json_string` (a full snapshot) or via `diff_workbooks` (a diff) — extending to style the same departure from [Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3)'s PoC (which defined its own parallel `JsonValue` type) that `CellDiff::old_value`/`new_value` already made.
 
 `CellDiff` carries no `old_row`/`old_col`, and `MergeDiff` carries no separate `old_start`/`new_start` pair, because the current default engine never detects coordinate shifts in the first place (see [engine.md](engine.en.md)).
 
@@ -136,5 +136,5 @@ Reusing `JsonCellValue`/`JsonStyle` rather than duplicating them guarantees, at 
 ## Open Questions
 
 1. **Type extension for a future row/column-alignment mode**: how `CellDiff`/`MergeDiff`'s coordinate fields would need to change is still undecided (unchanged by this update).
-2. ~~Style/merged-cell diffs~~ → **Partially resolved** ([Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)): added `CellDiff::old_style`/`new_style` (fill color, font, borders, alignment, number format) and `SheetDiff::merges`. Formula/column-width/image diffs remain unaddressed.
-3. ~~Reflecting style/merge diffs in SQLite persistence~~ → **Resolved** ([Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)): `diff::storage::DiffStore::save_diff` now persists `old_style`/`new_style` into `diff_records` and `merges` into the new `merge_diff_records` table. See [storage.en.md](storage.en.md) for details.
+2. ~~Style/merged-cell diffs~~ → **Partially resolved** ([Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)): added `CellDiff::old_style`/`new_style` (fill color, font, borders, alignment, number format) and `SheetDiff::merges`. Formula/column-width/image diffs remain unaddressed.
+3. ~~Reflecting style/merge diffs in SQLite persistence~~ → **Resolved** ([Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)): `diff::storage::DiffStore::save_diff` now persists `old_style`/`new_style` into `diff_records` and `merges` into the new `merge_diff_records` table. See [storage.en.md](storage.en.md) for details.
