@@ -107,7 +107,7 @@ use crate::error::{Error, Result};
 use crate::json::{cell_value_to_json, style_to_json};
 use crate::model::{Cell, CellValue, Sheet, Workbook};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// A column is only eligible for *partial*-overlap content-based matching
 /// (i.e. matching that doesn't require an exact header match, and doesn't
@@ -162,17 +162,32 @@ pub(crate) const MAX_COLUMN_ALIGNMENT_COST: usize = 10_000_000;
 /// factor), bounding the *memory* `align_columns`'s `scores`/`dp` matrices
 /// need — independent of `MAX_COLUMN_ALIGNMENT_COST`, which only bounds
 /// matching *time*. These are genuinely different constraints: a one-row
-/// sheet with ~3,162 distinct columns per side has a rows-weighted cost of
-/// only ~10,000,000 (well within budget) yet would still allocate two
-/// `Vec<Vec<u64>>` matrices of roughly `cols² * 8 bytes` each — about
-/// 160MB combined — before any matching even runs, regardless of how few
-/// rows exist to compare. Both `scores` (`cols_base * cols_target * 8`
-/// bytes) and `dp` (`(cols_base+1) * (cols_target+1) * 8` bytes, roughly
-/// the same order) are allocated up front, so capping their combined size
-/// at `MAX_COLUMN_PAIR_COUNT * 16` bytes keeps the worst case around 16MB
-/// — a bound picked independently of the time budget specifically because
-/// a sheet can clear one without clearing the other.
-pub(crate) const MAX_COLUMN_PAIR_COUNT: usize = 1_000_000;
+/// sheet with ~632 distinct columns per side has a rows-weighted cost of
+/// only ~399,424 (well within `MAX_COLUMN_ALIGNMENT_COST`) yet would still
+/// allocate the `scores`/`dp` matrices below regardless of how few rows
+/// exist to compare.
+///
+/// Sized from the real allocated types, not estimated (a Copilot review
+/// caught an earlier version of this comment describing a flat
+/// `Vec<Vec<u64>>` shape left over from before `Score` became a tuple,
+/// understating the true cost by more than 2x): `Score` is `(u64, u64)`,
+/// 16 bytes (confirmed via `size_of::<Score>()`). `scores:
+/// Vec<Vec<Option<Score>>>` stores `Option<Score>`, not `Score` directly —
+/// and `Option<(u64, u64)>` has no spare bit pattern to encode `None` in,
+/// so it needs a full extra discriminant word, measuring 24 bytes
+/// (`size_of::<Option<Score>>()`), not 16. `dp: Vec<Vec<Score>>` stores
+/// the unwrapped 16-byte `Score`. At `pair_count` pairs, `scores` costs
+/// `pair_count * 24` bytes; `dp` has `(cols_base+1) * (cols_target+1)`
+/// entries — ≈ `pair_count` for large `cols_base`/`cols_target` — at 16
+/// bytes each. Combined, roughly `pair_count * 40` bytes, before either
+/// `Vec`'s own allocation overhead. Capping `pair_count` at
+/// `MAX_COLUMN_PAIR_COUNT` keeps that combined worst case around 16MB —
+/// the original ~16MB target this constant was set to before `Score`
+/// became a tuple, preserved here by lowering the pair cap to match the
+/// new, larger per-pair cost — a bound picked independently of the time
+/// budget specifically because a sheet can clear one without clearing the
+/// other.
+pub(crate) const MAX_COLUMN_PAIR_COUNT: usize = 400_000;
 
 /// Configuration for [`diff_workbooks_aligned_columns`]. A plain struct
 /// parameter (not a builder, not `Option<T>`), matching this crate's
@@ -495,19 +510,36 @@ fn column_contents(sheet: &Sheet) -> Vec<ColumnContent<'_>> {
 /// this sheet's columns are known — a header can only be judged unique or
 /// duplicated in relation to its *siblings*, so this has to run as a
 /// second pass over the whole column set rather than while building each
-/// `ColumnContent` in isolation. O(cols²) in the number of headered
-/// columns, the same order of work `align_columns` already budgets for
-/// (see `MAX_COLUMN_PAIR_COUNT`).
+/// `ColumnContent` in isolation.
+///
+/// O(headered cols) via a `HashMap` counting each header text's
+/// occurrences, not the O(cols²) pairwise comparison an earlier version
+/// used. That earlier version's doc comment justified the quadratic cost
+/// as "the same order of work `align_columns` already budgets for" — but
+/// a Copilot review pointed out that's only true for a *symmetric* sheet
+/// pair. `align_sheet_columns`'s budget check bounds `base_col_count *
+/// target_col_count` (see `MAX_COLUMN_PAIR_COUNT`), not either side's
+/// column count on its own — so an asymmetric pair (e.g. one side with a
+/// single column, the other with a huge number of headered columns) could
+/// keep the product comfortably under budget while this function's own
+/// cost, being quadratic in *one side's* column count alone, still blew
+/// up. Counting header-text occurrences directly removes the quadratic
+/// cost at the source instead of trying to extend the budget check to
+/// cover it. `header: Option<&CellValue>` is always `Text` when present
+/// (see that field's doc comment), so matching it out to a plain `&str`
+/// is enough to key the count — no need to hash a whole `CellValue`
+/// (which can't derive `Hash` anyway, because of `Number(f64)`).
 fn mark_unique_headers(cols: &mut [ColumnContent<'_>]) {
-    for i in 0..cols.len() {
-        let Some(header) = cols[i].header else {
-            continue;
-        };
-        let is_duplicate = cols
-            .iter()
-            .enumerate()
-            .any(|(j, c)| j != i && c.header == Some(header));
-        cols[i].header_is_unique = !is_duplicate;
+    let mut header_counts: HashMap<&str, usize> = HashMap::new();
+    for col in cols.iter() {
+        if let Some(CellValue::Text(header)) = col.header {
+            *header_counts.entry(header.as_ref()).or_insert(0) += 1;
+        }
+    }
+    for col in cols.iter_mut() {
+        if let Some(CellValue::Text(header)) = col.header {
+            col.header_is_unique = header_counts[header.as_ref()] == 1;
+        }
     }
 }
 
