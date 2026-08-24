@@ -194,3 +194,46 @@ pub fn merge_added() -> (Vec<u8>, Vec<u8>) {
         ]),
     )
 }
+
+/// A1's style id changes 0 -> 1 (default -> bold, same as
+/// [`style_only_change`]) on the very same sheet where C1:D1 also becomes
+/// newly merged (same as [`merge_added`]) — unlike those two fixtures,
+/// which each isolate a single kind of appearance-only change, this one
+/// puts a `CellDiff` style change and a `MergeDiff` side by side in one
+/// `SheetDiff`, the shape `diff::storage::DiffStore::save_diff` actually
+/// walks in production (Issue #9: its `for sheet in &diff.sheets { for
+/// cell ...; for merge ... }` loop processes both from the same `sheet`
+/// value, a path neither single-purpose fixture alone exercises).
+pub fn style_and_merge_changed() -> (Vec<u8>, Vec<u8>) {
+    let build = |rows: &str, merge_cells_xml: &str| {
+        build_zip(&[
+            (
+                "xl/_rels/workbook.xml.rels",
+                rels_xml(&[
+                    ("rId1", "worksheet", "worksheets/sheet1.xml"),
+                    ("rId2", "styles", "styles.xml"),
+                ])
+                .as_bytes(),
+            ),
+            (
+                "xl/workbook.xml",
+                workbook_xml(&[("Sheet1", "rId1", None)]).as_bytes(),
+            ),
+            ("xl/styles.xml", FONT_STYLES_XML),
+            (
+                "xl/worksheets/sheet1.xml",
+                worksheet_xml(rows, merge_cells_xml).as_bytes(),
+            ),
+        ])
+    };
+
+    let base_rows = r#"<row r="1"><c r="A1" s="0"><v>1</v></c><c r="C1"><v>2</v></c></row>"#;
+    let target_rows = r#"<row r="1"><c r="A1" s="1"><v>1</v></c><c r="C1"><v>2</v></c></row>"#;
+    (
+        build(base_rows, ""),
+        build(
+            target_rows,
+            r#"<mergeCells count="1"><mergeCell ref="C1:D1"/></mergeCells>"#,
+        ),
+    )
+}

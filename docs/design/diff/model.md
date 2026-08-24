@@ -10,7 +10,7 @@
 - `CellDiff::old_value`/`new_value` の型として [`json.rs`](../json.md) の `JsonCellValue` を、`CellDiff::old_style`/`new_style` の型として同じく `JsonStyle` を再利用する（いずれも本ファイルの都合で `pub` へ変更——依存関係セクション参照）。独自の値・スタイル表現を新設しない
 - `serde::Serialize` を各型へ導出し、`WorkbookDiff` がそのままJSONへシリアライズ可能であることを保証する
 - 「報告すべき情報が無ければフィールド自体を省略する」という [json.rs](../json.md) 既存の疎な出力方針を踏襲しつつ、`old_value`/`new_value` と `old_style`/`new_style` とで**意図的に粒度を変える**（詳細は`CellDiff`のdocコメントおよび[engine.md](engine.md)「スタイル差分の疎さ」参照）
-- **含まない責務**: 差分の計算ロジックそのもの（これらの型を実際にどう構築するかは[`diff/engine.rs`](engine.md)の責務）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。`old_style`/`new_style`/`merges` は現状永続化されない——[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)）
+- **含まない責務**: 差分の計算ロジックそのもの（これらの型を実際にどう構築するかは[`diff/engine.rs`](engine.md)の責務）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。`old_style`/`new_style`/`merges` も[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)で永続化された）
 
 ## 主要な型・関数
 
@@ -116,7 +116,7 @@ pub struct WorkbookDiff {
 ## 依存関係
 
 - 依存先: [`json.rs`](../json.md)（`JsonCellValue`、`JsonStyle`——いずれも`pub`化して再利用。`JsonStyle`が内部で持つ`JsonFont`/`JsonColorRef`/`JsonBorders`も同様に`pub`化し、かつ構造体の全フィールドを`pub`にした——`CellDiff`/`SheetDiff`同様、外部からフィールドを直接読める全公開データ型という設計方針にJsonStyle一族を揃えるため）、[`model/cell.rs`](../model/cell.md)（`CellRef`——`CellPos`への変換元）。外部クレート`serde`。
-- 依存元: [`diff/engine.rs`](engine.md)（各型を構築して返す）、[`diff/storage.rs`](storage.md)（`CellDiff::old_value`/`new_value`・`DiffStatus`をSQLへ変換する際に参照——`old_style`/`new_style`/`merges`は現状参照しない、[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)参照）、[`lib.rs`](../lib.md)（`CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff`を[`diff/mod.rs`](mod.md)経由でクレートルートへ再エクスポート）
+- 依存元: [`diff/engine.rs`](engine.md)（各型を構築して返す）、[`diff/storage.rs`](storage.md)（`CellDiff::old_value`/`new_value`/`old_style`/`new_style`・`DiffStatus`・`SheetDiff::merges`をSQLへ変換する際に参照——[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)でスタイル・結合差分も参照対象に加わった）、[`lib.rs`](../lib.md)（`CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff`を[`diff/mod.rs`](mod.md)経由でクレートルートへ再エクスポート）
 
 `JsonCellValue`/`JsonStyle`を独自に複製せず再利用する設計は、同一のセル値・スタイルが`to_json_string`（完全スナップショット）経由でも`diff_workbooks`（差分）経由でも同じ形でシリアライズされることを型レベルで保証し、2つの独立した表現が将来ズレていくリスクを構造的に排除する（[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)のPoCが独自の`JsonValue`型を新設していた点からの意図的な変更を、スタイルにも一貫して適用したもの）。
 
@@ -134,4 +134,4 @@ pub struct WorkbookDiff {
 
 1. **行/列挿入アライメントモード導入時の型拡張**: [Issue #4](https://github.com/MinamiyamaKotaro/xlsxparser/issues/4)/[Issue #5](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5)が要求するアライメントベースの差分を実装する場合、`CellDiff`/`MergeDiff`の座標フィールドをどう拡張するかは未決定（変更なし）。
 2. ~~スタイル・結合セルの差分~~ → **部分的に解決**（[Issue #8](https://github.com/MinamiyamaKotaro/xlsxparser/issues/8)）: `CellDiff::old_style`/`new_style`（fill色・フォント・罫線・配置・書式）と`SheetDiff::merges`を追加した。数式・列幅・画像の差分は依然未着手。
-3. **SQLite永続化へのスタイル・結合差分の反映**: [Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)で別途追跡。`diff::storage::DiffStore::save_diff`は現状`old_style`/`new_style`/`merges`を一切保存しない。
+3. ~~SQLite永続化へのスタイル・結合差分の反映~~ → **解決**（[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)）: `diff::storage::DiffStore::save_diff`が`old_style`/`new_style`を`diff_records`へ、`merges`を新設の`merge_diff_records`テーブルへ保存するようになった。詳細は[storage.md](storage.md)参照。

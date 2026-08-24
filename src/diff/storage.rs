@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Minamiyama Kotaro
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! SQLite persistence for workbook revisions and diffs (Issue #3). Only
+//! SQLite persistence for workbook revisions and diffs (Issue #3), including
+//! the style- and merged-region-diff columns/table added for Issue #9. Only
 //! compiled with the `diff-storage` Cargo feature, which pulls in
 //! `rusqlite` (bundled SQLite) — kept optional so a consumer that only
 //! calls `parse_workbook` never pays that compile-time cost.
@@ -13,6 +14,30 @@ use crate::Result;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
+/// Schema for a freshly created database. `diff_records.old_style_json`/
+/// `new_style_json` and the `merge_diff_records` table persist
+/// `CellDiff::old_style`/`new_style` and `SheetDiff::merges` (Issue #9) —
+/// computed by `diff::engine` since Issue #8 but, before Issue #9,
+/// silently dropped by `save_diff`.
+///
+/// Style is stored as two extra columns directly on `diff_records`
+/// ("inline") rather than in a separate table keyed by cell, and merges get
+/// their own table (`merge_diff_records`) rather than a column on
+/// `diff_records` — a merged region is never a single cell, so folding it
+/// into the per-cell table would be unnatural. Both choices were verified
+/// against a rejected alternative (a normalized `style_diff_records` table
+/// plus a `style_catalog` dictionary table) by two rounds of PoC
+/// benchmarking (`poc/issue9-poc`, `poc/issue9-poc-v2`, referenced from
+/// Issue #9): the inline column design was consistently faster to write
+/// (3-18% lower wall-clock `save_diff` time) and smaller on disk (3-5%
+/// fewer bytes) than the normalized alternatives, with no measurable
+/// memory difference between designs (dominated by workbook parsing/diffing,
+/// not the storage layer) — see `storage.md`'s Open Questions for the full
+/// writeup. A dictionary table only wins when the same style JSON repeats
+/// across a very large number of cells (e.g. shared table formatting), and
+/// even then only in disk size, not write latency once catalog lookups are
+/// on the hot path — not worth the extra JOIN this crate's "lightweight,
+/// simple, minimal dependencies" design goal exists to avoid.
 const SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS revisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,12 +57,33 @@ CREATE TABLE IF NOT EXISTS diff_records (
     kind TEXT NOT NULL,
     old_value_json TEXT,
     new_value_json TEXT,
+    old_style_json TEXT,
+    new_style_json TEXT,
     FOREIGN KEY(base_revision_id) REFERENCES revisions(id),
     FOREIGN KEY(target_revision_id) REFERENCES revisions(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_diff_target ON diff_records(target_revision_id);
 CREATE INDEX IF NOT EXISTS idx_diff_base_target ON diff_records(base_revision_id, target_revision_id);
+
+CREATE TABLE IF NOT EXISTS merge_diff_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_revision_id INTEGER NOT NULL,
+    target_revision_id INTEGER NOT NULL,
+    sheet_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    start_row INTEGER NOT NULL,
+    start_col INTEGER NOT NULL,
+    old_end_row INTEGER,
+    old_end_col INTEGER,
+    new_end_row INTEGER,
+    new_end_col INTEGER,
+    FOREIGN KEY(base_revision_id) REFERENCES revisions(id),
+    FOREIGN KEY(target_revision_id) REFERENCES revisions(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merge_target ON merge_diff_records(target_revision_id);
+CREATE INDEX IF NOT EXISTS idx_merge_base_target ON merge_diff_records(base_revision_id, target_revision_id);
 ";
 
 /// A SQLite-backed store of workbook revisions and the diffs between them.
@@ -73,7 +119,58 @@ impl DiffStore {
     }
 
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(SCHEMA_SQL).map_err(storage_err)
+        self.conn.execute_batch(SCHEMA_SQL).map_err(storage_err)?;
+        self.migrate_pre_issue_9_schema()
+    }
+
+    /// A database created by a pre-Issue #9 version of this crate has a
+    /// `diff_records` table without `old_style_json`/`new_style_json`, and
+    /// no `merge_diff_records` table at all — `CREATE TABLE IF NOT EXISTS`
+    /// above leaves such a table exactly as it already is, since it exists.
+    /// Detects that case via `PRAGMA table_info` and adds the missing
+    /// columns with `ALTER TABLE ... ADD COLUMN` (nullable, no `DEFAULT`),
+    /// which SQLite performs as an O(1) metadata-only change — it neither
+    /// rewrites existing rows nor requires them to backfill a value, so
+    /// every pre-existing row simply reads back with `NULL` in the new
+    /// columns. Verified safe and fast (2ms for 100k pre-existing rows) by
+    /// `poc/issue9-poc`'s/`poc/issue9-poc-v2`'s migration benchmarks
+    /// (Issue #9). A fresh database never takes this path: its
+    /// `diff_records` already has both columns from `SCHEMA_SQL` above, so
+    /// the `PRAGMA table_info` check below finds them immediately.
+    ///
+    /// The two columns are checked and added **independently** rather than
+    /// gating both `ALTER TABLE`s behind a single `old_style_json`
+    /// existence check: `execute_batch` (`sqlite3_exec`) does not wrap
+    /// multiple statements in an implicit transaction, so a process that
+    /// crashed (or hit any other error) between the two `ALTER TABLE`s on
+    /// a previous `open` could have left `old_style_json` added but
+    /// `new_style_json` still missing. Gating on `old_style_json` alone
+    /// would then see it already present and skip re-attempting
+    /// `new_style_json` forever, permanently breaking every future
+    /// `save_diff` (its `INSERT` always references `new_style_json`) —
+    /// checking each column on every `open` call makes this self-healing
+    /// regardless of what a prior run left behind (code review on PR #13).
+    fn migrate_pre_issue_9_schema(&self) -> Result<()> {
+        let mut missing_column_statements = String::new();
+        for column in ["old_style_json", "new_style_json"] {
+            let has_column: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('diff_records') WHERE name = ?1")
+                .map_err(storage_err)?
+                .exists(params![column])
+                .map_err(storage_err)?;
+            if !has_column {
+                missing_column_statements.push_str(&format!(
+                    "ALTER TABLE diff_records ADD COLUMN {column} TEXT;\n"
+                ));
+            }
+        }
+        if !missing_column_statements.is_empty() {
+            self.conn
+                .execute_batch(&missing_column_statements)
+                .map_err(storage_err)?;
+        }
+        Ok(())
     }
 
     /// Saves `workbook` as a revision named `name`. When `is_head` is true,
@@ -110,15 +207,17 @@ impl DiffStore {
         Ok(id)
     }
 
-    /// Persists every cell diff in `diff` as rows in `diff_records`,
+    /// Persists every cell diff in `diff` as rows in `diff_records`
+    /// (including `CellDiff::old_style`/`new_style`, Issue #9) and every
+    /// merged-region diff as rows in `merge_diff_records` (Issue #9), all
     /// tagged with `base_revision_id`/`target_revision_id` (the ids
     /// `save_revision` returned for the two revisions being compared).
     /// Sheet-level add/delete/visibility-change info (`SheetDiff`'s own
-    /// fields, beyond its `cells`) is not persisted — `diff_records` is a
-    /// flat, per-cell table by design (Issue #3's proposed schema); a
-    /// caller that also needs sheet-level history should store
-    /// `WorkbookDiff` itself (e.g. as its own JSON blob) rather than rely
-    /// on reconstructing it from `diff_records` alone.
+    /// fields, beyond `cells`/`merges`) is still not persisted — a caller
+    /// that also needs sheet-level history should store `WorkbookDiff`
+    /// itself (e.g. as its own JSON blob) rather than rely on
+    /// reconstructing it from `diff_records`/`merge_diff_records` alone
+    /// (see `storage.md`'s Open Questions).
     pub fn save_diff(
         &mut self,
         base_revision_id: i64,
@@ -127,22 +226,25 @@ impl DiffStore {
     ) -> Result<()> {
         let tx = self.conn.transaction().map_err(storage_err)?;
         {
-            let mut stmt = tx
+            let mut cell_stmt = tx
                 .prepare(
                     "INSERT INTO diff_records (
                         base_revision_id, target_revision_id, sheet_name, row, col, kind,
-                        old_value_json, new_value_json
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        old_value_json, new_value_json, old_style_json, new_style_json
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                )
+                .map_err(storage_err)?;
+            let mut merge_stmt = tx
+                .prepare(
+                    "INSERT INTO merge_diff_records (
+                        base_revision_id, target_revision_id, sheet_name, kind,
+                        start_row, start_col, old_end_row, old_end_col, new_end_row, new_end_col
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 )
                 .map_err(storage_err)?;
 
             for sheet in &diff.sheets {
                 for cell in &sheet.cells {
-                    let kind = match cell.status {
-                        DiffStatus::Added => "added",
-                        DiffStatus::Modified => "modified",
-                        DiffStatus::Deleted => "deleted",
-                    };
                     let old_json = cell
                         .old_value
                         .as_ref()
@@ -155,18 +257,50 @@ impl DiffStore {
                         .map(serde_json::to_string)
                         .transpose()
                         .map_err(json_err)?;
+                    let old_style_json = cell
+                        .old_style
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(json_err)?;
+                    let new_style_json = cell
+                        .new_style
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(json_err)?;
 
-                    stmt.execute(params![
-                        base_revision_id,
-                        target_revision_id,
-                        sheet.name,
-                        cell.row,
-                        cell.col,
-                        kind,
-                        old_json,
-                        new_json,
-                    ])
-                    .map_err(storage_err)?;
+                    cell_stmt
+                        .execute(params![
+                            base_revision_id,
+                            target_revision_id,
+                            sheet.name,
+                            cell.row,
+                            cell.col,
+                            diff_status_str(cell.status),
+                            old_json,
+                            new_json,
+                            old_style_json,
+                            new_style_json,
+                        ])
+                        .map_err(storage_err)?;
+                }
+
+                for merge in &sheet.merges {
+                    merge_stmt
+                        .execute(params![
+                            base_revision_id,
+                            target_revision_id,
+                            sheet.name,
+                            diff_status_str(merge.status),
+                            merge.start.row,
+                            merge.start.col,
+                            merge.old_end.map(|p| p.row),
+                            merge.old_end.map(|p| p.col),
+                            merge.new_end.map(|p| p.row),
+                            merge.new_end.map(|p| p.col),
+                        ])
+                        .map_err(storage_err)?;
                 }
             }
         }
@@ -187,6 +321,17 @@ impl DiffStore {
             Some(row) => Ok(Some(row.get(0).map_err(storage_err)?)),
             None => Ok(None),
         }
+    }
+}
+
+/// `diff_records.kind`/`merge_diff_records.kind`'s shared string form —
+/// both `CellDiff::status` and `MergeDiff::status` are the same
+/// `DiffStatus` type.
+fn diff_status_str(status: DiffStatus) -> &'static str {
+    match status {
+        DiffStatus::Added => "added",
+        DiffStatus::Modified => "modified",
+        DiffStatus::Deleted => "deleted",
     }
 }
 
@@ -334,6 +479,396 @@ mod tests {
             .unwrap();
         kinds.sort();
         assert_eq!(kinds, vec!["added".to_string(), "deleted".to_string()]);
+    }
+
+    #[test]
+    fn save_diff_persists_old_and_new_style_json_when_present() {
+        // Issue #9: `CellDiff::old_style`/`new_style` (Issue #8) must now
+        // round-trip through `diff_records.old_style_json`/
+        // `new_style_json`, not be silently dropped.
+        use crate::diff::model::{CellDiff, SheetDiff};
+        use crate::{JsonCellValue, JsonColorRef, JsonFont, JsonStyle};
+
+        let mut store = DiffStore::open(":memory:").unwrap();
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+
+        let old_style = JsonStyle {
+            font: JsonFont {
+                size_pt: 11.0,
+                bold: false,
+            },
+            wrap_text: false,
+            alignment: "general",
+            number_format: None,
+            fill_fg_color: Some(JsonColorRef::Rgb("FFFF0000".to_string())),
+            fill_bg_color: None,
+            borders: None,
+        };
+        let new_style = JsonStyle {
+            font: JsonFont {
+                size_pt: 14.0,
+                bold: true,
+            },
+            ..old_style.clone()
+        };
+
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                cells: vec![CellDiff {
+                    row: 1,
+                    col: 1,
+                    status: DiffStatus::Modified,
+                    old_value: Some(JsonCellValue::Number(1.0)),
+                    new_value: Some(JsonCellValue::Number(1.0)),
+                    old_style: Some(old_style.clone()),
+                    new_style: Some(new_style.clone()),
+                }],
+                merges: Vec::new(),
+            }],
+        };
+        store.save_diff(base_id, target_id, &diff).unwrap();
+
+        let (old_style_json, new_style_json): (String, String) = store
+            .conn
+            .query_row(
+                "SELECT old_style_json, new_style_json FROM diff_records LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(old_style_json, serde_json::to_string(&old_style).unwrap());
+        assert_eq!(new_style_json, serde_json::to_string(&new_style).unwrap());
+    }
+
+    #[test]
+    fn save_diff_persists_style_json_as_null_when_absent() {
+        // A `Modified` cell whose value changed but whose style didn't
+        // carries no style fields at all (`CellDiff::old_style`'s doc
+        // comment) — the persisted row must reflect that as NULL, not an
+        // empty string or a spurious style.
+        let mut store = DiffStore::open(":memory:").unwrap();
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 2.0)], None);
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+        let diff = diff_workbooks(&base, &target);
+
+        store.save_diff(base_id, target_id, &diff).unwrap();
+
+        let (old_style_json, new_style_json): (Option<String>, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT old_style_json, new_style_json FROM diff_records LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(old_style_json, None);
+        assert_eq!(new_style_json, None);
+    }
+
+    #[test]
+    fn save_diff_persists_one_row_per_merge_diff_with_correct_kind_and_extent() {
+        // Issue #9: `SheetDiff::merges` (Issue #8) must now be walked and
+        // persisted into `merge_diff_records` — before Issue #9, save_diff
+        // never even looked at this field.
+        use crate::diff::model::{CellPos, MergeDiff, SheetDiff};
+
+        let mut store = DiffStore::open(":memory:").unwrap();
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                cells: Vec::new(),
+                merges: vec![
+                    MergeDiff {
+                        status: DiffStatus::Added,
+                        start: CellPos { row: 1, col: 1 },
+                        old_end: None,
+                        new_end: Some(CellPos { row: 1, col: 2 }),
+                    },
+                    MergeDiff {
+                        status: DiffStatus::Modified,
+                        start: CellPos { row: 3, col: 1 },
+                        old_end: Some(CellPos { row: 3, col: 2 }),
+                        new_end: Some(CellPos { row: 3, col: 3 }),
+                    },
+                    MergeDiff {
+                        status: DiffStatus::Deleted,
+                        start: CellPos { row: 5, col: 1 },
+                        old_end: Some(CellPos { row: 6, col: 1 }),
+                        new_end: None,
+                    },
+                ],
+            }],
+        };
+        store.save_diff(base_id, target_id, &diff).unwrap();
+
+        #[derive(Debug, PartialEq)]
+        struct MergeRow {
+            kind: String,
+            start_row: u32,
+            start_col: u32,
+            old_end_row: Option<u32>,
+            old_end_col: Option<u32>,
+            new_end_row: Option<u32>,
+            new_end_col: Option<u32>,
+        }
+
+        let mut stmt = store
+            .conn
+            .prepare(
+                "SELECT kind, start_row, start_col, old_end_row, old_end_col, new_end_row, new_end_col
+                 FROM merge_diff_records ORDER BY start_row",
+            )
+            .unwrap();
+        let rows: Vec<MergeRow> = stmt
+            .query_map([], |row| {
+                Ok(MergeRow {
+                    kind: row.get(0)?,
+                    start_row: row.get(1)?,
+                    start_col: row.get(2)?,
+                    old_end_row: row.get(3)?,
+                    old_end_col: row.get(4)?,
+                    new_end_row: row.get(5)?,
+                    new_end_col: row.get(6)?,
+                })
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                MergeRow {
+                    kind: "added".to_string(),
+                    start_row: 1,
+                    start_col: 1,
+                    old_end_row: None,
+                    old_end_col: None,
+                    new_end_row: Some(1),
+                    new_end_col: Some(2),
+                },
+                MergeRow {
+                    kind: "modified".to_string(),
+                    start_row: 3,
+                    start_col: 1,
+                    old_end_row: Some(3),
+                    old_end_col: Some(2),
+                    new_end_row: Some(3),
+                    new_end_col: Some(3),
+                },
+                MergeRow {
+                    kind: "deleted".to_string(),
+                    start_row: 5,
+                    start_col: 1,
+                    old_end_row: Some(6),
+                    old_end_col: Some(1),
+                    new_end_row: None,
+                    new_end_col: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn open_adds_style_columns_and_merge_table_to_a_pre_issue_9_database() {
+        // A database file created by a crate version predating Issue #9
+        // has `diff_records` without `old_style_json`/`new_style_json` and
+        // no `merge_diff_records` table at all. `DiffStore::open` on that
+        // same file must migrate it in place (via `ALTER TABLE ADD
+        // COLUMN`/`CREATE TABLE IF NOT EXISTS`) without disturbing the
+        // pre-existing row — `:memory:` can't exercise this since each
+        // `Connection::open(":memory:")` starts a fresh empty database, so
+        // a real temp file is required.
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "exceldiff-test-{}-{unique}-pre_issue_9_migration.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            // Hand-build the pre-Issue #9 schema directly, bypassing
+            // `DiffStore` entirely (it would already create the new
+            // columns/table).
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    revision_name TEXT NOT NULL,
+                    is_head INTEGER NOT NULL DEFAULT 0,
+                    full_json TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE diff_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    base_revision_id INTEGER NOT NULL,
+                    target_revision_id INTEGER NOT NULL,
+                    sheet_name TEXT NOT NULL,
+                    row INTEGER NOT NULL,
+                    col INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    old_value_json TEXT,
+                    new_value_json TEXT
+                );
+                INSERT INTO revisions (revision_name, is_head, full_json) VALUES ('v1', 1, '{}');
+                INSERT INTO diff_records (
+                    base_revision_id, target_revision_id, sheet_name, row, col, kind,
+                    old_value_json, new_value_json
+                ) VALUES (1, 1, 'Sheet1', 1, 1, 'modified', '1', '2');",
+            )
+            .unwrap();
+        }
+
+        let store = DiffStore::open(&path).unwrap();
+
+        // The pre-existing row survived, and reads back with NULL in the
+        // two new columns rather than an error or a forced rewrite.
+        let (kind, old_style_json): (String, Option<String>) = store
+            .conn
+            .query_row(
+                "SELECT kind, old_style_json FROM diff_records WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "modified");
+        assert_eq!(old_style_json, None);
+
+        // merge_diff_records now exists and is usable.
+        let merge_table_exists: bool = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'merge_diff_records'",
+                [],
+                |row| row.get(0),
+            )
+            .map(|count: i64| count > 0)
+            .unwrap();
+        assert!(merge_table_exists);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_heals_a_partially_migrated_database_missing_only_new_style_json() {
+        // Regression test for code review on PR #13: `execute_batch`
+        // (`sqlite3_exec`) does not wrap multiple `ALTER TABLE` statements
+        // in an implicit transaction, so a process that failed between
+        // adding `old_style_json` and `new_style_json` on a prior `open`
+        // could leave a database with `old_style_json` present but
+        // `new_style_json` still missing. `migrate_pre_issue_9_schema`
+        // must check (and add) each column independently rather than
+        // gating both on a single `old_style_json` existence check — the
+        // latter would see `old_style_json` already present, skip
+        // `new_style_json` forever, and break every future `save_diff`
+        // (its `INSERT` always references `new_style_json`).
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "exceldiff-test-{}-{unique}-partial_migration.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            // Hand-build a database stuck exactly mid-migration: the
+            // pre-Issue #9 `diff_records` shape, plus `old_style_json`
+            // already added but not `new_style_json` — the state a crash
+            // between the two `ALTER TABLE`s in a prior `open` would leave.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    revision_name TEXT NOT NULL,
+                    is_head INTEGER NOT NULL DEFAULT 0,
+                    full_json TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE diff_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    base_revision_id INTEGER NOT NULL,
+                    target_revision_id INTEGER NOT NULL,
+                    sheet_name TEXT NOT NULL,
+                    row INTEGER NOT NULL,
+                    col INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    old_value_json TEXT,
+                    new_value_json TEXT,
+                    old_style_json TEXT
+                );",
+            )
+            .unwrap();
+        }
+
+        let mut store = DiffStore::open(&path).unwrap();
+
+        // `new_style_json` must now exist — verified the only way that's
+        // actually load-bearing: a `save_diff` call whose `CellDiff`
+        // carries a `new_style` succeeds instead of failing with "no such
+        // column: new_style_json".
+        use crate::diff::model::{CellDiff, SheetDiff};
+        use crate::{JsonCellValue, JsonColorRef, JsonFont, JsonStyle};
+
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                cells: vec![CellDiff {
+                    row: 1,
+                    col: 1,
+                    status: DiffStatus::Modified,
+                    old_value: Some(JsonCellValue::Number(1.0)),
+                    new_value: Some(JsonCellValue::Number(1.0)),
+                    old_style: None,
+                    new_style: Some(JsonStyle {
+                        font: JsonFont {
+                            size_pt: 11.0,
+                            bold: true,
+                        },
+                        wrap_text: false,
+                        alignment: "general",
+                        number_format: None,
+                        fill_fg_color: Some(JsonColorRef::Rgb("FFFF0000".to_string())),
+                        fill_bg_color: None,
+                        borders: None,
+                    }),
+                }],
+                merges: Vec::new(),
+            }],
+        };
+        store.save_diff(base_id, target_id, &diff).unwrap();
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

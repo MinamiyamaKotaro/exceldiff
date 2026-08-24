@@ -34,7 +34,7 @@
 - シート名の和集合を走査し、片側にのみ存在するシート（`Added`/`Deleted`）、両側に存在するシート（`Modified`——可視性変更やセル/結合差分の有無を判定）をそれぞれ処理する
 - 1シート内のセル差分を、`Sheet::iter_cells` が返す `CellRef` 昇順（行→列）のイテレータを2本同時に前進させる「マージジョイン」方式で計算する（`diff_cells`）。座標を比較し、一致すれば値・スタイルを比較して `Modified` の要否を判定、片側にしか無い座標はそのまま `Added`/`Deleted` とする
 - 1シート内の結合差分を、`Sheet::merged_regions()`（Issue #8で新設した `pub(crate)` アクセサ）が返す `HashMap<CellRef, MergedRegion>` を起点座標でルックアップ・比較することで計算する（`diff_merges`）。詳細度・計算量は下記参照
-- **含まない責務**: 差分結果の型定義そのもの（[`diff/model.rs`](model.md)）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。スタイル・結合差分は現状永続化されない——[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)）、行/列挿入を検出するアライメントベースの差分（未決事項1、Issue #4/#5参照）
+- **含まない責務**: 差分結果の型定義そのもの（[`diff/model.rs`](model.md)）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。スタイル・結合差分も[Issue #9](https://github.com/MinamiyamaKotaro/xlsxparser/issues/9)で永続化された）、行/列挿入を検出するアライメントベースの差分（未決事項1、Issue #4/#5参照）
 
 ## 主要な型・関数（案）
 

@@ -148,6 +148,36 @@ fn merge_addition_is_detected_even_with_no_cell_changes_end_to_end() {
 }
 
 #[test]
+fn style_and_merge_diffs_coexist_on_the_same_sheet_end_to_end() {
+    // Issue #9: `style_only_change`/`merge_added` above each isolate a
+    // single kind of appearance-only change; production `save_diff` walks
+    // `sheet.cells` and `sheet.merges` from the *same* `SheetDiff` in one
+    // pass, a shape neither fixture alone exercises. This confirms
+    // `diff_workbooks` itself reports both independently and correctly
+    // when they occur together on one sheet.
+    let result = diff_pair(diff::style_and_merge_changed());
+
+    assert_eq!(result.sheets.len(), 1);
+    let sheet_diff = &result.sheets[0];
+
+    assert_eq!(sheet_diff.cells.len(), 1);
+    let cell = &sheet_diff.cells[0];
+    assert_eq!(cell.row, 1);
+    assert_eq!(cell.col, 1);
+    assert_eq!(cell.status, DiffStatus::Modified);
+    // Value never changed (1 on both sides) — only the style did.
+    assert_eq!(cell.old_value, cell.new_value);
+    assert!(cell.old_style.is_some());
+    assert!(cell.new_style.is_some());
+
+    assert_eq!(sheet_diff.merges.len(), 1);
+    let m = &sheet_diff.merges[0];
+    assert_eq!(m.status, DiffStatus::Added);
+    assert_eq!(m.start, exceldiff::CellPos { row: 1, col: 3 });
+    assert_eq!(m.new_end, Some(exceldiff::CellPos { row: 1, col: 4 }));
+}
+
+#[test]
 fn diff_paths_parses_both_files_from_disk_and_diffs_them() {
     let (base_bytes, target_bytes) = diff::cell_modified();
     // `std::process::id()` alone is not enough to guarantee a unique path:
@@ -204,4 +234,38 @@ fn diff_store_round_trips_a_real_parsed_workbook_as_head_json() {
     // rather than a hand-built one.
     let expected = exceldiff::to_json_string(&target).unwrap();
     assert_eq!(store.head_json().unwrap(), Some(expected));
+}
+
+#[cfg(feature = "diff-storage")]
+#[test]
+fn diff_store_saves_style_and_merge_diffs_from_a_real_parsed_workbook_without_error() {
+    // Issue #9: `save_diff` must persist `CellDiff::old_style`/`new_style`
+    // and `SheetDiff::merges` (Issue #8) rather than silently dropping
+    // them. Uses `style_and_merge_changed` — a style change and a new
+    // merge on the same sheet in one `WorkbookDiff` — so this exercises
+    // `save_diff`'s `for sheet in &diff.sheets { for cell ...; for merge
+    // ... }` loop processing both from the same `sheet` in a single
+    // transaction, not just each kind in isolation.
+    // `src/diff/storage.rs`'s own unit tests already verify the persisted
+    // column/row content in detail (hand-built `WorkbookDiff`s,
+    // module-private access to the underlying connection); this
+    // complements them by confirming `save_diff` also succeeds — no
+    // `serde_json`/`rusqlite` binding failure — when the style/merge data
+    // comes from the real parse pipeline instead, exactly as
+    // `diff_store_round_trips_a_real_parsed_workbook_as_head_json` above
+    // does for plain value diffs.
+    use exceldiff::DiffStore;
+
+    let (base_bytes, target_bytes) = diff::style_and_merge_changed();
+    let base = parse_workbook_reader(Cursor::new(base_bytes)).unwrap();
+    let target = parse_workbook_reader(Cursor::new(target_bytes)).unwrap();
+    let diff = diff_workbooks(&base, &target);
+    assert_eq!(diff.sheets[0].cells.len(), 1);
+    assert!(diff.sheets[0].cells[0].old_style.is_some());
+    assert_eq!(diff.sheets[0].merges.len(), 1);
+
+    let mut store = DiffStore::open(":memory:").unwrap();
+    let base_id = store.save_revision("base", false, &base).unwrap();
+    let target_id = store.save_revision("target", true, &target).unwrap();
+    store.save_diff(base_id, target_id, &diff).unwrap();
 }
