@@ -1066,10 +1066,13 @@ mod tests {
         // exactly what diff_workbooks would do, since neither column
         // moved. Target column 2 (genuinely new at that position, no base
         // counterpart to reconcile with) is reported as a fresh Added
-        // column. See
-        // shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match
-        // below for the longer-column case where a genuine *shift* is
-        // recognized via the exact-match rescue instead.
+        // column. See identical_low_cardinality_headerless_column_produces_no_diff
+        // for the longer-column case where the exact-match rescue
+        // positively recognizes an unchanged column, and
+        // shifted_low_cardinality_column_with_a_real_change_stays_unmatched
+        // below for the case where a genuine *shift* is deliberately left
+        // unmatched instead, because the shifted column's content also
+        // changed.
         let base = workbook(vec![sheet_with_cells(
             "Sheet1",
             &[(1, 1, 1.0), (2, 1, 0.0), (3, 1, 1.0)],
@@ -1183,32 +1186,50 @@ mod tests {
     }
 
     #[test]
-    fn shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match() {
-        // Same underlying bug as identical_low_cardinality_headerless_column_produces_no_diff,
-        // but with a genuine column shift: the low-cardinality column is
-        // byte-identical to its base counterpart, just moved from column 1
-        // to column 2 by a brand new (genuinely different-content) column
-        // 1 being inserted. The exact full-row match should still let the
-        // shifted column be recognized as "shifted, unchanged" rather than
-        // falling back to coordinate diffing.
-        let shifted = boolean_column(1, 0);
-        let base = workbook(vec![sheet_with_cells("Sheet1", &shifted)]);
+    fn shifted_low_cardinality_column_with_a_real_change_stays_unmatched() {
+        // Complements identical_low_cardinality_headerless_column_produces_no_diff
+        // (the exact-match rescue's positive case): here the shifted
+        // column has genuinely changed by one row, so it's *not* an exact
+        // match — and, below MIN_DISTINCT_FOR_CONTENT_MATCH, it has no
+        // other content signal to match on either. This module's own doc
+        // comment ("Matching heuristic") documents this as the deliberate,
+        // safe default: rather than risk a false-positive content match
+        // (the Issue #5 PoC investigation measured up to a 122%
+        // false-match rate for unrestricted low-cardinality matching), the
+        // column is left unmatched and reported as a plain
+        // delete-plus-add, exactly as diff_workbooks (no alignment at all)
+        // would report it. Every column here uses a distinct index (1, 5,
+        // 6) so no pair accidentally shares a column index and triggers
+        // align_sheet_columns's same-index coordinate fallback (see that
+        // function's doc comment) — this test is specifically about
+        // content matching correctly declining to align a genuinely
+        // low-cardinality, changed column, not about the coordinate
+        // fallback.
+        let base = workbook(vec![sheet_with_cells("Sheet1", &boolean_column(1, 0))]);
 
-        let mut target_cells = boolean_column(1, 1); // different pattern (seed 1)
-        let shifted_to_col2: Vec<(u32, u32, f64)> =
-            shifted.iter().map(|&(row, _, v)| (row, 2, v)).collect();
-        target_cells.extend(shifted_to_col2);
+        let mut shifted = boolean_column(1, 0);
+        shifted[2].2 = 1.0 - shifted[2].2; // one real value differs -> not an exact match
+        let mut target_cells: Vec<(u32, u32, f64)> =
+            shifted.into_iter().map(|(row, _, v)| (row, 5, v)).collect();
+        target_cells.extend(boolean_column(6, 1)); // a brand new, unrelated column
         let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
 
         let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
             .unwrap();
         let cells = &diff.sheets[0].cells;
-        // Only the 10 cells of the brand new column 1 should be reported
-        // — the shifted-but-unchanged column produces no diff at all.
-        assert_eq!(cells.len(), 10);
-        assert!(cells
-            .iter()
-            .all(|c| c.col == 1 && c.status == DiffStatus::Added));
+        // Not aligned: base's column (10 cells) is wholly Deleted, and
+        // both target columns (10 cells each) are wholly Added — no
+        // Modified cell and no old_col, since content matching correctly
+        // abstains rather than risk a false-positive pairing.
+        assert_eq!(cells.len(), 30);
+        assert!(cells.iter().all(|c| c.old_col.is_none()));
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Modified)
+                .count(),
+            0
+        );
     }
 
     fn sheet_with_optional_cells(name: &str, cells: &[(u32, u32, Option<CellValue>)]) -> Sheet {
