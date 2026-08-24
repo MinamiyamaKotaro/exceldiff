@@ -257,6 +257,15 @@ struct ColumnContent<'a> {
     /// Whether this column holds at least `MIN_DISTINCT_FOR_CONTENT_MATCH`
     /// distinct values — see that constant's doc comment.
     eligible_for_content_match: bool,
+    /// Number of entries in `cells` that actually carry a value
+    /// (`value.is_some()`), as opposed to `cells.len()`, which also counts
+    /// formatting-only blanks. `column_match_score` uses this — not
+    /// `cells.len()` — anywhere it needs "how much real evidence does this
+    /// column offer," since a column can carry an arbitrarily large
+    /// formatted-but-blank range (e.g. preset borders/backgrounds across
+    /// an entire imported table's unused rows) without that inflating the
+    /// sample it's safe to draw conclusions from.
+    populated_count: usize,
 }
 
 /// Diffs one sheet known to exist on both sides, aligning columns by
@@ -353,11 +362,13 @@ fn column_contents(sheet: &Sheet) -> Vec<ColumnContent<'_>> {
                 .and_then(|&(_, c)| c.value.as_ref())
                 .filter(|v| matches!(v, CellValue::Text(_)));
             let eligible_for_content_match = has_enough_distinct_values(&cells);
+            let populated_count = cells.iter().filter(|(_, c)| c.value.is_some()).count();
             ColumnContent {
                 col,
                 cells,
                 header,
                 eligible_for_content_match,
+                populated_count,
             }
         })
         .collect()
@@ -471,7 +482,12 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     }
 
     if b.eligible_for_content_match && t.eligible_for_content_match {
-        let min_len = b.cells.len().min(t.cells.len()) as u64;
+        // Populated-value count, not cells.len(): a column can carry a
+        // large formatted-but-blank range that inflates cells.len() far
+        // beyond how much real data it holds (see populated_count's doc
+        // comment), which would otherwise raise this threshold well
+        // beyond what the *actual* matching evidence could ever clear.
+        let min_len = b.populated_count.min(t.populated_count) as u64;
         let required = ((min_len as f64 * 0.2).ceil() as u64).max(2);
         return (match_count >= required).then_some(match_count);
     }
@@ -492,7 +508,12 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     // floor — to bring that chance below 1/256). A column too short to
     // clear that floor is left unmatched, the same safe default as
     // before.
-    let long_enough = b.cells.len() >= MIN_DISTINCT_FOR_CONTENT_MATCH;
+    // Populated-value count again, for the same reason as the threshold
+    // path above: MIN_DISTINCT_FOR_CONTENT_MATCH's "brings the chance of
+    // an accidental full match below 1/256" claim is about real values to
+    // compare, not the raw number of cell-map entries (which formatting
+    // alone can inflate without adding any actual comparable content).
+    let long_enough = b.populated_count >= MIN_DISTINCT_FOR_CONTENT_MATCH;
     (long_enough && columns_are_exact_match(b, t)).then_some(b.cells.len() as u64)
 }
 
@@ -950,8 +971,8 @@ mod tests {
         // MIN_DISTINCT_FOR_CONTENT_MATCH and use the threshold path, not
         // the exact-match rescue) plus 3 shared blank rows, must NOT be
         // aligned: 3 blank-row "matches" alone would have cleared the
-        // threshold (20% of 13 populated rows, rounded up, is 3) before
-        // this fix.
+        // threshold (20% of 13 total cell entries, rounded up, is 3)
+        // before this fix.
         fn column(col: u32, value_offset: f64) -> Vec<(u32, u32, Option<CellValue>)> {
             let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=10)
                 .map(|row| (row, col, Some(CellValue::Number(row as f64 + value_offset))))
@@ -977,6 +998,57 @@ mod tests {
     }
 
     #[test]
+    fn a_large_formatted_blank_range_does_not_raise_the_match_threshold_out_of_reach() {
+        // Regression test for a second Copilot review finding on the same
+        // PR: `min_len` (the threshold path) and `long_enough` (the
+        // exact-match gate) originally used `cells.len()`, which also
+        // counts formatting-only blanks — a column can carry an
+        // arbitrarily large formatted-but-empty range (e.g. preset
+        // borders/backgrounds across an entire imported table's unused
+        // rows) without that reflecting any real data. An unchanged,
+        // shifted column with exactly 8 real matching values plus 40
+        // blank cells must still be recognized as unchanged: before this
+        // fix, cells.len() = 48 would have raised the 20%
+        // threshold to `ceil(48 * 0.2) = 10`, out of reach for the 8 real
+        // matches, wrongly rejecting an otherwise-perfect match.
+        fn column_with_blank_range(col: u32) -> Vec<(u32, u32, Option<CellValue>)> {
+            let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8)
+                .map(|row| (row, col, Some(CellValue::Number(row as f64))))
+                .collect();
+            cells.extend((9..=48).map(|row| (row, col, None)));
+            cells
+        }
+
+        let base = workbook(vec![sheet_with_optional_cells(
+            "Sheet1",
+            &column_with_blank_range(1),
+        )]);
+
+        // Column 1 shifts to column 2, byte-identical (including the
+        // blank range); column 1 in the target is a brand new, unrelated
+        // column with no blanks at all.
+        let mut target_cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8)
+            .map(|row| (row, 1u32, Some(CellValue::Number(2000.0 + row as f64))))
+            .collect();
+        target_cells.extend(
+            column_with_blank_range(1)
+                .into_iter()
+                .map(|(row, _, v)| (row, 2u32, v)),
+        );
+        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &target_cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Only the 8 cells of the brand new column 1 are reported — the
+        // shifted column (with its blank range) produces no diff at all.
+        assert_eq!(cells.len(), 8);
+        assert!(cells
+            .iter()
+            .all(|c| c.col == 1 && c.status == DiffStatus::Added));
+    }
+
+    #[test]
     fn identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff() {
         // Complements formatting_only_blank_cells_do_not_inflate_the_partial_match_threshold:
         // the fix there must not overcorrect into treating two genuinely
@@ -985,10 +1057,17 @@ mod tests {
         // count_matching_rows) counts a shared blank row as consistent —
         // it already requires every row to agree before returning `true`
         // at all, so the coincidental-match risk that motivated excluding
-        // blanks from count_matching_rows doesn't apply here.
-        let cells: Vec<(u32, u32, Option<CellValue>)> = (1..=7)
+        // blanks from count_matching_rows doesn't apply here. Uses 8 real
+        // values (not 7) plus the blank, so `populated_count` alone — not
+        // the blank cell padding it out — is what clears
+        // MIN_DISTINCT_FOR_CONTENT_MATCH (a Copilot review caught an
+        // earlier version of this test relying on the exact miscount it
+        // was meant to guard against: `cells.len()` including the blank
+        // cell to reach the floor, rather than genuinely having enough
+        // real values).
+        let cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8)
             .map(|row| (row, 1, Some(CellValue::Number(row as f64))))
-            .chain(std::iter::once((8, 1, None)))
+            .chain(std::iter::once((9, 1, None)))
             .collect();
         let base = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
         let target = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
