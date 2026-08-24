@@ -137,21 +137,37 @@ impl DiffStore {
     /// (Issue #9). A fresh database never takes this path: its
     /// `diff_records` already has both columns from `SCHEMA_SQL` above, so
     /// the `PRAGMA table_info` check below finds them immediately.
+    ///
+    /// The two columns are checked and added **independently** rather than
+    /// gating both `ALTER TABLE`s behind a single `old_style_json`
+    /// existence check: `execute_batch` (`sqlite3_exec`) does not wrap
+    /// multiple statements in an implicit transaction, so a process that
+    /// crashed (or hit any other error) between the two `ALTER TABLE`s on
+    /// a previous `open` could have left `old_style_json` added but
+    /// `new_style_json` still missing. Gating on `old_style_json` alone
+    /// would then see it already present and skip re-attempting
+    /// `new_style_json` forever, permanently breaking every future
+    /// `save_diff` (its `INSERT` always references `new_style_json`) —
+    /// checking each column on every `open` call makes this self-healing
+    /// regardless of what a prior run left behind (code review on PR #13).
     fn migrate_pre_issue_9_schema(&self) -> Result<()> {
-        let has_style_columns: bool = self
-            .conn
-            .prepare(
-                "SELECT 1 FROM pragma_table_info('diff_records') WHERE name = 'old_style_json'",
-            )
-            .map_err(storage_err)?
-            .exists([])
-            .map_err(storage_err)?;
-        if !has_style_columns {
+        let mut missing_column_statements = String::new();
+        for column in ["old_style_json", "new_style_json"] {
+            let has_column: bool = self
+                .conn
+                .prepare("SELECT 1 FROM pragma_table_info('diff_records') WHERE name = ?1")
+                .map_err(storage_err)?
+                .exists(params![column])
+                .map_err(storage_err)?;
+            if !has_column {
+                missing_column_statements.push_str(&format!(
+                    "ALTER TABLE diff_records ADD COLUMN {column} TEXT;\n"
+                ));
+            }
+        }
+        if !missing_column_statements.is_empty() {
             self.conn
-                .execute_batch(
-                    "ALTER TABLE diff_records ADD COLUMN old_style_json TEXT;
-                     ALTER TABLE diff_records ADD COLUMN new_style_json TEXT;",
-                )
+                .execute_batch(&missing_column_statements)
                 .map_err(storage_err)?;
         }
         Ok(())
@@ -749,6 +765,107 @@ mod tests {
             .map(|count: i64| count > 0)
             .unwrap();
         assert!(merge_table_exists);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn open_heals_a_partially_migrated_database_missing_only_new_style_json() {
+        // Regression test for code review on PR #13: `execute_batch`
+        // (`sqlite3_exec`) does not wrap multiple `ALTER TABLE` statements
+        // in an implicit transaction, so a process that failed between
+        // adding `old_style_json` and `new_style_json` on a prior `open`
+        // could leave a database with `old_style_json` present but
+        // `new_style_json` still missing. `migrate_pre_issue_9_schema`
+        // must check (and add) each column independently rather than
+        // gating both on a single `old_style_json` existence check — the
+        // latter would see `old_style_json` already present, skip
+        // `new_style_json` forever, and break every future `save_diff`
+        // (its `INSERT` always references `new_style_json`).
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "exceldiff-test-{}-{unique}-partial_migration.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            // Hand-build a database stuck exactly mid-migration: the
+            // pre-Issue #9 `diff_records` shape, plus `old_style_json`
+            // already added but not `new_style_json` — the state a crash
+            // between the two `ALTER TABLE`s in a prior `open` would leave.
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE revisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    revision_name TEXT NOT NULL,
+                    is_head INTEGER NOT NULL DEFAULT 0,
+                    full_json TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE diff_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    base_revision_id INTEGER NOT NULL,
+                    target_revision_id INTEGER NOT NULL,
+                    sheet_name TEXT NOT NULL,
+                    row INTEGER NOT NULL,
+                    col INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    old_value_json TEXT,
+                    new_value_json TEXT,
+                    old_style_json TEXT
+                );",
+            )
+            .unwrap();
+        }
+
+        let mut store = DiffStore::open(&path).unwrap();
+
+        // `new_style_json` must now exist — verified the only way that's
+        // actually load-bearing: a `save_diff` call whose `CellDiff`
+        // carries a `new_style` succeeds instead of failing with "no such
+        // column: new_style_json".
+        use crate::diff::model::{CellDiff, SheetDiff};
+        use crate::{JsonCellValue, JsonColorRef, JsonFont, JsonStyle};
+
+        let base = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let target = Workbook::new(vec![sheet_with_one_cell("Sheet1", 1.0)], None);
+        let base_id = store.save_revision("base", false, &base).unwrap();
+        let target_id = store.save_revision("target", true, &target).unwrap();
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                cells: vec![CellDiff {
+                    row: 1,
+                    col: 1,
+                    status: DiffStatus::Modified,
+                    old_value: Some(JsonCellValue::Number(1.0)),
+                    new_value: Some(JsonCellValue::Number(1.0)),
+                    old_style: None,
+                    new_style: Some(JsonStyle {
+                        font: JsonFont {
+                            size_pt: 11.0,
+                            bold: true,
+                        },
+                        wrap_text: false,
+                        alignment: "general",
+                        number_format: None,
+                        fill_fg_color: Some(JsonColorRef::Rgb("FFFF0000".to_string())),
+                        fill_bg_color: None,
+                        borders: None,
+                    }),
+                }],
+                merges: Vec::new(),
+            }],
+        };
+        store.save_diff(base_id, target_id, &diff).unwrap();
 
         drop(store);
         let _ = std::fs::remove_file(&path);
