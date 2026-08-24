@@ -41,10 +41,19 @@
 //! unrelated low-cardinality columns clear the same similarity bar as the
 //! true match purely by chance. A threshold on the match *score* cannot
 //! fix that. What does: `MIN_DISTINCT_FOR_CONTENT_MATCH` — a column below
-//! that many distinct values is excluded from content-based matching
-//! entirely unless it has an exact header match, and is otherwise left
-//! unmatched (falling through to ordinary per-column coordinate diffing,
-//! i.e. the safe default rather than a wrong guess).
+//! that many distinct values is excluded from *partial*-overlap
+//! content-based matching entirely unless it has an exact header match.
+//! It can still be matched via one narrow exception: an **exact** match
+//! (every populated row present on both sides with an equal value, same
+//! length) is accepted even here, since the odds of two unrelated
+//! low-cardinality columns agreeing on *every* row by chance are
+//! negligible — this is what lets a low-cardinality column that merely
+//! shifted, with no actual content change, still produce no diff rather
+//! than a wholesale delete-and-re-add (see `column_match_score`'s doc
+//! comment). Anything short of that — a genuinely changed, or too-short-
+//! to-trust, low-cardinality column — is left unmatched, falling through
+//! to ordinary per-column coordinate diffing (the safe default rather
+//! than a wrong guess).
 //!
 //! # Rows are not realigned (Issue #4 is separate and unimplemented)
 //!
@@ -78,15 +87,20 @@ use crate::model::{Cell, CellValue, Sheet, Workbook};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A column is only eligible for content-based matching (i.e. matching
-/// that doesn't require an exact header match) once it holds at least this
-/// many *distinct* populated values. Below this floor, unrelated columns
-/// clear any content-similarity bar too easily by chance — see this
-/// module's doc comment ("Matching heuristic") for the measured evidence.
-/// Verified directly (PoC round 4's `min_distinct` sweep): 8 cleanly
-/// separates the safe case (≥10 distinct values: 100% match accuracy) from
-/// the dangerous one (2-4 distinct values: up to 122% false-match rate),
-/// with zero observed regression on normal-cardinality columns.
+/// A column is only eligible for *partial*-overlap content-based matching
+/// (i.e. matching that doesn't require an exact header match, and doesn't
+/// require every single row to agree) once it holds at least this many
+/// *distinct* populated values. Below this floor, unrelated columns clear
+/// any content-similarity bar too easily by chance — see this module's doc
+/// comment ("Matching heuristic") for the measured evidence. Verified
+/// directly (PoC round 4's `min_distinct` sweep): 8 cleanly separates the
+/// safe case (≥10 distinct values: 100% match accuracy) from the dangerous
+/// one (2-4 distinct values: up to 122% false-match rate), with zero
+/// observed regression on normal-cardinality columns.
+///
+/// `column_match_score` also reuses this same value as a minimum sample
+/// size for its *exact*-match rescue below the eligibility floor — see
+/// that function's doc comment.
 const MIN_DISTINCT_FOR_CONTENT_MATCH: usize = 8;
 
 /// Score bonus for an exact header match, large enough to outrank any
@@ -128,20 +142,43 @@ const HEADER_MATCH_BONUS: u64 = 2_000_000;
 /// budget class `MAX_MERGE_REGIONS` targets (10,000,000 × 2.4e-5 ≈ 240ms).
 pub(crate) const MAX_COLUMN_ALIGNMENT_COST: usize = 10_000_000;
 
+/// Cap on `distinct_cols_base * distinct_cols_target` alone (no row
+/// factor), bounding the *memory* `align_columns`'s `scores`/`dp` matrices
+/// need — independent of `MAX_COLUMN_ALIGNMENT_COST`, which only bounds
+/// matching *time*. These are genuinely different constraints: a one-row
+/// sheet with ~3,162 distinct columns per side has a rows-weighted cost of
+/// only ~10,000,000 (well within budget) yet would still allocate two
+/// `Vec<Vec<u64>>` matrices of roughly `cols² * 8 bytes` each — about
+/// 160MB combined — before any matching even runs, regardless of how few
+/// rows exist to compare. Both `scores` (`cols_base * cols_target * 8`
+/// bytes) and `dp` (`(cols_base+1) * (cols_target+1) * 8` bytes, roughly
+/// the same order) are allocated up front, so capping their combined size
+/// at `MAX_COLUMN_PAIR_COUNT * 16` bytes keeps the worst case around 16MB
+/// — a bound picked independently of the time budget specifically because
+/// a sheet can clear one without clearing the other.
+pub(crate) const MAX_COLUMN_PAIR_COUNT: usize = 1_000_000;
+
 /// Configuration for [`diff_workbooks_aligned_columns`]. A plain struct
 /// parameter (not a builder, not `Option<T>`), matching this crate's
 /// existing `SizeLimits`/`parse_workbook_with_limits` convention.
 #[derive(Debug, Clone, Copy)]
 pub struct ColumnAlignmentLimits {
-    /// Defaults to `MAX_COLUMN_ALIGNMENT_COST` — see that constant's doc
-    /// comment for how it was measured.
+    /// Cap on `distinct_cols_base * distinct_cols_target * sample_rows`
+    /// (bounds matching *time*). Defaults to `MAX_COLUMN_ALIGNMENT_COST` —
+    /// see that constant's doc comment for how it was measured.
     pub max_cost: usize,
+    /// Cap on `distinct_cols_base * distinct_cols_target` alone (bounds
+    /// score-matrix *memory*, independent of row count). Defaults to
+    /// `MAX_COLUMN_PAIR_COUNT` — see that constant's doc comment for why
+    /// this can't simply be folded into `max_cost`.
+    pub max_column_pairs: usize,
 }
 
 impl Default for ColumnAlignmentLimits {
     fn default() -> Self {
         ColumnAlignmentLimits {
             max_cost: MAX_COLUMN_ALIGNMENT_COST,
+            max_column_pairs: MAX_COLUMN_PAIR_COUNT,
         }
     }
 }
@@ -155,13 +192,15 @@ impl Default for ColumnAlignmentLimits {
 /// `diff::engine::diff_sheet` directly) — there is nothing to align when
 /// an entire sheet is new or gone.
 ///
-/// Returns `Err(Error::TooManyDistinctColumnsForAlignment)`, fail-fast and
-/// before any O(cols²) matching work, when a sheet's alignment cost would
-/// exceed `limits.max_cost` — deliberately not a silent fallback to
-/// `diff_workbooks`'s coordinate-based result, since the caller opted into
-/// alignment explicitly (see `ColumnAlignmentLimits`'s doc comment and
-/// `MAX_COLUMN_ALIGNMENT_COST`). A caller that wants automatic fallback can
-/// catch this error and call `diff_workbooks` itself.
+/// Returns `Err(Error::ColumnAlignmentCostTooHigh)`, fail-fast and before
+/// any O(cols²) matching work, when a sheet's alignment cost would exceed
+/// either `limits.max_cost` (matching time) or `limits.max_column_pairs`
+/// (score-matrix memory, checked independently since it doesn't scale with
+/// row count — see `MAX_COLUMN_PAIR_COUNT`'s doc comment) — deliberately
+/// not a silent fallback to `diff_workbooks`'s coordinate-based result,
+/// since the caller opted into alignment explicitly (see
+/// `ColumnAlignmentLimits`'s doc comment). A caller that wants automatic
+/// fallback can catch this error and call `diff_workbooks` itself.
 pub fn diff_workbooks_aligned_columns(
     base: &Workbook,
     target: &Workbook,
@@ -232,14 +271,23 @@ fn align_sheet_columns(
     let base_cols = column_contents(base);
     let target_cols = column_contents(target);
 
+    // Memory bound first: independent of row count, so it must be checked
+    // even when the rows-weighted time budget below would otherwise pass
+    // (see MAX_COLUMN_PAIR_COUNT's doc comment for why a low-row, many-column
+    // sheet needs this separately).
+    let pair_count = base_cols.len().saturating_mul(target_cols.len());
+    if pair_count > limits.max_column_pairs {
+        return Err(Error::ColumnAlignmentCostTooHigh {
+            cost: pair_count,
+            limit: limits.max_column_pairs,
+        });
+    }
+
     let sample_rows = base.max_row.max(target.max_row) as usize;
-    let cost = base_cols
-        .len()
-        .saturating_mul(target_cols.len())
-        .saturating_mul(sample_rows);
+    let cost = pair_count.saturating_mul(sample_rows);
     if cost > limits.max_cost {
-        return Err(Error::TooManyDistinctColumnsForAlignment {
-            count: cost,
+        return Err(Error::ColumnAlignmentCostTooHigh {
+            cost,
             limit: limits.max_cost,
         });
     }
@@ -366,15 +414,19 @@ fn align_columns(
         }
     }
 
+    // Standard weighted-LCS recurrence: dp[i+1][j+1] is the best of taking
+    // the (i,j) match (if it's a candidate at all) or skipping either
+    // side — *not* an unconditional diagonal step whenever a match
+    // exists. Taking the diagonal unconditionally would let a weak match
+    // (e.g. score 2) block a much stronger one available by skipping past
+    // it first (e.g. score 10 one column further along), silently
+    // reporting the correct match as a spurious Insert/Delete pair.
     let mut dp = vec![vec![0u64; m + 1]; n + 1];
     for i in 0..n {
         for j in 0..m {
             let score = scores[i][j];
-            dp[i + 1][j + 1] = if score > 0 {
-                dp[i][j] + score
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
-            };
+            let diagonal = if score > 0 { dp[i][j] + score } else { 0 };
+            dp[i + 1][j + 1] = diagonal.max(dp[i + 1][j]).max(dp[i][j + 1]);
         }
     }
 
@@ -412,18 +464,38 @@ fn align_columns(
 /// the `MIN_DISTINCT_FOR_CONTENT_MATCH` gate.
 fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     let header_match = matches!((b.header, t.header), (Some(bh), Some(th)) if bh == th);
-    if !header_match && !(b.eligible_for_content_match && t.eligible_for_content_match) {
-        return None;
-    }
-
     let match_count = count_matching_rows(b, t);
+
     if header_match {
         return Some(match_count + HEADER_MATCH_BONUS);
     }
 
-    let min_len = b.cells.len().min(t.cells.len()) as u64;
-    let required = ((min_len as f64 * 0.2).ceil() as u64).max(2);
-    (match_count >= required).then_some(match_count)
+    if b.eligible_for_content_match && t.eligible_for_content_match {
+        let min_len = b.cells.len().min(t.cells.len()) as u64;
+        let required = ((min_len as f64 * 0.2).ceil() as u64).max(2);
+        return (match_count >= required).then_some(match_count);
+    }
+
+    // Below MIN_DISTINCT_FOR_CONTENT_MATCH, no *partial* overlap can be
+    // trusted (see this module's doc comment) — but flatly refusing to
+    // match here at all means a low-cardinality column that merely
+    // shifted, with *zero* actual content change, gets reported as a
+    // wholesale delete-and-re-add instead of no diff at all, which is
+    // exactly the cascade this feature exists to avoid. An EXACT match —
+    // every populated row present on both sides with an equal value, and
+    // no extra rows on either side — is safe to accept even at low
+    // cardinality: the odds of two truly unrelated low-cardinality
+    // columns agreeing on *every single row* by chance are negligible for
+    // any column long enough to matter (e.g. even a 2-valued/boolean
+    // column needs only `MIN_DISTINCT_FOR_CONTENT_MATCH` populated rows —
+    // reused here as a minimum sample size, not just a distinct-value
+    // floor — to bring that chance below 1/256). A column too short to
+    // clear that floor is left unmatched, the same safe default as
+    // before.
+    let exact_match = b.cells.len() >= MIN_DISTINCT_FOR_CONTENT_MATCH
+        && b.cells.len() == t.cells.len()
+        && match_count == b.cells.len() as u64;
+    exact_match.then_some(match_count)
 }
 
 /// Counts rows where both columns have a cell and its value matches
@@ -451,7 +523,15 @@ fn count_matching_rows(b: &ColumnContent, t: &ColumnContent) -> u64 {
                 ti.next();
             }
             Ordering::Equal => {
-                if b_cell.value == t_cell.value {
+                // A cell can exist with `value: None` (formatting-only —
+                // see `Cell::value`'s doc comment). `Option<CellValue>`'s
+                // derived equality means `None == None`, so without the
+                // `is_some()` guard two formatting-only blank cells at the
+                // same row would count as a "matching" value despite
+                // neither side actually holding any value to compare —
+                // letting a shared blank range alone push unrelated
+                // columns over the matching threshold.
+                if b_cell.value.is_some() && b_cell.value == t_cell.value {
                     count += 1;
                 }
                 bi.next();
@@ -704,9 +784,14 @@ mod tests {
     fn low_cardinality_headerless_columns_fall_back_to_coordinate_diff_safely() {
         // Documents the deliberate tradeoff from this module's doc comment
         // ("Matching heuristic"): two boolean-valued columns with no
-        // header are never aligned, regardless of any coincidental
-        // content overlap — they're diffed as plain coordinate-based
-        // Added/Deleted, the same safe default diff_workbooks would give.
+        // header, too short (3 rows) to clear either the partial-overlap
+        // eligibility floor or the exact-match rescue's minimum sample
+        // size (both MIN_DISTINCT_FOR_CONTENT_MATCH = 8), are never
+        // aligned — they're diffed as plain coordinate-based Added/
+        // Deleted, the same safe default diff_workbooks would give. See
+        // shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match
+        // below for the longer-column case where an exact match *is*
+        // safely recognized.
         let base = workbook(vec![sheet_with_cells(
             "Sheet1",
             &[(1, 1, 1.0), (2, 1, 0.0), (3, 1, 1.0)],
@@ -734,6 +819,71 @@ mod tests {
         // "shifted, unchanged".
         assert_eq!(cells.len(), 9);
         assert!(cells.iter().all(|c| c.old_col.is_none()));
+    }
+
+    /// Boolean column, long enough (10 rows) to clear the exact-match
+    /// rescue's minimum sample size. `seed` selects between two
+    /// complementary (i.e. guaranteed to differ at every row) patterns, so
+    /// two columns built with different seeds are never an exact match.
+    fn boolean_column(col: u32, seed: u32) -> Vec<(u32, u32, f64)> {
+        (1..=10)
+            .map(|row| {
+                let value = if (row + seed).is_multiple_of(2) {
+                    1.0
+                } else {
+                    0.0
+                };
+                (row, col, value)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn identical_low_cardinality_headerless_column_produces_no_diff() {
+        // Regression test for a bug a Copilot review caught (PR #20): the
+        // low-cardinality gate originally refused *any* content match
+        // below MIN_DISTINCT_FOR_CONTENT_MATCH, including a column that
+        // didn't change or shift at all — reporting a wholesale delete +
+        // re-add for a genuinely unchanged boolean/low-cardinality column
+        // instead of no diff, exactly the cascade this feature exists to
+        // avoid. An unshifted, byte-identical low-cardinality column must
+        // still produce zero diff.
+        let cells = boolean_column(1, 0);
+        let base = workbook(vec![sheet_with_cells("Sheet1", &cells)]);
+        let target = workbook(vec![sheet_with_cells("Sheet1", &cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        assert!(diff.sheets.is_empty());
+    }
+
+    #[test]
+    fn shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match() {
+        // Same underlying bug as identical_low_cardinality_headerless_column_produces_no_diff,
+        // but with a genuine column shift: the low-cardinality column is
+        // byte-identical to its base counterpart, just moved from column 1
+        // to column 2 by a brand new (genuinely different-content) column
+        // 1 being inserted. The exact full-row match should still let the
+        // shifted column be recognized as "shifted, unchanged" rather than
+        // falling back to coordinate diffing.
+        let shifted = boolean_column(1, 0);
+        let base = workbook(vec![sheet_with_cells("Sheet1", &shifted)]);
+
+        let mut target_cells = boolean_column(1, 1); // different pattern (seed 1)
+        let shifted_to_col2: Vec<(u32, u32, f64)> =
+            shifted.iter().map(|&(row, _, v)| (row, 2, v)).collect();
+        target_cells.extend(shifted_to_col2);
+        let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Only the 10 cells of the brand new column 1 should be reported
+        // — the shifted-but-unchanged column produces no diff at all.
+        assert_eq!(cells.len(), 10);
+        assert!(cells
+            .iter()
+            .all(|c| c.col == 1 && c.status == DiffStatus::Added));
     }
 
     #[test]
@@ -775,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn distinct_column_cost_over_the_limit_is_too_many_distinct_columns_for_alignment() {
+    fn distinct_column_cost_over_the_limit_is_column_alignment_cost_too_high() {
         // 10 distinct base cols * 10 distinct target cols * 100 rows =
         // 10,000 > limit of 9,999.
         let base_cells: Vec<(u32, u32, f64)> = (1..=10)
@@ -784,14 +934,43 @@ mod tests {
         let base = workbook(vec![sheet_with_cells("Sheet1", &base_cells)]);
         let target = workbook(vec![sheet_with_cells("Sheet1", &base_cells)]);
 
-        let limits = ColumnAlignmentLimits { max_cost: 9_999 };
+        let limits = ColumnAlignmentLimits {
+            max_cost: 9_999,
+            max_column_pairs: MAX_COLUMN_PAIR_COUNT,
+        };
         let err = diff_workbooks_aligned_columns(&base, &target, limits).unwrap_err();
         match err {
-            Error::TooManyDistinctColumnsForAlignment { count, limit } => {
-                assert_eq!(count, 10_000);
+            Error::ColumnAlignmentCostTooHigh { cost, limit } => {
+                assert_eq!(cost, 10_000);
                 assert_eq!(limit, 9_999);
             }
-            other => panic!("expected TooManyDistinctColumnsForAlignment, got {other:?}"),
+            other => panic!("expected ColumnAlignmentCostTooHigh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn column_pair_count_over_the_limit_is_column_alignment_cost_too_high_even_with_one_row() {
+        // A single row keeps the rows-weighted `max_cost` budget trivially
+        // satisfied (cols * cols * 1 row is tiny), but the score-matrix
+        // memory bound (cols * cols alone) must still reject an
+        // unreasonably wide sheet — this is exactly the gap
+        // MAX_COLUMN_PAIR_COUNT closes independently of max_cost.
+        let base_cells: Vec<(u32, u32, f64)> =
+            (1..=200u32).map(|col| (1, col, col as f64)).collect();
+        let base = workbook(vec![sheet_with_cells("Sheet1", &base_cells)]);
+        let target = workbook(vec![sheet_with_cells("Sheet1", &base_cells)]);
+
+        let limits = ColumnAlignmentLimits {
+            max_cost: usize::MAX,
+            max_column_pairs: 39_999, // 200 * 200 = 40,000 > 39,999
+        };
+        let err = diff_workbooks_aligned_columns(&base, &target, limits).unwrap_err();
+        match err {
+            Error::ColumnAlignmentCostTooHigh { cost, limit } => {
+                assert_eq!(cost, 40_000);
+                assert_eq!(limit, 39_999);
+            }
+            other => panic!("expected ColumnAlignmentCostTooHigh, got {other:?}"),
         }
     }
 

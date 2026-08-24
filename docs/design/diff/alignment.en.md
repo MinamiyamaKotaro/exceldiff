@@ -18,7 +18,7 @@ This implementation reflects both conclusions, plus a scoping decision to align 
 ## Responsibility / Scope
 
 - Provides `diff_workbooks_aligned_columns`, which matches columns by content rather than position before diffing cells
-- Checks the alignment cost budget (`ColumnAlignmentLimits`) before doing any O(cols²) matching work, returning `Err(Error::TooManyDistinctColumnsForAlignment)` on overrun rather than silently falling back to `diff_workbooks`'s result — the caller opted into alignment explicitly, so whether it actually ran shouldn't be hidden from them
+- Checks the alignment cost budget (`ColumnAlignmentLimits`) before doing any O(cols²) matching work, returning `Err(Error::ColumnAlignmentCostTooHigh)` on overrun rather than silently falling back to `diff_workbooks`'s result — the caller opted into alignment explicitly, so whether it actually ran shouldn't be hidden from them
 - Reuses `diff::engine::diff_sheet` as-is for a sheet present on only one side (nothing to align when a whole sheet is new or gone)
 - Reuses `diff::engine::diff_merges` as-is for `SheetDiff::merges`, not made column-alignment-aware (see "Merged regions are not column-aware" below)
 - **Not responsible for**: the coordinate-based diff computation itself ([`engine.rs`](engine.en.md)), row alignment ([Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4), unimplemented — see "Rows are not realigned" below), persisting the alignment result (specifically `CellDiff::old_col`) to `diff::storage` (see [storage.en.md Open Question 6](storage.en.md))
@@ -35,7 +35,8 @@ Issue #4 (row insertion/deletion detection) has zero comments and zero implement
 
 ```rust
 pub struct ColumnAlignmentLimits {
-    pub max_cost: usize, // cap on distinct_cols_base * distinct_cols_target * sample_rows
+    pub max_cost: usize,         // cap on distinct_cols_base * distinct_cols_target * sample_rows
+    pub max_column_pairs: usize, // cap on distinct_cols_base * distinct_cols_target alone (row-count-independent memory bound)
 }
 
 pub fn diff_workbooks_aligned_columns(
@@ -48,20 +49,29 @@ pub fn diff_workbooks_aligned_columns(
 Algorithm (per sheet present on both sides):
 
 1. One pass over `iter_cells()` collects the set of distinct column indices on each side.
-2. Budget check: if `cols_base.len() * cols_target.len() * sample_rows > limits.max_cost`, fail immediately (before any O(cols²) matching work).
+2. The budget check is two-part (a PR #20 review finding — see "Issues found during PR review" below): first `cols_base.len() * cols_target.len() > limits.max_column_pairs` (a row-count-independent bound on the `scores`/`dp` matrices' memory), then `cols_base.len() * cols_target.len() * sample_rows > limits.max_cost` (a bound on matching time). Either overrun fails immediately, before any O(cols²) matching work.
 3. Extract each column's content (`ColumnContent`: row → cell as a `Vec`, cheaper than a `BTreeMap` since `iter_cells()` already yields rows in ascending order; a header — row 1's value, but only if it's `Text`, so a coincidental numeric match at row 1 in a headerless numeric sheet is never mistaken for a header match; and whether the column is eligible for content matching at all, i.e. holds at least `MIN_DISTINCT_FOR_CONTENT_MATCH` distinct values).
-4. Score each candidate pair (`column_match_score`): an exact header match is always a candidate (with a bonus, `HEADER_MATCH_BONUS`, that outranks any purely content-based score). Without a header match, a pair is only a candidate at all if *both* columns are content-match-eligible, and then only if their matching-row count clears the threshold (20% of column length, minimum 2).
-5. A weighted, order-preserving LCS-style DP over the score matrix picks the best column alignment (`align_columns`).
+4. Score each candidate pair (`column_match_score`): an exact header match is always a candidate (with a bonus, `HEADER_MATCH_BONUS`, that outranks any purely content-based score). If both columns are content-match-eligible (≥`MIN_DISTINCT_FOR_CONTENT_MATCH` distinct values), a pair is a candidate once its matching-row count clears the threshold (20% of column length, minimum 2). Otherwise (low cardinality on either side), a pair is still a candidate if it's an **exact** match (equal row counts, every populated row agreeing) — see "Issues found during PR review" below.
+5. A weighted, order-preserving LCS-style DP over the score matrix picks the best column alignment (`align_columns`) — each cell takes the max of three options (diagonal/match, skip-up, skip-left), the standard weighted-LCS recurrence (also a PR review fix, see below).
 6. Matched column pairs are diffed cell-by-cell via a merge-join (`diff_matched_columns`), setting `CellDiff::old_col` whenever the column actually shifted. Unmatched columns are reported entirely as Added/Deleted.
+
+## Issues found during PR review (PR #20)
+
+GitHub Copilot's automated PR review flagged four critical issues in the first implementation, all confirmed and fixed:
+
+1. **The DP transition wasn't the correct weighted-LCS recurrence**: it took the diagonal unconditionally whenever `score > 0`, without comparing against the "skip up"/"skip left" options. The reviewer gave a concrete counterexample: one base column with two candidate target columns scoring 10 and 2 — if the weaker match (2) is evaluated where a stronger one (10) was reachable by skipping past it first, the weaker match wins and the true match gets reported as a spurious insert instead. Fixed to take the max of all three options at every cell.
+2. **Formatting-only cells (value `None`) were counted as matching**: `Option<CellValue>`'s derived `PartialEq` makes `None == None` true, so `count_matching_rows` was counting two blank, formatting-only cells at the same row as a "match" with nothing actually compared. Fixed to require both sides to hold `Some` before counting a match.
+3. **The budget check didn't account for memory independent of row count**: `max_cost` is weighted by row count, so a sheet with very few rows but very many columns (e.g. 1 row × ~3,162 columns per side) could stay under budget while the `scores`/`dp` matrices themselves still need O(cols²) memory regardless of row count (measured ~160MB at that shape). Added a second, row-count-independent budget, `max_column_pairs`.
+4. **The low-cardinality gate excluded even genuinely unchanged columns**: a headerless column with fewer than 8 distinct values was excluded from content matching entirely in the original implementation — including one that hadn't changed at all and had merely shifted position, which got reported as a wholesale delete-plus-re-add instead of no diff, exactly the cascade this feature exists to avoid. Fixed by adding an "exact match" rescue: a low-cardinality pair is still accepted when every populated row agrees on both sides and the row counts match.
 
 ## Dependencies
 
-- Depends on: [`diff/engine.rs`](engine.en.md) (`diff_sheet`/`diff_merges`/`visibility_diff`, widened to `pub(crate)` for reuse — so a one-sided sheet, merges, and visibility are handled *identically* to the coordinate-based engine rather than reimplemented), [`diff/model.rs`](model.en.md) (`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus` — reuses the same `CellDiff` type, populating only `old_col`), [`error.rs`](../error.en.md) (`Error::TooManyDistinctColumnsForAlignment`), [`json.rs`](../json.en.md) (`cell_value_to_json`/`style_to_json`), [`model/sheet.rs`](../model/sheet.en.md) (`Sheet::iter_cells`, `max_row`/`max_col`)
+- Depends on: [`diff/engine.rs`](engine.en.md) (`diff_sheet`/`diff_merges`/`visibility_diff`, widened to `pub(crate)` for reuse — so a one-sided sheet, merges, and visibility are handled *identically* to the coordinate-based engine rather than reimplemented), [`diff/model.rs`](model.en.md) (`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus` — reuses the same `CellDiff` type, populating only `old_col`), [`error.rs`](../error.en.md) (`Error::ColumnAlignmentCostTooHigh`), [`json.rs`](../json.en.md) (`cell_value_to_json`/`style_to_json`), [`model/sheet.rs`](../model/sheet.en.md) (`Sheet::iter_cells`, `max_row`/`max_col`)
 - Depended on by: [`diff/mod.rs`](mod.en.md) (re-exports `diff_workbooks_aligned_columns`/`ColumnAlignmentLimits`)
 
 ## Error Handling Policy
 
-- `diff_workbooks_aligned_columns` returns `Result<WorkbookDiff>` (fallible, unlike `diff_workbooks`) specifically so a budget overrun surfaces as `Error::TooManyDistinctColumnsForAlignment` rather than being silently absorbed — a deliberate decision, confirmed with the user, that an explicitly opted-into operation shouldn't hide whether it actually ran. A caller wanting automatic fallback can match on this error and call `diff_workbooks` itself.
+- `diff_workbooks_aligned_columns` returns `Result<WorkbookDiff>` (fallible, unlike `diff_workbooks`) specifically so a budget overrun surfaces as `Error::ColumnAlignmentCostTooHigh` rather than being silently absorbed — a deliberate decision, confirmed with the user, that an explicitly opted-into operation shouldn't hide whether it actually ran. A caller wanting automatic fallback can match on this error and call `diff_workbooks` itself.
 
 ## Testing Strategy
 
@@ -70,8 +80,9 @@ Unit tests in `src/diff/alignment.rs` (build `Sheet`/`Workbook` directly via the
 - Column insertion/deletion produces no cascade (`column_insertion_does_not_cascade_when_aligned`, `column_deletion_does_not_cascade_when_aligned`) — the counterpart to `engine.rs`'s `column_insertion_cascades_into_shift_diffs_by_design` (added alongside this change to document the default engine's column-cascade behavior explicitly, mirroring the existing row test)
 - A genuine value change inside a shifted column still surfaces, with the correct `old_col` (`genuine_modification_survives_column_alignment`)
 - `old_col` stays `None` when the matched column pair didn't actually shift (`old_col_is_absent_when_the_matched_column_did_not_shift`)
-- Low-cardinality, headerless columns safely fall back to coordinate-based diffing (`low_cardinality_headerless_columns_fall_back_to_coordinate_diff_safely`); the same columns align correctly once a header is present (`header_match_rescues_low_cardinality_column_alignment`)
-- A budget overrun returns `Error::TooManyDistinctColumnsForAlignment` (`distinct_column_cost_over_the_limit_is_too_many_distinct_columns_for_alignment`)
+- Low-cardinality, headerless columns too short to clear `MIN_DISTINCT_FOR_CONTENT_MATCH` safely fall back to coordinate-based diffing (`low_cardinality_headerless_columns_fall_back_to_coordinate_diff_safely`); the same columns align correctly once a header is present (`header_match_rescues_low_cardinality_column_alignment`)
+- Exact-match rescue (item 4 under "Issues found during PR review" above): an unchanged, unshifted low-cardinality column produces zero diff (`identical_low_cardinality_headerless_column_produces_no_diff`); a shifted-but-byte-identical low-cardinality column is correctly aligned (`shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match`)
+- Both budget kinds return `Error::ColumnAlignmentCostTooHigh` on overrun: the row-weighted cost (`distinct_column_cost_over_the_limit_is_column_alignment_cost_too_high`) and the row-count-independent pair count (`column_pair_count_over_the_limit_is_column_alignment_cost_too_high_even_with_one_row`)
 - `diff_workbooks` (the default engine) is unaffected by this feature existing (`diff_workbooks_default_behavior_is_unaffected_by_alignment_existing`)
 
 [`tests/diff.rs`](../../../tests/diff.rs): `column_insertion_does_not_cascade_when_aligned_end_to_end` re-verifies cascade avoidance through the real parse pipeline (`parse_workbook_reader` on constructed `.xlsx`-shaped bytes), not just the public-model-API fixtures the unit tests build directly.

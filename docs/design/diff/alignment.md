@@ -18,7 +18,7 @@ Issue #5では、`poc/issue5-poc`から`poc/issue5-poc-v4`まで5ラウンドに
 ## 責務・スコープ
 
 - 座標一致ではなく内容一致で列を対応付けた上でセル差分を計算する `diff_workbooks_aligned_columns` を提供する
-- 対応付けの予算制チェック（`ColumnAlignmentLimits`）を、実際のO(cols²)照合処理を始める前に行い、超過時は`Err(Error::TooManyDistinctColumnsForAlignment)`を返す（黙って`diff_workbooks`相当へフォールバックしない——呼び出し側が明示的にオプトインした処理である以上、実際にアライメントが行われたかどうかを呼び出し側から見えなくすべきではないという判断）
+- 対応付けの予算制チェック（`ColumnAlignmentLimits`）を、実際のO(cols²)照合処理を始める前に行い、超過時は`Err(Error::ColumnAlignmentCostTooHigh)`を返す（黙って`diff_workbooks`相当へフォールバックしない——呼び出し側が明示的にオプトインした処理である以上、実際にアライメントが行われたかどうかを呼び出し側から見えなくすべきではないという判断）
 - 片側にしか存在しないシートは`diff::engine::diff_sheet`をそのまま再利用する（新規/削除されたシート全体には、そもそもアライメントする対象が無い）
 - 結合セルの差分（`SheetDiff::merges`）は`diff::engine::diff_merges`をそのまま再利用し、列アライメントの対象にしない(下記「結合セルは列アライメント非対応」参照)
 - **含まない責務**: 座標一致ベースの差分計算そのもの（[`engine.rs`](engine.md)）、行アライメント（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)、未着手——下記「行は再整列しない」参照）、`diff::storage`へのアライメント結果（特に`CellDiff::old_col`）の永続化（[storage.md 未決事項6](storage.md)参照）
@@ -35,7 +35,8 @@ Issue #4（行挿入/削除検出）は本設計時点でコメント0件・実�
 
 ```rust
 pub struct ColumnAlignmentLimits {
-    pub max_cost: usize, // distinct_cols_base * distinct_cols_target * sample_rows の上限
+    pub max_cost: usize,         // distinct_cols_base * distinct_cols_target * sample_rows の上限
+    pub max_column_pairs: usize, // distinct_cols_base * distinct_cols_target 単体の上限(行数に依存しないメモリ上限)
 }
 
 pub fn diff_workbooks_aligned_columns(
@@ -48,20 +49,29 @@ pub fn diff_workbooks_aligned_columns(
 アルゴリズム（1シートあたり、両側に存在する場合）:
 
 1. `iter_cells()`を1回走査し、distinct列インデックスの集合をbase/target双方について求める。
-2. 予算チェック: `cols_base.len() * cols_target.len() * sample_rows > limits.max_cost` なら即座にエラーを返す（O(cols²)の照合処理を始める前）。
+2. 予算チェックは2段階（PR #20のレビューで判明——後述「実装レビューで見つかった問題」参照）: まず`cols_base.len() * cols_target.len() > limits.max_column_pairs`（行数に依存しない、`scores`/`dp`行列のメモリ上限）、次に`cols_base.len() * cols_target.len() * sample_rows > limits.max_cost`（照合時間の上限）。いずれかを超えたら、O(cols²)の照合処理を始める前に即座にエラーを返す。
 3. 列ごとの内容を抽出する（`ColumnContent`: 行→セルの`Vec`（`iter_cells()`が既に行昇順であることを利用し、`BTreeMap`より安い）、ヘッダー(1行目の`Text`値のみ——数値データが1行目から始まる「ヘッダー無し」シートで数値の偶然一致を誤ってヘッダー一致と扱わないため)、コンテンツ照合可否(`MIN_DISTINCT_FOR_CONTENT_MATCH`以上のdistinct値を持つか))。
-4. 候補ペアをスコアリング(`column_match_score`): ヘッダーが一致すれば無条件で候補（他のどんなコンテンツスコアより優先されるボーナス`HEADER_MATCH_BONUS`を加点）。ヘッダーが無い場合、双方が`MIN_DISTINCT_FOR_CONTENT_MATCH`以上のdistinct値を持つ場合のみ、一致セル数が閾値（列長の20%、最小2）以上なら候補とする。
-5. 候補ペアの重み付きLCS的DPで、順序を保ったまま最適な列対応付けを求める（`align_columns`）。
+4. 候補ペアをスコアリング(`column_match_score`): ヘッダーが一致すれば無条件で候補（他のどんなコンテンツスコアより優先されるボーナス`HEADER_MATCH_BONUS`を加点）。双方が`MIN_DISTINCT_FOR_CONTENT_MATCH`以上のdistinct値を持つ場合、一致セル数が閾値（列長の20%、最小2）以上なら候補とする。どちらにも該当しない（低カーディナリティ）場合でも、**完全一致**（両側の行数が等しく、全populated行が一致）なら候補とする——後述「実装レビューで見つかった問題」参照。
+5. 候補ペアの重み付きLCS的DPで、順序を保ったまま最適な列対応付けを求める（`align_columns`）。DPの遷移は各セルで「対角線（マッチ採用）」「上」「左」の3値の最大値を取る標準的な重み付きLCS漸化式——これも後述のレビューで修正した箇所。
 6. マッチした列ペアはマージジョインでセル差分を計算し(`diff_matched_columns`)、列がシフトしていれば`CellDiff::old_col`を付与する。マッチしなかった列は全セルをAdded/Deleted扱いにする。
+
+## 実装レビューで見つかった問題（PR #20）
+
+GitHub Copilotの自動PRレビューが、初回実装に4件の重大な問題を指摘し、いずれも検証の上で修正した:
+
+1. **DPの遷移が正しい重み付きLCS漸化式になっていなかった**: `score > 0`の場合に無条件で対角線を採用しており、「上」「左」との比較を行っていなかった。1つの base 列に対し複数の候補 target 列があり、弱いマッチ（例: スコア2）が強いマッチ（例: スコア10）より先に評価されると、弱い方が採用され、本来の強いマッチが誤って挿入として報告される具体的な反例が指摘された。3値の`max`を取る標準的な漸化式に修正。
+2. **書式のみのセル（値が`None`）が誤って「一致」扱いされていた**: `Option<CellValue>`の派生`PartialEq`では`None == None`が`true`になるため、`count_matching_rows`が値の無い書式専用セル同士を無条件に一致カウントしていた。両側とも`Some`である場合のみ一致とみなすよう修正。
+3. **予算チェックが行数に依存しないメモリ量を考慮していなかった**: `max_cost`は行数で重み付けされるため、行数が極端に少なく列数が極端に多いシート（例: 1行×3,162列×3,162列）でもコスト上は上限内に収まる一方、`scores`/`dp`行列自体は行数に関わらずO(cols²)のメモリ（実測約160MB）を要求してしまう。`max_column_pairs`という行数非依存の第2の上限を追加。
+4. **低カーディナリティゲートが「変化していない列」まで対象外にしていた**: ヘッダー無し・distinct値8未満の列は元実装では一律コンテンツマッチング対象外としていたため、実際には一切変化していない（単に列がシフトしただけの）低カーディナリティ列まで、丸ごと削除+丸ごと追加として報告されてしまっていた——これはまさに本機能が回避すべきカスケードそのものである。完全一致（全populated行が両側で一致し、行数も一致）の場合のみ例外的に許可する「完全一致救済」を追加し、この回帰を修正した。
 
 ## 依存関係
 
-- 依存先: [`diff/engine.rs`](engine.md)（`diff_sheet`/`diff_merges`/`visibility_diff`を`pub(crate)`化して再利用——片側のみのシート・結合セル・可視性の扱いを座標一致エンジンと完全に一致させるため、独自に再実装しない）、[`diff/model.rs`](model.md)（`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus`。同じ`CellDiff`型を再利用し`old_col`のみ実際に populate する）、[`error.rs`](../error.md)（`Error::TooManyDistinctColumnsForAlignment`）、[`json.rs`](../json.md)（`cell_value_to_json`/`style_to_json`）、[`model/sheet.rs`](../model/sheet.md)（`Sheet::iter_cells`、`max_row`/`max_col`）
+- 依存先: [`diff/engine.rs`](engine.md)（`diff_sheet`/`diff_merges`/`visibility_diff`を`pub(crate)`化して再利用——片側のみのシート・結合セル・可視性の扱いを座標一致エンジンと完全に一致させるため、独自に再実装しない）、[`diff/model.rs`](model.md)（`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus`。同じ`CellDiff`型を再利用し`old_col`のみ実際に populate する）、[`error.rs`](../error.md)（`Error::ColumnAlignmentCostTooHigh`）、[`json.rs`](../json.md)（`cell_value_to_json`/`style_to_json`）、[`model/sheet.rs`](../model/sheet.md)（`Sheet::iter_cells`、`max_row`/`max_col`）
 - 依存元: [`diff/mod.rs`](mod.md)（`diff_workbooks_aligned_columns`/`ColumnAlignmentLimits`を再エクスポート）
 
 ## エラー処理方針
 
-- `diff_workbooks_aligned_columns`は`Result<WorkbookDiff>`を返す（`diff_workbooks`と異なり fallible）——予算超過時に`Error::TooManyDistinctColumnsForAlignment`を返すため。呼び出し側がオプトインした処理が実際に完了したかどうかを黙って隠さない、という設計判断（ユーザーとの合意事項）。自動フォールバックが必要な呼び出し側は、このエラーを`match`して`diff_workbooks`を自分で呼び出せばよい。
+- `diff_workbooks_aligned_columns`は`Result<WorkbookDiff>`を返す（`diff_workbooks`と異なり fallible）——予算超過時に`Error::ColumnAlignmentCostTooHigh`を返すため。呼び出し側がオプトインした処理が実際に完了したかどうかを黙って隠さない、という設計判断（ユーザーとの合意事項）。自動フォールバックが必要な呼び出し側は、このエラーを`match`して`diff_workbooks`を自分で呼び出せばよい。
 
 ## テスト方針
 
@@ -70,8 +80,9 @@ pub fn diff_workbooks_aligned_columns(
 - 列挿入・削除でカスケードが起きないこと（`column_insertion_does_not_cascade_when_aligned`、`column_deletion_does_not_cascade_when_aligned`）——`engine.rs`の`column_insertion_cascades_into_shift_diffs_by_design`（本Issue #5対応の一環として新規追加、デフォルトエンジンの列版カスケードテスト）と対をなす
 - シフトした列内の真の値変更が`old_col`付きで正しく検出されること（`genuine_modification_survives_column_alignment`）
 - シフトしていない列では`old_col`が`None`のままであること（`old_col_is_absent_when_the_matched_column_did_not_shift`）
-- 低カーディナリティ・ヘッダー無し列が安全に座標ベース差分へフォールバックすること（`low_cardinality_headerless_columns_fall_back_to_coordinate_diff_safely`）、ヘッダーがあれば同条件でも正しく整列できること（`header_match_rescues_low_cardinality_column_alignment`）
-- 予算超過が正しく`Error::TooManyDistinctColumnsForAlignment`を返すこと（`distinct_column_cost_over_the_limit_is_too_many_distinct_columns_for_alignment`）
+- 短すぎる（`MIN_DISTINCT_FOR_CONTENT_MATCH`未満の行数）低カーディナリティ・ヘッダー無し列が安全に座標ベース差分へフォールバックすること（`low_cardinality_headerless_columns_fall_back_to_coordinate_diff_safely`）、ヘッダーがあれば同条件でも正しく整列できること（`header_match_rescues_low_cardinality_column_alignment`）
+- 完全一致救済（上記「実装レビューで見つかった問題」4番）: 変化・シフトの無い低カーディナリティ列が誤差分ゼロになること（`identical_low_cardinality_headerless_column_produces_no_diff`）、シフトしたが内容は完全一致の低カーディナリティ列が正しく整列されること（`shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match`）
+- 2種類の予算超過が正しく`Error::ColumnAlignmentCostTooHigh`を返すこと（行数加重コスト: `distinct_column_cost_over_the_limit_is_column_alignment_cost_too_high`、行数非依存のペア数: `column_pair_count_over_the_limit_is_column_alignment_cost_too_high_even_with_one_row`）
 - `diff_workbooks`（デフォルトエンジン）が本機能の追加によって挙動を変えていないこと（`diff_workbooks_default_behavior_is_unaffected_by_alignment_existing`）
 
 [`tests/diff.rs`](../../../tests/diff.rs): `column_insertion_does_not_cascade_when_aligned_end_to_end`が、実際の`.xlsx`相当バイト列を`parse_workbook_reader`でパースした上でカスケード回避を再検証する。
