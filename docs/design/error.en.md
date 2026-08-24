@@ -149,6 +149,16 @@ pub enum Error {
     #[error("too many column width ranges in one sheet: {count} exceeds limit {limit}")]
     TooManyColumnWidthRanges { count: usize, limit: usize },
 
+    // --- diff (Issue #5): opt-in column alignment ---
+    /// `diff::alignment::diff_workbooks_aligned_columns`'s estimated cost
+    /// exceeded one of `ColumnAlignmentLimits`'s budgets. `cost`/`limit`
+    /// aren't a literal column count — they're one of two different
+    /// products depending on which budget tripped
+    /// (`distinct_cols_base × distinct_cols_target`, or that scaled by row
+    /// count). See [diff/alignment.en.md](diff/alignment.en.md).
+    #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
+    ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
+
     // --- Phase 5: JSON generation ---
     /// JSON serialization failed (wraps the error `serde_json` returns).
     /// `source` is type-erased as `Box<dyn Error>` for the same reason as

@@ -8,7 +8,10 @@
 #[path = "fixtures/mod.rs"]
 mod fixtures;
 
-use exceldiff::{diff_workbooks, parse_workbook_reader, DiffStatus, JsonCellValue, WorkbookDiff};
+use exceldiff::{
+    diff_workbooks, diff_workbooks_aligned_columns, parse_workbook_reader, ColumnAlignmentLimits,
+    DiffStatus, JsonCellValue, WorkbookDiff,
+};
 use fixtures::diff;
 use std::io::Cursor;
 
@@ -40,6 +43,29 @@ fn cell_value_modification_is_detected_end_to_end() {
     assert_eq!(cell.status, DiffStatus::Modified);
     assert_eq!(cell.old_value, Some(JsonCellValue::Number(100.0)));
     assert_eq!(cell.new_value, Some(JsonCellValue::Number(120.0)));
+}
+
+#[test]
+fn column_insertion_does_not_cascade_when_aligned_end_to_end() {
+    // Counterpart to cell_addition/cell_deletion above, but through
+    // diff_workbooks_aligned_columns (Issue #5) rather than diff_workbooks
+    // — proves the cascade-avoidance behavior src/diff/alignment.rs's unit
+    // tests already lock in also holds through the real parse pipeline,
+    // not just the public-model-API fixtures those tests build directly.
+    let (base_bytes, target_bytes) = fixtures::diff::column_inserted();
+    let base = parse_workbook_reader(Cursor::new(base_bytes)).unwrap();
+    let target = parse_workbook_reader(Cursor::new(target_bytes)).unwrap();
+
+    let result =
+        diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default()).unwrap();
+    assert_eq!(result.sheets.len(), 1);
+    let cells = &result.sheets[0].cells;
+    // Only the 10 newly inserted column A cells should be reported — the
+    // two shifted-but-unchanged columns produce no diff at all.
+    assert_eq!(cells.len(), 10);
+    assert!(cells
+        .iter()
+        .all(|c| c.col == 1 && c.status == DiffStatus::Added));
 }
 
 #[test]

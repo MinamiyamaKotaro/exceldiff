@@ -36,7 +36,8 @@ pub use container::sanitize::SizeLimits;
 #[cfg(feature = "diff-storage")]
 pub use diff::DiffStore;
 pub use diff::{
-    diff_paths, diff_workbooks, CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff,
+    diff_paths, diff_workbooks, diff_workbooks_aligned_columns, CellDiff, CellPos,
+    ColumnAlignmentLimits, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff,
 };
 pub use error::{Error, Result};
 pub use json::{

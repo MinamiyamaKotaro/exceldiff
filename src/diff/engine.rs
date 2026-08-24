@@ -62,7 +62,7 @@
 use crate::diff::model::{CellDiff, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff};
 use crate::error::Result;
 use crate::json::{cell_value_to_json, style_to_json, visibility_tag};
-use crate::model::{Cell, CellRef, Sheet, Workbook};
+use crate::model::{Cell, CellRef, Sheet, SheetVisibility, Workbook};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -108,7 +108,18 @@ pub fn diff_workbooks(base: &Workbook, target: &Workbook) -> WorkbookDiff {
 /// on each side. Returns `None` when the sheet exists on both sides with
 /// identical visibility and zero cell/merge diffs — the "nothing to
 /// report" case documented on `SheetDiff`.
-fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Option<SheetDiff> {
+///
+/// `pub(crate)` (rather than private) so `diff::alignment` (Issue #5) can
+/// reuse the `(None, Some)`/`(Some, None)` whole-sheet-added/deleted
+/// branches as-is — a sheet that exists on only one side needs the exact
+/// same treatment regardless of which cell-diffing strategy the `(Some,
+/// Some)` case uses, so `diff::alignment` calls this function directly for
+/// that case instead of duplicating it.
+pub(crate) fn diff_sheet(
+    name: &str,
+    base: Option<&Sheet>,
+    target: Option<&Sheet>,
+) -> Option<SheetDiff> {
     match (base, target) {
         (None, Some(t)) => Some(SheetDiff {
             name: name.to_string(),
@@ -132,14 +143,7 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
         (Some(b), Some(t)) => {
             let cells = diff_cells(b, t);
             let merges = diff_merges(b, t);
-            let (old_visibility, new_visibility) = if b.visibility != t.visibility {
-                (
-                    Some(visibility_tag(b.visibility)),
-                    Some(visibility_tag(t.visibility)),
-                )
-            } else {
-                (None, None)
-            };
+            let (old_visibility, new_visibility) = visibility_diff(b.visibility, t.visibility);
             if cells.is_empty() && merges.is_empty() && old_visibility.is_none() {
                 return None;
             }
@@ -153,6 +157,22 @@ fn diff_sheet(name: &str, base: Option<&Sheet>, target: Option<&Sheet>) -> Optio
             })
         }
         (None, None) => None,
+    }
+}
+
+/// Reports `base`/`target`'s `SheetVisibility` as an `old_visibility`/
+/// `new_visibility` pair, `(None, None)` when unchanged — shared by
+/// `diff_sheet`'s `(Some, Some)` branch and `diff::alignment`'s aligned
+/// equivalent (Issue #5), which reports sheet-level visibility exactly the
+/// same way regardless of how cells within the sheet are matched.
+pub(crate) fn visibility_diff(
+    base: SheetVisibility,
+    target: SheetVisibility,
+) -> (Option<&'static str>, Option<&'static str>) {
+    if base != target {
+        (Some(visibility_tag(base)), Some(visibility_tag(target)))
+    } else {
+        (None, None)
     }
 }
 
@@ -204,6 +224,7 @@ fn cell_diff_added(r: CellRef, new: &Cell) -> CellDiff {
         row: r.row,
         col: r.col,
         status: DiffStatus::Added,
+        old_col: None,
         old_value: None,
         new_value: Some(cell_value_to_json(new.value.as_ref())),
         old_style: None,
@@ -216,6 +237,7 @@ fn cell_diff_deleted(r: CellRef, old: &Cell) -> CellDiff {
         row: r.row,
         col: r.col,
         status: DiffStatus::Deleted,
+        old_col: None,
         old_value: Some(cell_value_to_json(old.value.as_ref())),
         new_value: None,
         old_style: old.style.as_deref().map(style_to_json),
@@ -232,6 +254,7 @@ fn cell_diff_modified(r: CellRef, old: &Cell, new: &Cell) -> CellDiff {
         row: r.row,
         col: r.col,
         status: DiffStatus::Modified,
+        old_col: None,
         old_value: Some(cell_value_to_json(old.value.as_ref())),
         new_value: Some(cell_value_to_json(new.value.as_ref())),
         old_style: style_changed
@@ -256,7 +279,14 @@ fn cell_diff_modified(r: CellRef, old: &Cell, new: &Cell) -> CellDiff {
 /// (typically far smaller) set of actual differences at the end — paying
 /// for a full sort of every unchanged merge would be wasted work on a
 /// sheet with many merges but few actual changes.
-fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
+///
+/// `pub(crate)` so `diff::alignment` (Issue #5) can reuse it as-is for
+/// merge diffing — column alignment only changes how *cell* diffs are
+/// matched; merged-region alignment across a column shift is explicitly
+/// out of scope for now (see `diff::alignment`'s module doc), so aligned
+/// mode reports merges exactly the same coordinate-based way this default
+/// engine does.
+pub(crate) fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
     let base_merges = base.merged_regions();
     let target_merges = target.merged_regions();
 
@@ -566,6 +596,33 @@ mod tests {
         // Every one of the 3 target rows differs from its same-coordinate
         // base counterpart (or has none), even though rows 2-3 are really
         // just rows 1-2 shifted down unchanged.
+        assert_eq!(cells.len(), 3);
+    }
+
+    #[test]
+    fn column_insertion_cascades_into_shift_diffs_by_design() {
+        // Column counterpart of row_insertion_cascades_into_shift_diffs_by_design
+        // above — locks in the same documented tradeoff for the other axis.
+        // diff::alignment::diff_workbooks_aligned_columns (Issue #5) is the
+        // opt-in escape hatch from this behavior; see its
+        // column_insertion_does_not_cascade_when_aligned test for the
+        // direct contrast on this exact shape of input.
+        let base = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 10.0), (1, 2, 20.0)],
+        )]);
+        let target = workbook(vec![sheet_with_cells(
+            "Sheet1",
+            SheetVisibility::Visible,
+            &[(1, 1, 99.0), (1, 2, 10.0), (1, 3, 20.0)],
+        )]);
+
+        let diff = diff_workbooks(&base, &target);
+        let cells = &diff.sheets[0].cells;
+        // Every one of the 3 target columns differs from its
+        // same-coordinate base counterpart (or has none), even though
+        // columns 2-3 are really just columns 1-2 shifted right unchanged.
         assert_eq!(cells.len(), 3);
     }
 

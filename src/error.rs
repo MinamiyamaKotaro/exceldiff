@@ -204,6 +204,35 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    // --- diff (Issue #5): opt-in column alignment ---
+    /// `diff::alignment::diff_workbooks_aligned_columns`'s estimated cost
+    /// exceeded a budget in `ColumnAlignmentLimits`. `cost`/`limit` are not
+    /// a literal column count — they're one of two different products,
+    /// depending on which budget tripped: either the raw column-pair count
+    /// (`distinct_cols_base * distinct_cols_target`, bounding the O(cols²)
+    /// score-matrix *memory*, checked against `max_column_pairs`) or that
+    /// same pair count scaled by row count (bounding the matching *time*,
+    /// checked against `max_cost`). Unlike `TooManyMergedRanges`'s flat
+    /// count cap, a single distinct-column-count limit isn't enough for
+    /// either axis here on its own: `diff::alignment`'s matching cost is
+    /// O(distinct_cols_base × distinct_cols_target × max_row) — a column
+    /// count safe at 500 rows becomes unsafe by an order of magnitude at
+    /// 50,000 rows — while its score-matrix memory is O(distinct_cols_base
+    /// × distinct_cols_target) *regardless* of row count, so a sheet with
+    /// very few rows but many columns could pass a rows-weighted check yet
+    /// still allocate hundreds of megabytes (measured directly — see
+    /// `diff::alignment::MAX_COLUMN_ALIGNMENT_COST`/
+    /// `MAX_COLUMN_PAIR_COUNT`'s doc comments). Both budgets are checked
+    /// before any O(cols²) matching work begins, the same
+    /// fail-fast-before-the-expensive-part timing `TooManyMergedRanges`
+    /// already establishes. Unlike the default coordinate-based
+    /// `diff_workbooks` (infallible), this opt-in alignment mode returns
+    /// `Result` specifically so this case can be reported rather than
+    /// silently downgraded — a caller that wants automatic fallback can
+    /// catch this and call `diff_workbooks` itself.
+    #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
+    ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
+
     // --- diff (Issue #3), `diff-storage` Cargo feature only ---
     /// A `diff::DiffStore` operation (opening the database, running a
     /// query, etc.) failed. `source` is type-erased for the same reason as
@@ -411,6 +440,15 @@ mod tests {
             }
             .to_string(),
             "JSON serialization error: trailing comma"
+        );
+
+        assert_eq!(
+            Error::ColumnAlignmentCostTooHigh {
+                cost: 25_000_001,
+                limit: 25_000_000,
+            }
+            .to_string(),
+            "column alignment cost too high: 25000001 exceeds limit 25000000"
         );
 
         assert_eq!(
