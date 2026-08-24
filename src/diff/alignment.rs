@@ -323,6 +323,40 @@ fn align_sheet_columns(
 
     let alignments = align_columns(&base_cols, &target_cols);
 
+    // Reconcile columns the content-based DP couldn't explain (left as
+    // Deleted on one side, Inserted on the other) but that share the
+    // exact same column index: a purely positional, coordinate-based
+    // fallback for whatever content matching couldn't align — e.g. a
+    // low-cardinality column that never shifted at all (nothing else
+    // moved around it) but has one real cell change no content score can
+    // distinguish from an unrelated column. Without this, such a column
+    // was reported as a full delete-plus-re-add instead of the single
+    // Modified cell `diff_workbooks` would report for the identical
+    // input (a Copilot review caught this concretely) — worse than not
+    // aligning at all, and a direct contradiction of this module's own
+    // documented "falls through to ordinary per-column coordinate
+    // diffing" contract for unmatched columns. Only genuinely unmatched
+    // columns reach this; anything the DP already matched by content
+    // keeps that result.
+    let mut deleted_by_col: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut inserted_by_col: BTreeMap<u32, usize> = BTreeMap::new();
+    for &alignment in &alignments {
+        match alignment {
+            ColumnAlignment::Deleted { base_idx } => {
+                deleted_by_col.insert(base_cols[base_idx].col, base_idx);
+            }
+            ColumnAlignment::Inserted { target_idx } => {
+                inserted_by_col.insert(target_cols[target_idx].col, target_idx);
+            }
+            ColumnAlignment::Match { .. } => {}
+        }
+    }
+    let coordinate_pairs: BTreeMap<u32, usize> = deleted_by_col
+        .iter()
+        .filter(|(col, _)| inserted_by_col.contains_key(col))
+        .map(|(&col, &base_idx)| (col, base_idx))
+        .collect();
+
     let mut cells = Vec::new();
     for alignment in &alignments {
         match *alignment {
@@ -332,15 +366,22 @@ fn align_sheet_columns(
             } => diff_matched_columns(&base_cols[base_idx], &target_cols[target_idx], &mut cells),
             ColumnAlignment::Inserted { target_idx } => {
                 let t = &target_cols[target_idx];
-                for &(row, cell) in &t.cells {
-                    cells.push(cell_diff_added_aligned(row, t.col, cell));
+                if let Some(&base_idx) = coordinate_pairs.get(&t.col) {
+                    diff_matched_columns(&base_cols[base_idx], t, &mut cells);
+                } else {
+                    for &(row, cell) in &t.cells {
+                        cells.push(cell_diff_added_aligned(row, t.col, cell));
+                    }
                 }
             }
             ColumnAlignment::Deleted { base_idx } => {
                 let b = &base_cols[base_idx];
-                for &(row, cell) in &b.cells {
-                    cells.push(cell_diff_deleted_aligned(row, b.col, cell));
+                if !coordinate_pairs.contains_key(&b.col) {
+                    for &(row, cell) in &b.cells {
+                        cells.push(cell_diff_deleted_aligned(row, b.col, cell));
+                    }
                 }
+                // Else: already emitted once via the Inserted branch above.
             }
         }
     }
@@ -840,6 +881,35 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_low_cardinality_column_at_the_same_coordinate_falls_back_to_coordinate_diffing() {
+        // Regression test for a Copilot review finding: a headerless
+        // low-cardinality column that never shifted at all (stays at the
+        // same column index on both sides, nothing else moved) but has
+        // one real cell change has no content score at all (too
+        // low-cardinality for the threshold path, not an exact match).
+        // Before align_sheet_columns's coordinate-based fallback for
+        // same-index unmatched columns, this was reported as the whole
+        // column deleted-and-re-added (16 cells) instead of the single
+        // Modified cell diff_workbooks would report for identical input —
+        // worse than not aligning at all, and a direct contradiction of
+        // this module's own documented "falls through to ordinary
+        // per-column coordinate diffing" contract.
+        let base = workbook(vec![sheet_with_cells("Sheet1", &boolean_column(1, 0))]);
+        let mut target_cells = boolean_column(1, 0);
+        target_cells[2].2 = 1.0 - target_cells[2].2; // flip row 3's value only
+        let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].status, DiffStatus::Modified);
+        assert_eq!(cells[0].row, 3);
+        assert_eq!(cells[0].col, 1);
+        assert_eq!(cells[0].old_col, None); // same coordinate, not a shift
+    }
+
+    #[test]
     fn old_col_is_absent_when_the_matched_column_did_not_shift() {
         let mut base_cells = rich_column(1, 0.0);
         base_cells.retain(|&(r, _, _)| r != 5);
@@ -866,11 +936,17 @@ mod tests {
         // header, too short (3 rows) to clear either the partial-overlap
         // eligibility floor or the exact-match rescue's minimum sample
         // size (both MIN_DISTINCT_FOR_CONTENT_MATCH = 8), are never
-        // aligned — they're diffed as plain coordinate-based Added/
-        // Deleted, the same safe default diff_workbooks would give. See
+        // *content*-aligned. Base column 1 stays unmatched by content, but
+        // shares its column index with target column 1, so
+        // align_sheet_columns's coordinate-based fallback (see that
+        // function's doc comment) diffs them directly by position —
+        // exactly what diff_workbooks would do, since neither column
+        // moved. Target column 2 (genuinely new at that position, no base
+        // counterpart to reconcile with) is reported as a fresh Added
+        // column. See
         // shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match
-        // below for the longer-column case where an exact match *is*
-        // safely recognized.
+        // below for the longer-column case where a genuine *shift* is
+        // recognized via the exact-match rescue instead.
         let base = workbook(vec![sheet_with_cells(
             "Sheet1",
             &[(1, 1, 1.0), (2, 1, 0.0), (3, 1, 1.0)],
@@ -892,11 +968,26 @@ mod tests {
         let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
             .unwrap();
         let cells = &diff.sheets[0].cells;
-        // No alignment attempted: every target cell is reported relative
-        // to the coordinate-based default (3 unmatched base cells deleted,
-        // 6 target cells added) rather than any column being recognized as
-        // "shifted, unchanged".
-        assert_eq!(cells.len(), 9);
+        // Column 1 (same position both sides) is diffed coordinate-wise:
+        // all 3 rows differ -> 3 Modified. Column 2 is a fresh Added
+        // column: 3 more cells. old_col stays None throughout, since
+        // nothing was recognized as *shifted* here — only genuinely
+        // unmatched, same-position columns and a brand new column.
+        assert_eq!(cells.len(), 6);
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Modified)
+                .count(),
+            3
+        );
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Added)
+                .count(),
+            3
+        );
         assert!(cells.iter().all(|c| c.old_col.is_none()));
     }
 
@@ -942,17 +1033,29 @@ mod tests {
         // ever comparing content — two low-cardinality, headerless columns
         // long enough to reach the exact-match rescue (>= 8 rows) but with
         // *different* row counts can never be identical, so they must fall
-        // back to plain coordinate diffing rather than being aligned.
-        let base_cells = boolean_column(1, 0); // 10 rows
-        let mut target_cells = boolean_column(1, 0);
-        target_cells.push((11, 1, 1.0)); // 11 rows: same prefix, one longer
-        let base = workbook(vec![sheet_with_cells("Sheet1", &base_cells)]);
+        // back to plain coordinate diffing rather than being aligned. A
+        // genuine shift (different column indices), so
+        // align_sheet_columns's same-position coordinate fallback can't
+        // also explain the outcome — this test is specifically about
+        // columns_are_exact_match's length check.
+        let base = workbook(vec![sheet_with_cells("Sheet1", &boolean_column(1, 0))]);
+
+        let mut target_cells = boolean_column(5, 1); // brand new, unrelated column at a different index
+        let mut shifted: Vec<(u32, u32, f64)> = boolean_column(1, 0)
+            .into_iter()
+            .map(|(row, _, v)| (row, 2, v))
+            .collect();
+        shifted.push((11, 2, 1.0)); // same 10-row prefix, one row longer
+        target_cells.extend(shifted);
         let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
 
         let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
             .unwrap();
         let cells = &diff.sheets[0].cells;
-        assert_eq!(cells.len(), 21); // 10 base cells deleted + 11 target cells added
+        // Not an exact match (different lengths): base's 10 cells are
+        // wholly Deleted, both target columns (10 and 11 cells) are
+        // wholly Added.
+        assert_eq!(cells.len(), 31);
         assert!(cells.iter().all(|c| c.old_col.is_none()));
     }
 
@@ -1010,9 +1113,13 @@ mod tests {
         // with 10 distinct real values (so both clear
         // MIN_DISTINCT_FOR_CONTENT_MATCH and use the threshold path, not
         // the exact-match rescue) plus 3 shared blank rows, must NOT be
-        // aligned: 3 blank-row "matches" alone would have cleared the
-        // threshold (20% of 13 total cell entries, rounded up, is 3)
-        // before this fix.
+        // *content*-aligned: 3 blank-row "matches" alone would have
+        // cleared the threshold (20% of 13 total cell entries, rounded
+        // up, is 3) before this fix. Uses different column indices on
+        // each side so align_sheet_columns's same-position coordinate
+        // fallback (see that function's doc comment) can't also explain
+        // the outcome — this test is specifically about the content-based
+        // threshold, not the coordinate fallback.
         fn column(col: u32, value_offset: f64) -> Vec<(u32, u32, Option<CellValue>)> {
             let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=10)
                 .map(|row| (row, col, Some(CellValue::Number(row as f64 + value_offset))))
@@ -1022,7 +1129,7 @@ mod tests {
         }
 
         let base = workbook(vec![sheet_with_optional_cells("Sheet1", &column(1, 0.0))]);
-        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &column(1, 500.0))]);
+        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &column(2, 500.0))]);
 
         let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
             .unwrap();
@@ -1132,25 +1239,46 @@ mod tests {
         // only 7 real (boolean) values plus a blank — cells.len() is 8,
         // but populated_count is 7, one short of
         // MIN_DISTINCT_FOR_CONTENT_MATCH. The rescue must stay gated by
-        // populated_count, not cells.len(), so this pair (despite being
-        // byte-for-byte identical) is left unmatched and falls back to
-        // plain coordinate diffing.
-        let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=7u32)
-            .map(|row| {
-                let value = if row.is_multiple_of(2) { 1.0 } else { 0.0 };
-                (row, 1, Some(CellValue::Number(value)))
-            })
-            .collect();
-        cells.push((8, 1, None));
-        let base = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
-        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
+        // populated_count, not cells.len(). Uses a genuine column shift
+        // (not the same coordinate on both sides) so the *content-based*
+        // exact-match rescue is the only mechanism that could explain
+        // this pair — the coordinate-based fallback for same-index
+        // columns (see align_sheet_columns) doesn't apply here and can't
+        // mask a populated_count gate bug the way it would if base and
+        // target both used column 1.
+        fn low_card_column_with_blank(col: u32) -> Vec<(u32, u32, Option<CellValue>)> {
+            let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=7u32)
+                .map(|row| {
+                    let value = if row.is_multiple_of(2) { 1.0 } else { 0.0 };
+                    (row, col, Some(CellValue::Number(value)))
+                })
+                .collect();
+            cells.push((8, col, None));
+            cells
+        }
+
+        let base = workbook(vec![sheet_with_optional_cells(
+            "Sheet1",
+            &low_card_column_with_blank(1),
+        )]);
+        let mut target_cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8u32)
+            .map(|row| (row, 5u32, Some(CellValue::Number(2000.0 + row as f64))))
+            .collect(); // brand new column at a different index, no relation to base
+        target_cells.extend(
+            low_card_column_with_blank(1)
+                .into_iter()
+                .map(|(row, _, v)| (row, 2u32, v)),
+        ); // base's column shifted to column 2, byte-identical
+        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &target_cells)]);
 
         let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
             .unwrap();
-        // Not aligned: base's 8 cells (7 real + 1 blank) are all Deleted,
-        // target's 8 cells all Added.
         let cells = &diff.sheets[0].cells;
-        assert_eq!(cells.len(), 16);
+        // Not rescued: base's column (8 cells) is wholly Deleted, and
+        // both target columns (8 cells each) are wholly Added — the
+        // shifted column isn't recognized as unchanged because 7 real
+        // values falls one short of the exact-match rescue's floor.
+        assert_eq!(cells.len(), 24);
         assert!(cells.iter().all(|c| c.old_col.is_none()));
     }
 
@@ -1162,19 +1290,23 @@ mod tests {
         // same single value) against any other constant column holding
         // that same value — not a "negligible by chance" coincidence the
         // way a genuine boolean column's full-row agreement is, but a
-        // 100%-certain false positive. Concretely: base column A is all
-        // `0`; in the target, a brand new column A is also all `0`
-        // (unrelated), while the true continuation of base A (shifted to
-        // column B) actually changed to all `1`. Without the fix, base A
-        // would wrongly match the new all-`0` column A, silently hiding
-        // that column B's values changed at all.
+        // 100%-certain false positive. Concretely: base column A (index
+        // 1) is all `0`; in the target, a brand new *unrelated* column
+        // (index 5, deliberately not index 1, so
+        // align_sheet_columns's same-position coordinate fallback can't
+        // also explain the outcome — this test is specifically about the
+        // content-based exact-match rescue) is also all `0`, while the
+        // true continuation of base A (shifted to column 2) actually
+        // changed to all `1`. Without the fix, base A would wrongly
+        // content-match the new all-`0` column, silently hiding that
+        // column 2's values changed at all.
         fn constant_column(col: u32, value: f64) -> Vec<(u32, u32, f64)> {
             (1..=8).map(|row| (row, col, value)).collect()
         }
 
         let base = workbook(vec![sheet_with_cells("Sheet1", &constant_column(1, 0.0))]);
 
-        let mut target_cells = constant_column(1, 0.0); // brand new, unrelated column
+        let mut target_cells = constant_column(5, 0.0); // brand new, unrelated column
         target_cells.extend(constant_column(2, 1.0)); // true continuation of A, values changed
         let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
 
@@ -1184,8 +1316,8 @@ mod tests {
         // Not aligned (a constant column offers no genuine identity
         // signal): base's column is wholly Deleted, and both target
         // columns are wholly Added — critically, base A is NOT matched to
-        // target A, which would have hidden the real 0 -> 1 change on
-        // what was actually the same column.
+        // the new column, which would have hidden the real 0 -> 1 change
+        // on what was actually the same column.
         assert_eq!(cells.len(), 24);
         assert!(cells.iter().all(|c| c.old_col.is_none()));
         assert_eq!(
