@@ -145,5 +145,7 @@ pub struct WorkbookDiff {
 ## 未決事項 / オープンクエスチョン
 
 1. ~~行/列挿入アライメントモード導入時の型拡張~~ → **列については解決**（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）: `CellDiff::old_col`を追加し、`diff::alignment::diff_workbooks_aligned_columns`と`diff::engine::diff_workbooks`の両方で同じ`CellDiff`型を共有する設計にした（詳細は[alignment.md](alignment.md)）。行アライメント（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)、未着手）が実装される際に`old_row`をどう追加するかは引き続き未決定。
+
+   **バージョニングについて**（Issue #5のPRレビュー(Copilot)で指摘）: `CellDiff`は全フィールドが`pub`な非`#[non_exhaustive]`構造体であるため、`old_col`の追加は既存の`CellDiff { .. }`構造体リテラル構築コードを壊す破壊的変更である。本クレートは現在`0.13.0`だが、同じパターン（`CellDiff`へのフィールド追加）を行った[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)の`old_style`/`new_style`追加時もバージョンは上げられておらず、本リポジトリにCHANGELOGも存在しない。本PRもその既存の慣例に従い、`Cargo.toml`のバージョンはPR単位では上げない——バージョン番号の管理はpublish（crates.io公開）のタイミングでメンテナが別途判断する方針であることを、ここに明示的に記録しておく。
 2. ~~スタイル・結合セルの差分~~ → **部分的に解決**（[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)）: `CellDiff::old_style`/`new_style`（fill色・フォント・罫線・配置・書式）と`SheetDiff::merges`を追加した。数式・列幅・画像の差分は依然未着手。
 3. ~~SQLite永続化へのスタイル・結合差分の反映~~ → **解決**（[Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)）: `diff::storage::DiffStore::save_diff`が`old_style`/`new_style`を`diff_records`へ、`merges`を新設の`merge_diff_records`テーブルへ保存するようになった。詳細は[storage.md](storage.md)参照。

@@ -25,7 +25,7 @@ Issue #5では、`poc/issue5-poc`から`poc/issue5-poc-v4`まで5ラウンドに
 
 ## 行は再整列しない（Issue #4は別issue・未実装）
 
-Issue #4（行挿入/削除検出）は本設計時点でコメント0件・実装ゼロの未着手issueである。そのため本実装は列のみをアライメントし、行は常に座標一致のまま扱う。これは、PoCが検討していたBag-of-Values・Sequence-LCSといった「行シフトに対して不変な」列マッチング手法が、そもそも**行が同時にシフトする**という前提を解決するために存在していたことと関係する——行が動かない前提であれば、単純な「同一行番号でのセル値比較」で十分であり、より複雑な手法は必要ない。将来Issue #4が実装される際は、`diff_matched_columns`のマージジョインに行の対応付け（`base_row -> target_row`のマッピング）を渡す形で統合できる設計にしてあり、列マッチング自体（ステップ1〜7、後述）の作り直しは不要。
+Issue #4（行挿入/削除検出）は本設計時点でコメント0件・実装ゼロの未着手issueである。そのため本実装は列のみをアライメントし、行は常に座標一致のまま扱う。これは、PoCが検討していたBag-of-Values・Sequence-LCSといった「行シフトに対して不変な」列マッチング手法が、そもそも**行が同時にシフトする**という前提を解決するために存在していたことと関係する——行が動かない前提であれば、単純な「同一行番号でのセル値比較」で十分であり、より複雑な手法は必要ない。将来Issue #4が実装される際は、行の対応付け（`base_row -> target_row`のマッピング）を、`diff_matched_columns`のマージジョインだけでなく`count_matching_rows`（`column_match_score`が閾値経路・完全一致救済の両方で使う、同じ「同一行番号での値比較」を行う関数）にも反映する必要がある——PRレビュー(Copilot)で「列マッチング自体の作り直しは不要」という以前の記述が不正確であると指摘された。`count_matching_rows`を更新しないと、行がシフトした列同士は`diff_matched_columns`に到達する前の時点でスコアが低すぎて一致とすら認識されない。
 
 ## 結合セルは列アライメント非対応
 
@@ -57,7 +57,7 @@ pub fn diff_workbooks_aligned_columns(
 
 ## 実装レビューで見つかった問題（PR #20）
 
-GitHub Copilotの自動PRレビューが4ラウンドにわたり計11件の重大な問題を指摘し、いずれも検証の上で修正した:
+GitHub Copilotの自動PRレビューが5ラウンドにわたり計14件の重大な問題を指摘し、いずれも検証の上で修正した:
 
 1. **DPの遷移が正しい重み付きLCS漸化式になっていなかった**: `score > 0`の場合に無条件で対角線を採用しており、「上」「左」との比較を行っていなかった。1つの base 列に対し複数の候補 target 列があり、弱いマッチ（例: スコア2）が強いマッチ（例: スコア10）より先に評価されると、弱い方が採用され、本来の強いマッチが誤って挿入として報告される具体的な反例が指摘された。3値の`max`を取る標準的な漸化式に修正。
 2. **書式のみのセル（値が`None`）が誤って「一致」扱いされていた**: `Option<CellValue>`の派生`PartialEq`では`None == None`が`true`になるため、`count_matching_rows`が値の無い書式専用セル同士を無条件に一致カウントしていた。両側とも`Some`である場合のみ一致とみなすよう修正。
@@ -70,6 +70,9 @@ GitHub Copilotの自動PRレビューが4ラウンドにわたり計11件の重�
 9. **`identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff`テストが完全一致救済経路を実際には検証していなかった**: テストデータが8個の*相異なる*実数値を使っていたため、`eligible_for_content_match`（distinct値8以上）を満たしてしまい、実際には低カーディナリティ・完全一致救済経路ではなく通常の閾値経路を通過していた。真に低カーディナリティ（2値のboolean風パターン）なデータに修正し、`populated_count`が7個（閾値未達）の否定側テスト（`seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor`）も追加した。
 10. **列がシフトしていない（コンテンツ照合が成立しないだけの）未整列列が、座標一致ベース差分にフォールバックしていなかった**: マッチしなかった列は無条件で丸ごとDeleted/Insertedとして報告していたため、ヘッダー無し・低カーディナリティ列が同じ座標に留まったまま1セルだけ変化したケースでも、本来なら`diff_workbooks`と同じ「1件のModified」で済むはずが、列全体の削除+再追加（例: 8セルなら16件）として報告されていた——これは本モジュール自身がdocコメントで約束していた「座標ベースの通常差分にフォールバックする」という契約に反する、アライメントしない場合より悪い結果だった。`align_sheet_columns`に、DPで未整列のまま残ったDeleted/Inserted列のうち**同一の列番号を共有するペア**だけを座標ベースで直接diffする後処理を追加し、契約を実際に満たすよう修正した（列番号が異なる、真にシフトした列同士は引き続きコンテンツベースの整列に委ねられ、この後処理の対象外）。
 11. **`docs/design/error.md`/`.en.md`が新しい`Error::ColumnAlignmentCostTooHigh`バリアントを含んでいなかった**: `src/error.rs`のEnum再現スニペットに追記した。
+12. **重複ヘッダーが無条件のマッチとして扱われていた**: `header_match`は「行1のヘッダーが一致すれば、コンテンツの一致度に関わらず`HEADER_MATCH_BONUS`（他のどんなスコアより優先される）を与える」という設計だったが、これは列見出しが**重複**する場合（例: 「備考」列が2つある）に破綻する——変化したbase列と、たまたま同じ見出しを持つ無関係なtarget列とがDPにより誤って結び付けられ、その列の本当の継続（実際に変化した可能性もある）が未整列のまま残り、実際の変化が「新規追加」として誤報告される恐れがある。`ColumnContent::header_is_unique`（そのシート内で同じヘッダー値を持つ列が他に無いか、列全体を対象に事後計算）を追加し、`header_match`は両側のヘッダーが一意である場合のみ成立するよう修正した。重複ヘッダーの列同士は、通常のコンテンツベースマッチング（閾値経路または完全一致救済）で競い合う扱いになる。
+13. **行アライメント統合時の主張が不正確だった**: 本モジュールのdocコメントは「Issue #4実装時は`diff_matched_columns`のマージジョインに行マッピングを渡すだけでよく、列マッチング自体の作り直しは不要」と述べていたが、`column_match_score`が閾値経路・完全一致救済の両方で使う`count_matching_rows`自体も同じ「同一行番号での値比較」を行っているため、行がシフトした場合はこちらも更新しないと、`diff_matched_columns`に到達する前の時点で一致スコアが低すぎて一致と認識されない。docコメントを修正し、両方の更新が必要であることを明記した。
+14. **`CellDiff::old_col`追加はバージョンポリシー上明示すべき破壊的変更**: [model.md](model.md)の未決事項1に追記——既存の慣例（Issue #8）に従いバージョンは上げず、方針を明示的に記録するのみとした。
 
 ## 依存関係
 
@@ -92,6 +95,7 @@ GitHub Copilotの自動PRレビューが4ラウンドにわたり計11件の重�
 - 書式のみセル・`populated_count`（上記5・7番）: 書式のみセルの共有が部分一致閾値を水増ししないこと（`formatting_only_blank_cells_do_not_inflate_the_partial_match_threshold`）、書式のみセルを含んでいても真に同一の低カーディナリティ列は誤差分ゼロのままであること（`identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff`）、`populated_count`が7個で閾値未達なら完全一致でも救済されないこと（`seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor`）、大きな書式のみ範囲があっても実データによる一致判定が届くこと（`a_large_formatted_blank_range_does_not_raise_the_match_threshold_out_of_reach`）
 - 定数列の多様性ゲート（上記8番）: 全行同一値の列が、無関係な別の定数列と誤って完全一致救済されず、本当の変化（0→1）を握りつぶさないこと（`constant_column_exact_match_rescue_requires_at_least_two_distinct_values`）
 - 同一座標での座標ベースフォールバック（上記10番）: シフトしていない低カーディナリティ・ヘッダー無し列が1セルだけ変化した場合に、列全体の削除+再追加ではなく`diff_workbooks`と同じ「1件のModified」になること（`unmatched_low_cardinality_column_at_the_same_coordinate_falls_back_to_coordinate_diffing`）
+- 重複ヘッダーの非優遇（上記12番）: 同じ見出しを持つ列が複数ある場合、コンテンツの裏付けが無ければ無条件マッチにならず、無関係な列への誤った対応付け（Modifiedの誤帰属）が起きないこと（`duplicate_header_does_not_win_an_unconditional_match`）
 - マージジョインの全分岐（`count_matching_rows`/`diff_matched_columns`の行が一方にしか存在しないケース含む、`matched_columns_with_sparse_non_overlapping_rows_exercise_every_merge_join_branch`）、片側のみに存在するシートがアライメント経由でも座標一致エンジンへ委譲されること（`sheet_present_on_only_one_side_reuses_the_coordinate_engine_through_alignment`）——いずれも`cargo-llvm-cov`が未到達と検出したことを契機に追加
 - 2種類の予算超過が正しく`Error::ColumnAlignmentCostTooHigh`を返すこと（行数加重コスト: `distinct_column_cost_over_the_limit_is_column_alignment_cost_too_high`、行数非依存のペア数: `column_pair_count_over_the_limit_is_column_alignment_cost_too_high_even_with_one_row`）
 - `diff_workbooks`（デフォルトエンジン）が本機能の追加によって挙動を変えていないこと（`diff_workbooks_default_behavior_is_unaffected_by_alignment_existing`）

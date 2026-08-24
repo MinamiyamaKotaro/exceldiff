@@ -71,11 +71,19 @@
 //! row-shift-invariant schemes (Bag-of-Values, Sequence-LCS) the Issue #5
 //! PoC rounds explored — those exist specifically to keep column matching
 //! working when rows *also* shift simultaneously, which cannot happen
-//! while this function holds rows fixed. When #4 lands, the natural
-//! integration point is a row mapping fed into `diff_matched_columns`'s
-//! merge-join (comparing `base_row` against whatever target row it's been
-//! aligned to, instead of assuming identity) — no rework of column
-//! matching itself required.
+//! while this function holds rows fixed. When #4 lands, a row mapping
+//! needs to reach every place that currently assumes `base_row ==
+//! target_row`: not just `diff_matched_columns`'s merge-join (comparing
+//! `base_row` against whatever target row it's been aligned to instead of
+//! assuming identity), but also `count_matching_rows` — which
+//! `column_match_score` relies on for *both* the threshold path and the
+//! exact-match rescue — since it does the exact same same-row-number
+//! comparison to decide whether two columns' content matches at all. A
+//! Copilot review correctly flagged an earlier version of this comment
+//! for claiming column matching itself would need no rework; that was
+//! inaccurate — without also updating `count_matching_rows`, row-shifted
+//! columns would score too low to be recognized as matching in the first
+//! place, before `diff_matched_columns` is ever reached for them.
 //!
 //! # Merged regions are not column-aware
 //!
@@ -261,6 +269,22 @@ struct ColumnContent<'a> {
     /// test, which originally used numeric row-1 values and failed until
     /// this restriction was added).
     header: Option<&'a CellValue>,
+    /// Whether `header` is the *only* column on this side carrying that
+    /// exact value — computed once per sheet, over all of that sheet's
+    /// columns, after `header` itself is known. `column_match_score`
+    /// requires this (on both sides) before ever treating a header match
+    /// as an unconditional identity: with a duplicated header (e.g. two
+    /// columns both titled "Notes"), giving every same-header pair the
+    /// same overwhelming `HEADER_MATCH_BONUS` makes the choice among them
+    /// depend only on incidental content overlap, which can pair a
+    /// genuinely changed base column with an unrelated same-header column
+    /// and leave the column's real (possibly also changed) continuation
+    /// unmatched — misreporting a real change as a fresh addition instead
+    /// (a Copilot review caught this concretely). A duplicated header
+    /// still lets the pair compete via ordinary content-based matching
+    /// (the threshold path or the exact-match rescue); it just isn't
+    /// trusted as decisive on its own.
+    header_is_unique: bool,
     /// Whether this column holds at least `MIN_DISTINCT_FOR_CONTENT_MATCH`
     /// distinct values — see that constant's doc comment.
     eligible_for_content_match: bool,
@@ -414,7 +438,7 @@ fn column_contents(sheet: &Sheet) -> Vec<ColumnContent<'_>> {
         by_col.entry(r.col).or_default().push((r.row, cell));
     }
 
-    by_col
+    let mut cols: Vec<ColumnContent<'_>> = by_col
         .into_iter()
         .map(|(col, cells)| {
             let header = cells
@@ -430,12 +454,35 @@ fn column_contents(sheet: &Sheet) -> Vec<ColumnContent<'_>> {
                 col,
                 cells,
                 header,
+                header_is_unique: false, // filled in by mark_unique_headers below
                 eligible_for_content_match,
                 populated_count,
                 has_at_least_two_distinct_values,
             }
         })
-        .collect()
+        .collect();
+    mark_unique_headers(&mut cols);
+    cols
+}
+
+/// Sets `header_is_unique` on every column that has a header, once all of
+/// this sheet's columns are known — a header can only be judged unique or
+/// duplicated in relation to its *siblings*, so this has to run as a
+/// second pass over the whole column set rather than while building each
+/// `ColumnContent` in isolation. O(cols²) in the number of headered
+/// columns, the same order of work `align_columns` already budgets for
+/// (see `MAX_COLUMN_PAIR_COUNT`).
+fn mark_unique_headers(cols: &mut [ColumnContent<'_>]) {
+    for i in 0..cols.len() {
+        let Some(header) = cols[i].header else {
+            continue;
+        };
+        let is_duplicate = cols
+            .iter()
+            .enumerate()
+            .any(|(j, c)| j != i && c.header == Some(header));
+        cols[i].header_is_unique = !is_duplicate;
+    }
 }
 
 /// Whether `cells` holds at least `n` distinct values. Stops scanning as
@@ -537,7 +584,13 @@ fn align_columns(
 /// heuristic") for the reasoning behind the header-match escape hatch and
 /// the `MIN_DISTINCT_FOR_CONTENT_MATCH` gate.
 fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
-    let header_match = matches!((b.header, t.header), (Some(bh), Some(th)) if bh == th);
+    // Only trusted as an unconditional identity when the header is unique
+    // on both sides — see `ColumnContent::header_is_unique`'s doc comment
+    // for why a duplicated header (e.g. two columns both titled "Notes")
+    // can't be given the same treatment.
+    let header_match = b.header_is_unique
+        && t.header_is_unique
+        && matches!((b.header, t.header), (Some(bh), Some(th)) if bh == th);
     let match_count = count_matching_rows(b, t);
 
     if header_match {
@@ -1444,6 +1497,62 @@ mod tests {
         assert!(cells
             .iter()
             .all(|c| c.col == 1 && c.status == DiffStatus::Added));
+    }
+
+    #[test]
+    fn duplicate_header_does_not_win_an_unconditional_match() {
+        // Regression test for a Copilot review finding: treating every
+        // same-header pair as an unconditional identity breaks down once
+        // the header is *duplicated* — e.g. two columns both titled
+        // "Status". Giving every same-header pair the same overwhelming
+        // HEADER_MATCH_BONUS regardless of duplication could pair a
+        // changed base column with an unrelated same-header target column
+        // purely because of the shared title, leaving the column's real
+        // continuation unmatched and misreporting a real change as a
+        // fresh addition instead. Base column 1 shares no real value at
+        // all with either same-titled target column, so — with the
+        // header no longer trusted unconditionally once duplicated —
+        // nothing should be aligned.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, CellValue::Text("Status".into())),
+                (2, 1, CellValue::Number(1.0)),
+                (3, 1, CellValue::Number(2.0)),
+                (4, 1, CellValue::Number(3.0)),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                // Two columns, both titled "Status", at indices that
+                // don't coincide with base's column 1 (so the same-index
+                // coordinate fallback can't also explain the outcome).
+                (1, 5, CellValue::Text("Status".into())),
+                (2, 5, CellValue::Number(100.0)),
+                (3, 5, CellValue::Number(101.0)),
+                (4, 5, CellValue::Number(102.0)),
+                (1, 6, CellValue::Text("Status".into())),
+                (2, 6, CellValue::Number(200.0)),
+                (3, 6, CellValue::Number(201.0)),
+                (4, 6, CellValue::Number(202.0)),
+            ],
+        )]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Not aligned: base's 4 cells are Deleted, both target columns'
+        // 4 cells each are Added — no Modified cell misattributing
+        // base's content to an unrelated same-header column.
+        assert_eq!(cells.len(), 12);
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Modified)
+                .count(),
+            0
+        );
     }
 
     #[test]
