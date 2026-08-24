@@ -111,6 +111,27 @@ fn sheet_visibility_change_is_detected_even_with_no_cell_changes() {
 }
 
 #[test]
+fn hidden_sheet_cell_modification_is_detected_end_to_end() {
+    // Issue #16 (open question, docs/design/diff/engine.md): confirms
+    // through the real parse pipeline — not just the hand-built `Sheet`s
+    // `hidden_sheet_cell_changes_are_diffed_just_like_visible_ones`
+    // (src/diff/engine.rs) uses — that a sheet which is `hidden` on both
+    // sides still gets its cell changes diffed, exactly like a visible
+    // sheet would.
+    let result = diff_pair(diff::hidden_sheet_cell_modified());
+
+    assert_eq!(result.sheets.len(), 1);
+    let sheet_diff = &result.sheets[0];
+    assert_eq!(sheet_diff.old_visibility, None);
+    assert_eq!(sheet_diff.new_visibility, None);
+    assert_eq!(sheet_diff.cells.len(), 1);
+    let cell = &sheet_diff.cells[0];
+    assert_eq!(cell.status, DiffStatus::Modified);
+    assert_eq!(cell.old_value, Some(JsonCellValue::Number(1.0)));
+    assert_eq!(cell.new_value, Some(JsonCellValue::Number(2.0)));
+}
+
+#[test]
 fn style_only_change_is_reported_as_modified_end_to_end() {
     let result = diff_pair(diff::style_only_change());
 
