@@ -60,6 +60,38 @@ pub fn cell_deleted() -> (Vec<u8>, Vec<u8>) {
     (base, target)
 }
 
+/// A new column is inserted before both existing columns; the two
+/// existing columns' data shifts right unchanged. Each column carries 10
+/// distinct numeric values, well over
+/// `diff::alignment::MIN_DISTINCT_FOR_CONTENT_MATCH`, so
+/// `diff_workbooks_aligned_columns` can align them by content alone (no
+/// header row needed) — exercises the plain content-matching path end to
+/// end through the real parse pipeline (Issue #5).
+pub fn column_inserted() -> (Vec<u8>, Vec<u8>) {
+    fn rows(cols: &[(&str, i64)]) -> String {
+        let mut out = String::new();
+        for row in 1..=10i64 {
+            out.push_str(&format!(r#"<row r="{row}">"#));
+            for &(col_letter, base_value) in cols {
+                out.push_str(&format!(
+                    r#"<c r="{col_letter}{row}"><v>{}</v></c>"#,
+                    base_value + row
+                ));
+            }
+            out.push_str("</row>\n");
+        }
+        out
+    }
+
+    let base_rows = rows(&[("A", 0), ("B", 100)]);
+    let target_rows = rows(&[("A", 200), ("B", 0), ("C", 100)]);
+
+    (
+        single_sheet("Sheet1", None, &base_rows),
+        single_sheet("Sheet1", None, &target_rows),
+    )
+}
+
 /// Base and target are two independently-built packages that happen to
 /// resolve to the same cell values — diffing them must report zero
 /// changes, not merely "few" changes.

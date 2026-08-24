@@ -20,17 +20,35 @@ pub enum DiffStatus {
 }
 
 /// One changed cell. `row`/`col` are the coordinate shared by both
-/// revisions — unlike a row/column-insertion-aware alignment, the default
-/// coordinate-based engine (`diff::engine::diff_workbooks`) never reports a
-/// cell moving from one coordinate to another (see that function's doc
-/// comment for why), so there is no separate old/new coordinate pair to
-/// carry here.
+/// revisions from the default coordinate-based engine
+/// (`diff::engine::diff_workbooks`, which never reports a cell moving from
+/// one coordinate to another — see that function's doc comment for why).
+/// `diff::alignment::diff_workbooks_aligned_columns` (Issue #5) reuses this
+/// same type rather than introducing a parallel one: `col` there is the
+/// cell's column in `target` (or in `base`, for a `Deleted` cell with no
+/// `target` side — the same convention `row` already uses, since rows
+/// never shift), and `old_col` (below) carries the pre-alignment column
+/// whenever it differs.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CellDiff {
     pub row: u32,
     pub col: u32,
     pub status: DiffStatus,
+    /// The cell's column before column alignment, present only when it
+    /// differs from `col` — i.e. only `diff_workbooks_aligned_columns`
+    /// ever populates this, and only for a `Modified` cell whose column was
+    /// recognized as shifted (a matched-but-unshifted column pair, an
+    /// `Added`, or a `Deleted` cell all leave this `None`). Always `None`
+    /// from `diff::engine::diff_workbooks`, which never shifts columns.
+    /// Mirrors `old_style`'s "only present when it actually differs"
+    /// sparseness, not `old_value`/`new_value`'s "always both" convention —
+    /// unlike a value change, which is always *why* a `CellDiff` exists at
+    /// all, a column shift is incidental information most `Modified` cells
+    /// (even under alignment) never carry, since most cells' columns don't
+    /// move.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_col: Option<u32>,
     /// Present for `Modified`/`Deleted`, absent for `Added`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_value: Option<JsonCellValue>,

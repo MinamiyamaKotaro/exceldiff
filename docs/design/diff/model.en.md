@@ -29,13 +29,26 @@ pub enum DiffStatus {
     Deleted,
 }
 
-/// One changed cell. `row`/`col` are the coordinate shared by both revisions.
+/// One changed cell. `row`/`col` are the coordinate shared by both
+/// revisions under the default coordinate-matching engine
+/// (`diff::engine::diff_workbooks`). `diff::alignment::
+/// diff_workbooks_aligned_columns` (Issue #5) reuses this same type: `col`
+/// is the column on the target side (or the base side for a `Deleted`
+/// cell), and `old_col` (below) carries the pre-alignment column whenever
+/// it differs.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CellDiff {
     pub row: u32,
     pub col: u32,
     pub status: DiffStatus,
+    /// Present only for a `Modified` cell whose column was recognized as
+    /// shifted by column alignment (i.e. differs from `col`). Always
+    /// `None` from the default `diff_workbooks`. The same "only present
+    /// when it actually differs" sparseness as `old_style`, not
+    /// `old_value`/`new_value`'s "always both" convention (Issue #5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_col: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_value: Option<JsonCellValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,11 +132,11 @@ pub struct WorkbookDiff {
 ## Dependencies
 
 - Depends on: [`json.rs`](../json.en.md) (`JsonCellValue`, `JsonStyle` — both widened to `pub` for reuse; `JsonStyle`'s own nested `JsonFont`/`JsonColorRef`/`JsonBorders` were likewise widened to `pub`, with every field of these structs made `pub` too — aligning the whole `JsonStyle` family with `CellDiff`/`SheetDiff`'s "fully public plain data" design), [`model/cell.rs`](../model/cell.en.md) (`CellRef` — the conversion source for `CellPos`). Depends on the external crate `serde`.
-- Depended on by: [`diff/engine.rs`](engine.en.md) (constructs and returns each type), [`diff/storage.rs`](storage.en.md) (reads `CellDiff::old_value`/`new_value`/`old_style`/`new_style`/`DiffStatus`/`SheetDiff::merges` when converting to SQL rows — style and merge diffs joined the set read here as of [Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)), [`lib.rs`](../lib.en.md) (re-exports `CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff` onto the crate root via [`diff/mod.rs`](mod.en.md))
+- Depended on by: [`diff/engine.rs`](engine.en.md) (constructs and returns each type; always builds `old_col: None`), [`diff/alignment.rs`](alignment.en.md) (Issue #5; reuses the same `CellDiff` type and is the only place that actually populates `old_col`), [`diff/storage.rs`](storage.en.md) (reads `CellDiff::old_value`/`new_value`/`old_style`/`new_style`/`DiffStatus`/`SheetDiff::merges` when converting to SQL rows — style and merge diffs joined the set read here as of [Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9); `old_col` is not yet persisted, see [storage.en.md](storage.en.md)), [`lib.rs`](../lib.en.md) (re-exports `CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff` onto the crate root via [`diff/mod.rs`](mod.en.md))
 
 Reusing `JsonCellValue`/`JsonStyle` rather than duplicating them guarantees, at the type level, that the same cell value/style serializes identically whether it reaches JSON via `to_json_string` (a full snapshot) or via `diff_workbooks` (a diff) — extending to style the same departure from [Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3)'s PoC (which defined its own parallel `JsonValue` type) that `CellDiff::old_value`/`new_value` already made.
 
-`CellDiff` carries no `old_row`/`old_col`, and `MergeDiff` carries no separate `old_start`/`new_start` pair, because the current default engine never detects coordinate shifts in the first place (see [engine.md](engine.en.md)).
+`CellDiff` gained `old_col` (Issue #5, see [alignment.en.md](alignment.en.md)) but not `old_row` — rows never shift under `diff::alignment` (row alignment is the separate, still-unimplemented [Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)), so adding it now would be a speculative field that's always `None`. `MergeDiff` still carries no separate `old_start`/`new_start` pair, because neither engine detects a merge's origin coordinate shifting (see [engine.en.md](engine.en.md)/[alignment.en.md](alignment.en.md)).
 
 ## Error Handling Policy
 
@@ -135,6 +148,6 @@ Reusing `JsonCellValue`/`JsonStyle` rather than duplicating them guarantees, at 
 
 ## Open Questions
 
-1. **Type extension for a future row/column-alignment mode**: how `CellDiff`/`MergeDiff`'s coordinate fields would need to change is still undecided (unchanged by this update).
+1. ~~Type extension for a future row/column-alignment mode~~ → **Resolved for columns** ([Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)): added `CellDiff::old_col`, shared between `diff::alignment::diff_workbooks_aligned_columns` and `diff::engine::diff_workbooks` (see [alignment.en.md](alignment.en.md)). How `old_row` would be added once row alignment ([Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4), unimplemented) lands is still undecided.
 2. ~~Style/merged-cell diffs~~ → **Partially resolved** ([Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)): added `CellDiff::old_style`/`new_style` (fill color, font, borders, alignment, number format) and `SheetDiff::merges`. Formula/column-width/image diffs remain unaddressed.
 3. ~~Reflecting style/merge diffs in SQLite persistence~~ → **Resolved** ([Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)): `diff::storage::DiffStore::save_diff` now persists `old_style`/`new_style` into `diff_records` and `merges` into the new `merge_diff_records` table. See [storage.en.md](storage.en.md) for details.

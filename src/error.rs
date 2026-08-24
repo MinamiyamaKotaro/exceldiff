@@ -204,6 +204,27 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    // --- diff (Issue #5): opt-in column alignment ---
+    /// `diff::alignment::diff_workbooks_aligned_columns`'s cost budget
+    /// (`distinct_cols_base * distinct_cols_target * sample_rows`) exceeded
+    /// `ColumnAlignmentLimits::max_cost`. Unlike `TooManyMergedRanges`'s
+    /// flat count cap, a single distinct-column-count limit is not enough
+    /// here: `diff::alignment`'s column-matching cost is
+    /// O(distinct_cols_base × distinct_cols_target × max_row), so a column
+    /// count that is safe at 500 rows becomes unsafe by an order of
+    /// magnitude at 50,000 rows (measured directly — see
+    /// `ColumnAlignmentLimits::MAX_COLUMN_ALIGNMENT_COST`'s doc comment).
+    /// The three factors are therefore checked together, before any
+    /// O(cols²) matching work begins, the same fail-fast-before-the-
+    /// expensive-part timing `TooManyMergedRanges` already establishes.
+    /// Unlike the default coordinate-based `diff_workbooks` (infallible),
+    /// this opt-in alignment mode returns `Result` specifically so this
+    /// case can be reported rather than silently downgraded — a caller
+    /// that wants automatic fallback can catch this and call
+    /// `diff_workbooks` itself.
+    #[error("column alignment cost too high: {count} exceeds limit {limit}")]
+    TooManyDistinctColumnsForAlignment { count: usize, limit: usize },
+
     // --- diff (Issue #3), `diff-storage` Cargo feature only ---
     /// A `diff::DiffStore` operation (opening the database, running a
     /// query, etc.) failed. `source` is type-erased for the same reason as
@@ -411,6 +432,15 @@ mod tests {
             }
             .to_string(),
             "JSON serialization error: trailing comma"
+        );
+
+        assert_eq!(
+            Error::TooManyDistinctColumnsForAlignment {
+                count: 25_000_001,
+                limit: 25_000_000,
+            }
+            .to_string(),
+            "column alignment cost too high: 25000001 exceeds limit 25000000"
         );
 
         assert_eq!(
