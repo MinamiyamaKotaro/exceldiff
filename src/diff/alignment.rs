@@ -45,15 +45,22 @@
 //! content-based matching entirely unless it has an exact header match.
 //! It can still be matched via one narrow exception: an **exact** match
 //! (every populated row present on both sides with an equal value, same
-//! length) is accepted even here, since the odds of two unrelated
-//! low-cardinality columns agreeing on *every* row by chance are
-//! negligible — this is what lets a low-cardinality column that merely
-//! shifted, with no actual content change, still produce no diff rather
-//! than a wholesale delete-and-re-add (see `column_match_score`'s doc
-//! comment). Anything short of that — a genuinely changed, or too-short-
-//! to-trust, low-cardinality column — is left unmatched, falling through
-//! to ordinary per-column coordinate diffing (the safe default rather
-//! than a wrong guess).
+//! length, *and* at least 2 distinct values among them) is accepted even
+//! here, since the odds of two unrelated low-cardinality columns agreeing
+//! on *every* row by chance are negligible — this is what lets a
+//! low-cardinality column that merely shifted, with no actual content
+//! change, still produce no diff rather than a wholesale delete-and-re-add
+//! (see `column_match_score`'s doc comment). The "≥2 distinct values" part
+//! is load-bearing, not incidental: a *constant* column (every populated
+//! cell the same single value) matches any other column holding that same
+//! constant with 100% certainty, not negligible odds, so without this it
+//! could silently swallow a genuine change (e.g. a column that actually
+//! changed from all `0` to all `1` matched against an unrelated new column
+//! that happens to still be all `0`) — a Copilot review caught this
+//! concretely. Anything short of the full requirement — a genuinely
+//! changed, too-short-to-trust, or constant low-cardinality column — is
+//! left unmatched, falling through to ordinary per-column coordinate
+//! diffing (the safe default rather than a wrong guess).
 //!
 //! # Rows are not realigned (Issue #4 is separate and unimplemented)
 //!
@@ -135,7 +142,7 @@ const HEADER_MATCH_BONUS: u64 = 2_000_000;
 /// Cost-normalized time (`ms / cost`) isn't perfectly constant across
 /// shapes — it ranges from ~5.4e-6 to ~2.4e-5 ms/unit, worse at low
 /// column counts with very high row counts, where the O(cols × rows)
-/// per-column setup work (`column_contents`/`has_enough_distinct_values`)
+/// per-column setup work (`column_contents`/`has_at_least_n_distinct_values`)
 /// stops being negligible next to the O(cols² × rows) matching work. This
 /// cap uses the worst observed rate (~2.4e-5 ms/unit) with headroom,
 /// keeping the worst case comfortably inside the same "few hundred ms"
@@ -266,6 +273,19 @@ struct ColumnContent<'a> {
     /// an entire imported table's unused rows) without that inflating the
     /// sample it's safe to draw conclusions from.
     populated_count: usize,
+    /// Whether this column holds at least 2 distinct values — i.e. is
+    /// *not* constant. `column_match_score`'s exact-match rescue requires
+    /// this from `b` before ever attempting `columns_are_exact_match`: a
+    /// constant column (every populated cell the same single value) isn't
+    /// a probabilistic near-miss the way a genuine low-cardinality column
+    /// is — it matches *any other* column holding that same constant with
+    /// 100% certainty, not the "negligible by chance" odds
+    /// `MIN_DISTINCT_FOR_CONTENT_MATCH`'s doc comment relies on. Without
+    /// this guard, a column whose values genuinely changed (e.g. shifted
+    /// from all `0` to all `1`) could be silently matched against an
+    /// unrelated new column that happens to still be all `0`, hiding the
+    /// real change entirely (a Copilot review caught this concretely).
+    has_at_least_two_distinct_values: bool,
 }
 
 /// Diffs one sheet known to exist on both sides, aligning columns by
@@ -361,7 +381,9 @@ fn column_contents(sheet: &Sheet) -> Vec<ColumnContent<'_>> {
                 .filter(|&&(row, _)| row == 1)
                 .and_then(|&(_, c)| c.value.as_ref())
                 .filter(|v| matches!(v, CellValue::Text(_)));
-            let eligible_for_content_match = has_enough_distinct_values(&cells);
+            let eligible_for_content_match =
+                has_at_least_n_distinct_values(&cells, MIN_DISTINCT_FOR_CONTENT_MATCH);
+            let has_at_least_two_distinct_values = has_at_least_n_distinct_values(&cells, 2);
             let populated_count = cells.iter().filter(|(_, c)| c.value.is_some()).count();
             ColumnContent {
                 col,
@@ -369,26 +391,26 @@ fn column_contents(sheet: &Sheet) -> Vec<ColumnContent<'_>> {
                 header,
                 eligible_for_content_match,
                 populated_count,
+                has_at_least_two_distinct_values,
             }
         })
         .collect()
 }
 
-/// Whether `cells` holds at least `MIN_DISTINCT_FOR_CONTENT_MATCH` distinct
-/// values. Stops scanning as soon as the floor is reached — the caller
-/// only needs a yes/no answer, not an exact count — and caps its own
-/// working set at that same floor, so this stays cheap (effectively O(rows
-/// × MIN_DISTINCT_FOR_CONTENT_MATCH), not O(rows²)) even on a column with
-/// many populated rows. `CellValue` cannot derive `Hash` (its `Number(f64)`
-/// variant), so distinctness is checked by linear scan against the capped
-/// working set rather than a `HashSet`.
-fn has_enough_distinct_values(cells: &[(u32, &Cell)]) -> bool {
-    let mut seen: Vec<&CellValue> = Vec::with_capacity(MIN_DISTINCT_FOR_CONTENT_MATCH);
+/// Whether `cells` holds at least `n` distinct values. Stops scanning as
+/// soon as the floor is reached — the caller only needs a yes/no answer,
+/// not an exact count — and caps its own working set at that same floor,
+/// so this stays cheap (effectively O(rows × n), not O(rows²)) even on a
+/// column with many populated rows. `CellValue` cannot derive `Hash` (its
+/// `Number(f64)` variant), so distinctness is checked by linear scan
+/// against the capped working set rather than a `HashSet`.
+fn has_at_least_n_distinct_values(cells: &[(u32, &Cell)], n: usize) -> bool {
+    let mut seen: Vec<&CellValue> = Vec::with_capacity(n);
     for &(_, cell) in cells {
         if let Some(value) = cell.value.as_ref() {
             if !seen.contains(&value) {
                 seen.push(value);
-                if seen.len() >= MIN_DISTINCT_FOR_CONTENT_MATCH {
+                if seen.len() >= n {
                     return true;
                 }
             }
@@ -514,7 +536,25 @@ fn column_match_score(b: &ColumnContent, t: &ColumnContent) -> Option<u64> {
     // compare, not the raw number of cell-map entries (which formatting
     // alone can inflate without adding any actual comparable content).
     let long_enough = b.populated_count >= MIN_DISTINCT_FOR_CONTENT_MATCH;
-    (long_enough && columns_are_exact_match(b, t)).then_some(b.cells.len() as u64)
+    // A constant column (every populated cell the same single value)
+    // isn't a probabilistic near-miss the "negligible by chance" argument
+    // above covers — it matches *any other* column holding that same
+    // constant with 100% certainty, not 1-in-256 odds. Requiring real
+    // variation (≥2 distinct values) before ever attempting the exact
+    // match rules that out: see `ColumnContent::has_at_least_two_distinct_values`'s
+    // doc comment for the concrete failure this guards against (a
+    // genuinely changed column silently matched to an unrelated new one
+    // that happens to still hold the old constant value).
+    let varied_enough = b.has_at_least_two_distinct_values;
+    if !(long_enough && varied_enough && columns_are_exact_match(b, t)) {
+        return None;
+    }
+    // Scored by populated_count, not cells.len(): the DP picks whichever
+    // candidate scores highest, so scoring this on raw cell-map size
+    // (inflatable by an arbitrarily large formatted-but-blank range)
+    // could let a padded exact match outrank a smaller but genuine
+    // threshold-path match for a competing column pair.
+    Some(b.populated_count as u64)
 }
 
 /// Whether `b` and `t` are byte-for-byte identical: same row keys in the
@@ -1012,7 +1052,7 @@ mod tests {
         // threshold to `ceil(48 * 0.2) = 10`, out of reach for the 8 real
         // matches, wrongly rejecting an otherwise-perfect match.
         fn column_with_blank_range(col: u32) -> Vec<(u32, u32, Option<CellValue>)> {
-            let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8)
+            let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8u32)
                 .map(|row| (row, col, Some(CellValue::Number(row as f64))))
                 .collect();
             cells.extend((9..=48).map(|row| (row, col, None)));
@@ -1027,7 +1067,7 @@ mod tests {
         // Column 1 shifts to column 2, byte-identical (including the
         // blank range); column 1 in the target is a brand new, unrelated
         // column with no blanks at all.
-        let mut target_cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8)
+        let mut target_cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8u32)
             .map(|row| (row, 1u32, Some(CellValue::Number(2000.0 + row as f64))))
             .collect();
         target_cells.extend(
@@ -1057,24 +1097,104 @@ mod tests {
         // count_matching_rows) counts a shared blank row as consistent —
         // it already requires every row to agree before returning `true`
         // at all, so the coincidental-match risk that motivated excluding
-        // blanks from count_matching_rows doesn't apply here. Uses 8 real
-        // values (not 7) plus the blank, so `populated_count` alone — not
-        // the blank cell padding it out — is what clears
-        // MIN_DISTINCT_FOR_CONTENT_MATCH (a Copilot review caught an
-        // earlier version of this test relying on the exact miscount it
-        // was meant to guard against: `cells.len()` including the blank
-        // cell to reach the floor, rather than genuinely having enough
-        // real values).
-        let cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8)
-            .map(|row| (row, 1, Some(CellValue::Number(row as f64))))
-            .chain(std::iter::once((9, 1, None)))
+        // blanks from count_matching_rows doesn't apply here. Genuinely
+        // low-cardinality (2 distinct values, boolean-style) so this
+        // actually exercises the exact-match rescue branch, not the
+        // partial-overlap threshold path (a Copilot review caught an
+        // earlier version of this test using 8 *distinct* real values,
+        // which made it eligible for — and pass through — the ordinary
+        // threshold path instead, without ever reaching
+        // has_at_least_two_distinct_values/columns_are_exact_match at
+        // all). 8 populated values (not 7) plus the blank, so
+        // `populated_count` alone — not the blank cell padding it out —
+        // is what clears MIN_DISTINCT_FOR_CONTENT_MATCH; see
+        // seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor
+        // below for the negative case.
+        let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=8u32)
+            .map(|row| {
+                let value = if row.is_multiple_of(2) { 1.0 } else { 0.0 };
+                (row, 1, Some(CellValue::Number(value)))
+            })
             .collect();
+        cells.push((9, 1, None));
         let base = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
         let target = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
 
         let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
             .unwrap();
         assert!(diff.sheets.is_empty());
+    }
+
+    #[test]
+    fn seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor() {
+        // Negative counterpart to
+        // identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff:
+        // only 7 real (boolean) values plus a blank — cells.len() is 8,
+        // but populated_count is 7, one short of
+        // MIN_DISTINCT_FOR_CONTENT_MATCH. The rescue must stay gated by
+        // populated_count, not cells.len(), so this pair (despite being
+        // byte-for-byte identical) is left unmatched and falls back to
+        // plain coordinate diffing.
+        let mut cells: Vec<(u32, u32, Option<CellValue>)> = (1..=7u32)
+            .map(|row| {
+                let value = if row.is_multiple_of(2) { 1.0 } else { 0.0 };
+                (row, 1, Some(CellValue::Number(value)))
+            })
+            .collect();
+        cells.push((8, 1, None));
+        let base = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
+        let target = workbook(vec![sheet_with_optional_cells("Sheet1", &cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        // Not aligned: base's 8 cells (7 real + 1 blank) are all Deleted,
+        // target's 8 cells all Added.
+        let cells = &diff.sheets[0].cells;
+        assert_eq!(cells.len(), 16);
+        assert!(cells.iter().all(|c| c.old_col.is_none()));
+    }
+
+    #[test]
+    fn constant_column_exact_match_rescue_requires_at_least_two_distinct_values() {
+        // Regression test for a Copilot review finding: without a
+        // diversity requirement, the exact-match rescue would accept a
+        // *constant* low-cardinality column (every populated cell the
+        // same single value) against any other constant column holding
+        // that same value — not a "negligible by chance" coincidence the
+        // way a genuine boolean column's full-row agreement is, but a
+        // 100%-certain false positive. Concretely: base column A is all
+        // `0`; in the target, a brand new column A is also all `0`
+        // (unrelated), while the true continuation of base A (shifted to
+        // column B) actually changed to all `1`. Without the fix, base A
+        // would wrongly match the new all-`0` column A, silently hiding
+        // that column B's values changed at all.
+        fn constant_column(col: u32, value: f64) -> Vec<(u32, u32, f64)> {
+            (1..=8).map(|row| (row, col, value)).collect()
+        }
+
+        let base = workbook(vec![sheet_with_cells("Sheet1", &constant_column(1, 0.0))]);
+
+        let mut target_cells = constant_column(1, 0.0); // brand new, unrelated column
+        target_cells.extend(constant_column(2, 1.0)); // true continuation of A, values changed
+        let target = workbook(vec![sheet_with_cells("Sheet1", &target_cells)]);
+
+        let diff = diff_workbooks_aligned_columns(&base, &target, ColumnAlignmentLimits::default())
+            .unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Not aligned (a constant column offers no genuine identity
+        // signal): base's column is wholly Deleted, and both target
+        // columns are wholly Added — critically, base A is NOT matched to
+        // target A, which would have hidden the real 0 -> 1 change on
+        // what was actually the same column.
+        assert_eq!(cells.len(), 24);
+        assert!(cells.iter().all(|c| c.old_col.is_none()));
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Modified)
+                .count(),
+            0
+        );
     }
 
     #[test]

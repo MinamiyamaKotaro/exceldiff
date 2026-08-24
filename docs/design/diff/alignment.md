@@ -57,7 +57,7 @@ pub fn diff_workbooks_aligned_columns(
 
 ## 実装レビューで見つかった問題（PR #20）
 
-GitHub Copilotの自動PRレビューが2ラウンドにわたり計6件の重大な問題を指摘し、いずれも検証の上で修正した:
+GitHub Copilotの自動PRレビューが3ラウンドにわたり計9件の重大な問題を指摘し、いずれも検証の上で修正した:
 
 1. **DPの遷移が正しい重み付きLCS漸化式になっていなかった**: `score > 0`の場合に無条件で対角線を採用しており、「上」「左」との比較を行っていなかった。1つの base 列に対し複数の候補 target 列があり、弱いマッチ（例: スコア2）が強いマッチ（例: スコア10）より先に評価されると、弱い方が採用され、本来の強いマッチが誤って挿入として報告される具体的な反例が指摘された。3値の`max`を取る標準的な漸化式に修正。
 2. **書式のみのセル（値が`None`）が誤って「一致」扱いされていた**: `Option<CellValue>`の派生`PartialEq`では`None == None`が`true`になるため、`count_matching_rows`が値の無い書式専用セル同士を無条件に一致カウントしていた。両側とも`Some`である場合のみ一致とみなすよう修正。
@@ -65,6 +65,9 @@ GitHub Copilotの自動PRレビューが2ラウンドにわたり計6件の重�
 4. **低カーディナリティゲートが「変化していない列」まで対象外にしていた**: ヘッダー無し・distinct値8未満の列は元実装では一律コンテンツマッチング対象外としていたため、実際には一切変化していない（単に列がシフトしただけの）低カーディナリティ列まで、丸ごと削除+丸ごと追加として報告されてしまっていた——これはまさに本機能が回避すべきカスケードそのものである。完全一致（全populated行が両側で一致し、行数も一致）の場合のみ例外的に許可する「完全一致救済」を追加し、この回帰を修正した。
 5. **閾値・完全一致救済の判定に`cells.len()`（書式のみのセルを含む総数）を使っていた**: `min_len`（部分一致閾値の分母）と`long_enough`（完全一致救済のゲート）の両方が、実データを持つセル数ではなく書式のみのセルも含めた総エントリ数を使っていた。Excelでは取り込んだ表の未使用範囲全体に罫線・背景色だけを適用しているようなケースが珍しくなく、そうした大きな「書式のみの空白範囲」があると、実データ8個で本来一致するはずの列が`min_len`の水増しにより閾値を満たせず誤って棄却されたり、逆に実データ数個+書式のみセルで水増しされた列が完全一致救済の最低サンプル数（統計的安全マージン）を不当にクリアしてしまったりする。`ColumnContent::populated_count`（実データを持つセル数、列ごとに1回計算）を追加し、両方のゲートをこちらに切り替えた。
 6. **命名・ドキュメントの整合性**: `Error::TooManyDistinctColumnsForAlignment`を`Error::ColumnAlignmentCostTooHigh`へ改名した（`count`/`limit`→`cost`/`limit`。実際にはコスト積であって列数そのものではないため）。また、存在しない`ColumnAlignmentLimits::MAX_COLUMN_ALIGNMENT_COST`（実際は`diff::alignment`モジュールレベルの定数であり、関連定数ではない）を指すdocコメントの誤りも修正した。
+7. **完全一致救済のDPスコアに`cells.len()`（書式のみセル込み）を使っていた**: 5番の修正で適格性ゲートは`populated_count`に切り替えたが、DPに渡すスコア自体は依然`b.cells.len()`のままだった。`align_columns`はスコアの合計を最大化するため、書式のみの巨大な空白範囲を持つ完全一致候補が、水増しされたスコアで本来の（閾値経路による、より正当な）マッチを押しのけてしまう恐れがあった。スコアも`populated_count`ベースに修正。
+8. **完全一致救済が「定数列」を許容していた**: `long_enough`（`populated_count >= 8`）はセル数のみを見ており、値の多様性を一切見ていなかった。全行が同一値（例: 全て`0`）の「定数列」は、8行以上あれば`long_enough`を満たしてしまうが、これは「偶然の一致確率が無視できるほど低い」という完全一致救済の安全性の前提そのものが成立しないケース——同じ定数値を持つ別の無関係な列とは**確率ではなく必然的に**完全一致してしまう。具体例: base列Aが全て`0`、target側で新規の無関係な列Aも全て`0`、Aの本当の継続である（列Bへシフトした）列は値が全て`1`に変化——この場合、修正前はbase列Aが誤って新規のtarget列Aとマッチし、本来検出すべき列Bへの変化（0→1）が握りつぶされてしまう。`ColumnContent::has_at_least_two_distinct_values`を追加し、完全一致救済の前提条件に加えた。
+9. **`identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff`テストが完全一致救済経路を実際には検証していなかった**: テストデータが8個の*相異なる*実数値を使っていたため、`eligible_for_content_match`（distinct値8以上）を満たしてしまい、実際には低カーディナリティ・完全一致救済経路ではなく通常の閾値経路を通過していた。真に低カーディナリティ（2値のboolean風パターン）なデータに修正し、`populated_count`が7個（閾値未達）の否定側テスト（`seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor`）も追加した。
 
 ## 依存関係
 
@@ -84,7 +87,8 @@ GitHub Copilotの自動PRレビューが2ラウンドにわたり計6件の重�
 - シフトしていない列では`old_col`が`None`のままであること（`old_col_is_absent_when_the_matched_column_did_not_shift`）
 - 短すぎる（`MIN_DISTINCT_FOR_CONTENT_MATCH`未満の行数）低カーディナリティ・ヘッダー無し列が安全に座標ベース差分へフォールバックすること（`low_cardinality_headerless_columns_fall_back_to_coordinate_diff_safely`）、ヘッダーがあれば同条件でも正しく整列できること（`header_match_rescues_low_cardinality_column_alignment`）
 - 完全一致救済（上記「実装レビューで見つかった問題」4番）: 変化・シフトの無い低カーディナリティ列が誤差分ゼロになること（`identical_low_cardinality_headerless_column_produces_no_diff`）、シフトしたが内容は完全一致の低カーディナリティ列が正しく整列されること（`shifted_but_unchanged_low_cardinality_headerless_column_is_recognized_via_exact_match`）、行数が異なる列同士は完全一致になり得ないこと（`different_length_low_cardinality_columns_are_never_an_exact_match`）
-- 書式のみセル・`populated_count`（上記5番）: 書式のみセルの共有が部分一致閾値を水増ししないこと（`formatting_only_blank_cells_do_not_inflate_the_partial_match_threshold`）、書式のみセルを含んでいても真に同一の低カーディナリティ列は誤差分ゼロのままであること（`identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff`）、大きな書式のみ範囲があっても実データによる一致判定が届くこと（`a_large_formatted_blank_range_does_not_raise_the_match_threshold_out_of_reach`）
+- 書式のみセル・`populated_count`（上記5・7番）: 書式のみセルの共有が部分一致閾値を水増ししないこと（`formatting_only_blank_cells_do_not_inflate_the_partial_match_threshold`）、書式のみセルを含んでいても真に同一の低カーディナリティ列は誤差分ゼロのままであること（`identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff`）、`populated_count`が7個で閾値未達なら完全一致でも救済されないこと（`seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor`）、大きな書式のみ範囲があっても実データによる一致判定が届くこと（`a_large_formatted_blank_range_does_not_raise_the_match_threshold_out_of_reach`）
+- 定数列の多様性ゲート（上記8番）: 全行同一値の列が、無関係な別の定数列と誤って完全一致救済されず、本当の変化（0→1）を握りつぶさないこと（`constant_column_exact_match_rescue_requires_at_least_two_distinct_values`）
 - マージジョインの全分岐（`count_matching_rows`/`diff_matched_columns`の行が一方にしか存在しないケース含む、`matched_columns_with_sparse_non_overlapping_rows_exercise_every_merge_join_branch`）、片側のみに存在するシートがアライメント経由でも座標一致エンジンへ委譲されること（`sheet_present_on_only_one_side_reuses_the_coordinate_engine_through_alignment`）——いずれも`cargo-llvm-cov`が未到達と検出したことを契機に追加
 - 2種類の予算超過が正しく`Error::ColumnAlignmentCostTooHigh`を返すこと（行数加重コスト: `distinct_column_cost_over_the_limit_is_column_alignment_cost_too_high`、行数非依存のペア数: `column_pair_count_over_the_limit_is_column_alignment_cost_too_high_even_with_one_row`）
 - `diff_workbooks`（デフォルトエンジン）が本機能の追加によって挙動を変えていないこと（`diff_workbooks_default_behavior_is_unaffected_by_alignment_existing`）
