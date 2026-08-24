@@ -2,7 +2,7 @@
 
 *[English](mod.en.md)*
 
-`src/diff/mod.rs` に対応する設計書。[architecture.md](../architecture.md) が定義する5フェーズ・パイプライン（rels解決→サニタイズ→ストリームパース→分析/遅延解決→JSON生成）の**外側に追加された第6の機能領域**であり、[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) が要求する「2つの `Workbook` の差分計算・SQLiteへの永続化・HEADの完全JSON出力」を担う。architecture.mdの5フェーズはいずれも「1つの `.xlsx` を読んで1つの `Workbook`/JSONを返す」ことを前提とするのに対し、`diff/` は既にフェーズ1〜4を完了した**2つの** `Workbook` を受け取って比較する後段の機能であるため、既存フェーズへ割り込ませず独立したサブモジュールツリーとした。
+`src/diff/mod.rs` に対応する設計書。[architecture.md](../architecture.md) が定義する5フェーズ・パイプライン（rels解決→サニタイズ→ストリームパース→分析/遅延解決→JSON生成）の**外側に追加された第6の機能領域**であり、[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) が要求する「2つの `Workbook` の差分計算・SQLiteへの永続化・HEADの完全JSON出力」を担う。architecture.mdの5フェーズはいずれも「1つの `.xlsx` を読んで1つの `Workbook`/JSONを返す」ことを前提とするのに対し、`diff/` は既にフェーズ1〜4を完了した**2つの** `Workbook` を受け取って比較する後段の機能であるため、既存フェーズへ割り込ませず独立したサブモジュールツリーとした。
 
 ## 責務・スコープ
 
@@ -30,7 +30,7 @@ pub use storage::DiffStore;
 - 依存先: [`diff/model.rs`](model.md)（`mod` 宣言）、[`diff/engine.rs`](engine.md)（`mod` 宣言）、[`diff/storage.rs`](storage.md)（`mod` 宣言、`diff-storage` フィーチャー時のみ）
 - 依存元: [`lib.rs`](../lib.md)（`mod diff;` として非公開宣言した上で、本ファイルが再エクスポートする型・関数をさらに `pub use diff::{...};` でクレートルートへフラットに再エクスポートする）
 
-`lib.rs` が `diff::` という名前空間パス（例: `exceldiff::diff::WorkbookDiff`）ではなく、`model/` 由来の型（`Cell`, `Sheet` 等）と同様にクレートルート直下（`exceldiff::WorkbookDiff`）へフラットに再エクスポートしているのは、[lib.md](../lib.md) が既に確立している「サブモジュールを非公開 `mod` として隠蔽し、外部公開したい型・関数だけをクレートルートへ集約する」という一貫した公開API方針にならったもの。[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) の提案ディレクトリ構成コメント「`mod.rs` # 差分モジュールの公開インターフェース」は、ファイル分割そのものについての言及であり、`exceldiff::diff::` という独立した公開名前空間を要求するものではないと解釈した。
+`lib.rs` が `diff::` という名前空間パス（例: `exceldiff::diff::WorkbookDiff`）ではなく、`model/` 由来の型（`Cell`, `Sheet` 等）と同様にクレートルート直下（`exceldiff::WorkbookDiff`）へフラットに再エクスポートしているのは、[lib.md](../lib.md) が既に確立している「サブモジュールを非公開 `mod` として隠蔽し、外部公開したい型・関数だけをクレートルートへ集約する」という一貫した公開API方針にならったもの。[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) の提案ディレクトリ構成コメント「`mod.rs` # 差分モジュールの公開インターフェース」は、ファイル分割そのものについての言及であり、`exceldiff::diff::` という独立した公開名前空間を要求するものではないと解釈した。
 
 ## エラー処理方針
 
@@ -42,5 +42,5 @@ pub use storage::DiffStore;
 
 ## 未決事項 / オープンクエスチョン
 
-1. **行/列挿入検出（2D LCSアライメント）モードの追加場所**: [Issue #4](https://github.com/MinamiyamaKotaro/xlsxparser/issues/4)（行挿入/削除検出）・[Issue #5](https://github.com/MinamiyamaKotaro/xlsxparser/issues/5)（列挿入/削除検出）が要求する、上限付きオプトインのアライメントベース差分を実装する場合、`diff::engine` 内に関数を追加するのか（例: `diff_workbooks_aligned`）、`diff::alignment` のような新規サブモジュールとして分離するのかは未決定。[engine.md 未決事項](engine.md)参照。
-2. **`DiffStore` 以外のストレージバックエンドの要否**: 現状SQLite（`rusqlite`）のみをサポートする。[Issue #3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) の検討事項1「`rusqlite` を本体のデフォルト依存にするか、Cargo featureとしてオプショナルにするか」は「オプショナルにする」で解決したが、他のストレージ（例: JSON Lines ファイルへの追記）を求める要望が生じた場合、`diff::storage` をトレイト抽象化するかは未決定。
+1. **行/列挿入検出（2D LCSアライメント）モードの追加場所**: [Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)（行挿入/削除検出）・[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)（列挿入/削除検出）が要求する、上限付きオプトインのアライメントベース差分を実装する場合、`diff::engine` 内に関数を追加するのか（例: `diff_workbooks_aligned`）、`diff::alignment` のような新規サブモジュールとして分離するのかは未決定。[engine.md 未決事項](engine.md)参照。
+2. **`DiffStore` 以外のストレージバックエンドの要否**: 現状SQLite（`rusqlite`）のみをサポートする。[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3) の検討事項1「`rusqlite` を本体のデフォルト依存にするか、Cargo featureとしてオプショナルにするか」は「オプショナルにする」で解決したが、他のストレージ（例: JSON Lines ファイルへの追記）を求める要望が生じた場合、`diff::storage` をトレイト抽象化するかは未決定。
