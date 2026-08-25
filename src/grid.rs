@@ -656,7 +656,7 @@ fn html_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use crate::diff::{CellDiff, CellPos, MergeDiff};
-    use crate::model::{Font, MergedRegion, SheetVisibility};
+    use crate::model::{DateTimeValue, Font, MergedRegion, SheetVisibility};
 
     fn cell(value: CellValue) -> Cell {
         Cell {
@@ -985,5 +985,207 @@ mod tests {
 
         let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
         assert!(html.contains("font-weight:700;"));
+    }
+
+    #[test]
+    fn trailing_unchanged_rows_after_the_last_change_collapse_too() {
+        let mut base = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        base.insert_cell(CellRef { row: 1, col: 1 }, cell(CellValue::Number(1.0)));
+        base.insert_cell(CellRef { row: 50, col: 1 }, cell(CellValue::Number(1.0)));
+        let mut head = base.clone();
+        head.insert_cell(CellRef { row: 1, col: 1 }, cell(CellValue::Number(2.0)));
+
+        let base_wb = workbook_with(base.clone());
+        let head_wb = workbook_with(head.clone());
+        let sheet_diff = SheetDiff {
+            name: "Sheet1".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: vec![cell_diff(1, 1, DiffStatus::Modified)],
+            merges: Vec::new(),
+        };
+
+        // The only change is at row 1; rows 4..=50 are all unchanged and
+        // trail off to the end of the sheet with nothing else of interest
+        // after them, exercising the "gap after the last kept window"
+        // branch of `build_line_plan` (as opposed to a gap *between* two
+        // changes).
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
+        assert!(html.contains("gap-row"));
+        assert!(html.contains("row(s) omitted (4"));
+    }
+
+    #[test]
+    fn deleted_sheet_position_falls_back_to_base_order() {
+        let mut sheet1 = Sheet::new("A".to_string(), SheetVisibility::Visible);
+        sheet1.insert_cell(CellRef { row: 1, col: 1 }, cell(CellValue::Number(1.0)));
+        let mut sheet2 = Sheet::new("B".to_string(), SheetVisibility::Visible);
+        sheet2.insert_cell(CellRef { row: 1, col: 1 }, cell(CellValue::Number(1.0)));
+
+        // "B" only exists in base (it was deleted) — head has just "A".
+        let base_wb = Workbook::new(vec![sheet1.clone(), sheet2.clone()], None);
+        let head_wb = Workbook::new(vec![sheet1.clone()], None);
+        let sheet_diff = SheetDiff {
+            name: "B".to_string(),
+            status: DiffStatus::Deleted,
+            old_visibility: None,
+            new_visibility: None,
+            cells: Vec::new(),
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&sheet2), None);
+        assert!(html.contains("sheet2：B"));
+    }
+
+    #[test]
+    fn sheet_not_found_on_either_side_falls_back_to_the_bare_name() {
+        // A defensive path: `sheet_diff.name` doesn't match any sheet in
+        // either workbook's own `sheets()` list, so `sheet_heading` has no
+        // position to report and falls back to the plain (HTML-escaped)
+        // name instead of a `sheetN：` prefix.
+        let base_wb = Workbook::new(Vec::new(), None);
+        let head_wb = Workbook::new(Vec::new(), None);
+        let sheet_diff = SheetDiff {
+            name: "Ghost".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: Vec::new(),
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, None, None);
+        assert!(html.contains("<h2>Ghost "));
+        assert!(!html.contains("sheet1："));
+    }
+
+    #[test]
+    fn far_apart_column_changes_collapse_the_column_gap() {
+        let mut base = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        base.insert_cell(CellRef { row: 1, col: 1 }, cell(CellValue::Number(1.0)));
+        let mut head = base.clone();
+        head.insert_cell(CellRef { row: 1, col: 50 }, cell(CellValue::Number(2.0)));
+
+        let base_wb = workbook_with(base.clone());
+        let head_wb = workbook_with(head.clone());
+        let sheet_diff = SheetDiff {
+            name: "Sheet1".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: vec![cell_diff(1, 50, DiffStatus::Added)],
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
+        assert!(html.contains("class=\"cell gap-col\""));
+        assert!(html.contains("class=\"col-head gap-head\""));
+        assert!(html.contains("column(s) omitted"));
+    }
+
+    #[test]
+    fn wrap_text_cell_wraps_instead_of_clipping_or_overflowing() {
+        let wrapped = ResolvedStyle {
+            wrap_text: true,
+            ..Default::default()
+        };
+        let mut base = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        base.insert_cell(
+            CellRef { row: 1, col: 1 },
+            styled_cell(Some(CellValue::Text("wraps".into())), wrapped),
+        );
+        let head = base.clone();
+
+        let base_wb = workbook_with(base.clone());
+        let head_wb = workbook_with(head.clone());
+        let sheet_diff = SheetDiff {
+            name: "Sheet1".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: Vec::new(),
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
+        assert!(html.contains("white-space:normal;overflow-wrap:anywhere;"));
+    }
+
+    #[test]
+    fn all_four_border_sides_render_as_black_inline_css() {
+        let bordered = ResolvedStyle {
+            borders: Borders {
+                top: true,
+                right: true,
+                bottom: true,
+                left: true,
+            },
+            ..Default::default()
+        };
+        let mut base = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        base.insert_cell(
+            CellRef { row: 1, col: 1 },
+            styled_cell(Some(CellValue::Number(1.0)), bordered),
+        );
+        let head = base.clone();
+
+        let base_wb = workbook_with(base.clone());
+        let head_wb = workbook_with(head.clone());
+        let sheet_diff = SheetDiff {
+            name: "Sheet1".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: Vec::new(),
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
+        assert!(html.contains("border-top:1px solid #000;"));
+        assert!(html.contains("border-right:1px solid #000;"));
+        assert!(html.contains("border-bottom:1px solid #000;"));
+        assert!(html.contains("border-left:1px solid #000;"));
+    }
+
+    #[test]
+    fn boolean_datetime_and_error_values_render_correctly() {
+        assert_eq!(cell_value_html(Some(&CellValue::Boolean(true))), "true");
+        assert_eq!(cell_value_html(Some(&CellValue::Boolean(false))), "false");
+        assert_eq!(
+            cell_value_html(Some(&CellValue::Error("#DIV/0!".to_string()))),
+            "<span class=\"err\">#DIV/0!</span>"
+        );
+        let dt = DateTimeValue {
+            year: 2024,
+            month: 1,
+            day: 5,
+            hour: 3,
+            minute: 5,
+            second: 9,
+        };
+        assert_eq!(
+            cell_value_html(Some(&CellValue::DateTime(dt))),
+            html_escape(&format!("{dt:?}"))
+        );
+    }
+
+    #[test]
+    fn next_cell_is_empty_is_false_when_the_neighbor_has_a_real_value() {
+        let mut sheet = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        sheet.insert_cell(
+            CellRef { row: 1, col: 1 },
+            cell(CellValue::Text("a".into())),
+        );
+        sheet.insert_cell(
+            CellRef { row: 1, col: 2 },
+            cell(CellValue::Text("b".into())),
+        );
+
+        assert!(!next_cell_is_empty(
+            Some(&sheet),
+            CellRef { row: 1, col: 1 }
+        ));
     }
 }

@@ -12,7 +12,7 @@
 - 変更セルの一覧を ```` ```diff ```` フェンス内の `@@ <A1座標> @@` ハンク＋`-`/`+`行として整形する(`format_cell_hunk`)。Markdownテーブルではなくこの形式を選んだ理由は下記「設計判断: なぜMarkdownテーブルではなくdiffフェンスか」を参照
 - 結合セルの変更（[`diff::MergeDiff`](diff/model.md)、Issue #8）を、セルのハンクと同じ ```` ```diff ```` フェンス内に `@@ <始点>:<終点> (merge) @@` ハンクとして整形する(`format_merge_hunk`)。集計行(`{added} added, {modified} modified, {deleted} deleted`)では、結合セルの追加/解除/リサイズをすべて「modified」に算入する — 結合の変更は特定の1セルの追加・削除ではなく「既存セルのグルーピングが変わった」ことなので、どちらから見ても一種の変更と捉える方が座りが良いため
 - `MarkdownOptions::max_rows_per_sheet` で1シートあたりのセルハンク表示件数上限を呼び出し側から指定可能にする（[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)のinput化と接続。結合セルハンクは上限の対象外 — 理由は下記コード中のドキュメントコメント参照）
-- ファイルの見出し(`### <バッジ> · \`path\``)に、追加/変更/削除を一目で判別できる絵文字バッジ(🆕/✏️/🗑️/❓)を付与する(`file_status_badge`) — パスだけでは複数ファイルが変更されたPRで状態を見分けにくいため
+- ファイルの見出し(`` ### <バッジ> · `path` ``)に、追加/変更/削除を一目で判別できる絵文字バッジ(🆕/✏️/🗑️/❓)を付与する(`file_status_badge`) — パスだけでは複数ファイルが変更されたPRで状態を見分けにくいため
 - **含まない責務**: `.xlsx` のパース・差分計算そのもの（[`parse_workbook`](lib.md)・[`diff::diff_workbooks`](diff/engine.md)。呼び出し側の責務）、GitHub Actionsワークフロー自体の実装（`.github/workflows/xlsx-diff.yml`）、方眼紙Excelを実際のExcelグリッドのような見た目でHTML表示する機能（別issueの検討事項。GitHubのPRコメントは投稿されたHTML内の `style=` 属性をサニタイズして無効化するため、色付きの罫線・塗りつぶしをコメント本文へ直接埋め込むことはできない — この制約により、そうした視覚的なグリッド表示は別の出力先（例: スクリーンショット画像＋GitHub Pagesのリンク）を要する設計上の判断であり、本モジュールのスコープ外）
 
 ## 主要な型・関数（案）
@@ -77,7 +77,7 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 - シートが0件の`WorkbookDiff`が`_No differences detected._`として整形されることの確認
 - `max_rows_per_sheet`がセルハンクの件数を正しく上限し、超過分を`_...and N more change(s) in this sheet._`として報告することの確認
 - 結合セルの追加/解除/リサイズ3パターンすべてが、それぞれ正しい`@@ ... (merge) @@`ハンク形状(`+ merged`/`- merged`/`- merged A:B` + `+ merged A:C`)へ整形されること、および集計行の`modified`件数に結合セルの変更が正しく算入されることの確認
-- シートの可視性が変わった場合に`_Visibility: \`old\` → \`new\`_`行が出力されることの確認
+- シートの可視性が変わった場合に`` _Visibility: `old` → `new`_ ``行が出力されることの確認
 - `FileStatus`の全バリアント(`Added`/`AddedParseError`/`Deleted`/`Modified`/`ModifiedMissingContent`/`ModifiedParseError`/`Unrecognized`)それぞれについて、見出しのバッジ文言と本文が期待通りに整形されることの確認。`ModifiedParseError`は`RevisionSide::Base`/`Head`両方で、エラーメッセージにどちら側が失敗したか正しい文言(the previous version/the new version)が現れることを確認
 - テキスト値中の改行がdiff行の1行構造を壊さないようエスケープされること、一方で`|`はMarkdownテーブル構文ではなくなったため一切エスケープされないことの確認（旧テーブル形式からの意図的な変更点）
 

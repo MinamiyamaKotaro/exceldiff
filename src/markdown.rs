@@ -417,6 +417,75 @@ mod tests {
     }
 
     #[test]
+    fn format_workbook_diff_notes_added_and_removed_sheets() {
+        let added_sheet = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "New".to_string(),
+                status: DiffStatus::Added,
+                old_visibility: None,
+                new_visibility: None,
+                merges: Vec::new(),
+                cells: Vec::new(),
+            }],
+        };
+        let md = format_workbook_diff(&added_sheet, &MarkdownOptions::default());
+        assert!(md.contains("**Sheet `New` (sheet added)**"));
+
+        let removed_sheet = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Old".to_string(),
+                status: DiffStatus::Deleted,
+                old_visibility: None,
+                new_visibility: None,
+                merges: Vec::new(),
+                cells: Vec::new(),
+            }],
+        };
+        let md = format_workbook_diff(&removed_sheet, &MarkdownOptions::default());
+        assert!(md.contains("**Sheet `Old` (sheet removed)**"));
+    }
+
+    #[test]
+    fn format_cell_hunk_handles_deleted_cell_with_no_new_value() {
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                merges: Vec::new(),
+                cells: vec![CellDiff {
+                    row: 1,
+                    col: 1,
+                    status: DiffStatus::Deleted,
+                    old_col: None,
+                    old_row: None,
+                    old_value: Some(JsonCellValue::Number(9.0)),
+                    new_value: None,
+                    old_style: None,
+                    new_style: None,
+                }],
+            }],
+        };
+        let md = format_workbook_diff(&diff, &MarkdownOptions::default());
+        assert!(md.contains("@@ A1 @@\n- 9\n```"));
+    }
+
+    #[test]
+    fn format_value_covers_every_json_cell_value_variant() {
+        assert_eq!(format_value(&JsonCellValue::Boolean(true)), "true");
+        assert_eq!(
+            format_value(&JsonCellValue::DateTime("2024-01-01T00:00:00".to_string())),
+            "2024-01-01T00:00:00"
+        );
+        assert_eq!(
+            format_value(&JsonCellValue::Error("#DIV/0!".to_string())),
+            "`#DIV/0!`"
+        );
+        assert_eq!(format_value(&JsonCellValue::Empty), "_(empty)_");
+    }
+
+    #[test]
     fn format_sheet_diff_reports_visibility_change() {
         let diff = WorkbookDiff {
             sheets: vec![SheetDiff {
