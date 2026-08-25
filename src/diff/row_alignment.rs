@@ -209,13 +209,37 @@ pub(crate) const DEFAULT_MAX_GAP_MYERS_D: usize = 200;
 /// `ColumnAlignmentLimits::max_cost` already offers.
 pub(crate) const MAX_ROW_ALIGNMENT_COST: usize = 50_000_000;
 
+/// Hard ceiling on `RowAlignmentLimits::max_gap_myers_d` alone, independent
+/// of `max_cost` — bounds `myers_diff_gap`'s `flat_trace` buffer *memory*,
+/// which is O(max_gap_myers_d²) regardless of row count. This is the row
+/// counterpart of `diff::col_alignment::MAX_COLUMN_PAIR_COUNT`: `max_cost`
+/// alone isn't sufficient here, the same way `diff::col_alignment`'s
+/// `max_cost` alone wasn't sufficient for columns — a caller could raise
+/// `max_gap_myers_d` *and* `max_cost` together (e.g. a tiny sheet with a
+/// huge `max_gap_myers_d`) so the row-count-weighted time budget stays
+/// satisfied while `flat_trace` alone still allocates gigabytes, since its
+/// size never depends on row count at all (caught in review on PR #21).
+///
+/// Sized from the real allocated type: `flat_trace: Vec<usize>` of length
+/// `(max_steps + 1) * (2 × max_steps + 2)`, 8 bytes per `usize`, where
+/// `max_steps = min(sub_n + sub_m, max_gap_myers_d)` — so `max_gap_myers_d`
+/// alone is the size driver at its own ceiling. At `MAX_GAP_MYERS_D_CEILING`
+/// (2,000): `2,001 × 4,002 × 8 ≈ 64MB` — comfortably inside the same
+/// "tens of MB" class `MAX_COLUMN_PAIR_COUNT` targets, while remaining an
+/// order of magnitude above `DEFAULT_MAX_GAP_MYERS_D` (200) so it never
+/// constrains a caller who hasn't deliberately overridden the default.
+pub(crate) const MAX_GAP_MYERS_D_CEILING: usize = 2_000;
+
 /// Configuration for [`diff_workbooks_aligned_rows`]. A plain struct
 /// parameter (not a builder, not `Option<T>`), matching this crate's
 /// existing `SizeLimits`/`ColumnAlignmentLimits` convention.
 #[derive(Debug, Clone, Copy)]
 pub struct RowAlignmentLimits {
     /// Per-gap Myers edit-distance budget — see `myers_diff_gap`'s doc
-    /// comment. Defaults to `DEFAULT_MAX_GAP_MYERS_D`.
+    /// comment. Defaults to `DEFAULT_MAX_GAP_MYERS_D`. Checked against
+    /// `MAX_GAP_MYERS_D_CEILING` independently of `max_cost` — see that
+    /// constant's doc comment for why a time-only budget isn't enough on
+    /// its own.
     pub max_gap_myers_d: usize,
     /// Cap on `2 × max(distinct_rows_base, distinct_rows_target) ×
     /// max_gap_myers_d` — bounds worst-case matching *time* regardless of
@@ -320,15 +344,25 @@ fn hash_cell_value(v: &CellValue, h: &mut impl Hasher) {
     }
 }
 
-/// The number of distinct rows `sheet` has cells in, in O(cells) — cheap
-/// enough to call before the budget check in `align_sheet_rows`, unlike
-/// `row_contents` below (which builds every row's full content).
+/// The number of distinct rows `sheet` has cells in, in true O(cells) —
+/// cheap enough to call before the budget check in `align_sheet_rows`,
+/// unlike `row_contents` below (which builds every row's full content).
+/// Counts row-number transitions in a single pass rather than collecting
+/// into a `BTreeSet`: `Sheet::iter_cells()` already yields `CellRef`s in
+/// row-major order (row ascending, `Sheet`'s own `BTreeMap` invariant), so
+/// distinct rows are always contiguous runs — a `BTreeSet` would pay an
+/// extra O(log distinct_rows) insertion per row (a Copilot review on PR
+/// #21 caught this; an earlier version paid that cost needlessly here).
 fn distinct_row_count(sheet: &Sheet) -> usize {
-    let mut rows: BTreeSet<u32> = BTreeSet::new();
+    let mut count = 0usize;
+    let mut last_row: Option<u32> = None;
     for (r, _) in sheet.iter_cells() {
-        rows.insert(r.row);
+        if last_row != Some(r.row) {
+            count += 1;
+            last_row = Some(r.row);
+        }
     }
-    rows.len()
+    count
 }
 
 /// Buckets `sheet.iter_cells()` by row in one O(cells) pass, then builds
@@ -880,8 +914,20 @@ fn align_sheet_rows(
     target: &Sheet,
     limits: RowAlignmentLimits,
 ) -> Result<Option<SheetDiff>> {
-    // Budget check first, using only a cheap O(cells) distinct-row
-    // *count* — not the full `row_contents` build below.
+    // Memory bound first: independent of row count, so it must be checked
+    // even when the rows-weighted time budget below would otherwise pass
+    // (see MAX_GAP_MYERS_D_CEILING's doc comment for why a caller raising
+    // max_cost and max_gap_myers_d together can't otherwise be trusted to
+    // keep myers_diff_gap's flat_trace allocation bounded).
+    if limits.max_gap_myers_d > MAX_GAP_MYERS_D_CEILING {
+        return Err(Error::RowAlignmentCostTooHigh {
+            cost: limits.max_gap_myers_d,
+            limit: MAX_GAP_MYERS_D_CEILING,
+        });
+    }
+
+    // Budget check next, using only a cheap O(cells) distinct-row *count*
+    // — not the full `row_contents` build below.
     let base_row_count = distinct_row_count(base);
     let target_row_count = distinct_row_count(target);
     let distinct_rows = base_row_count.max(target_row_count);
@@ -1328,6 +1374,31 @@ mod tests {
                 cost: 100_000,
                 limit: 99_999
             }
+        ));
+    }
+
+    #[test]
+    fn max_gap_myers_d_over_the_ceiling_is_row_alignment_cost_too_high_even_with_one_row() {
+        // A single row on each side keeps the rows-weighted max_cost
+        // budget trivially satisfied (2 * 1 * max_gap_myers_d is tiny),
+        // but the flat_trace memory bound (max_gap_myers_d alone) must
+        // still reject an unreasonably large max_gap_myers_d — this is
+        // exactly the gap MAX_GAP_MYERS_D_CEILING closes independently of
+        // max_cost (PR #21 review).
+        let base = workbook(vec![sheet_with_values("Sheet1", &[(1, 1, num(1.0))])]);
+        let target = workbook(vec![sheet_with_values("Sheet1", &[(1, 1, num(2.0))])]);
+
+        let limits = RowAlignmentLimits {
+            max_gap_myers_d: MAX_GAP_MYERS_D_CEILING + 1,
+            max_cost: usize::MAX,
+        };
+        let err = diff_workbooks_aligned_rows(&base, &target, limits).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::RowAlignmentCostTooHigh {
+                cost,
+                limit: MAX_GAP_MYERS_D_CEILING,
+            } if cost == MAX_GAP_MYERS_D_CEILING + 1
         ));
     }
 

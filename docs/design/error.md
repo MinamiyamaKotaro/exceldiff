@@ -141,6 +141,15 @@ pub enum Error {
     #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
     ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
 
+    // --- diff（Issue #4）: オプトインの行アライメント ---
+    /// `diff::row_alignment::diff_workbooks_aligned_rows` の推定コストが
+    /// `RowAlignmentLimits` のいずれかの予算を超えた。`cost`/`limit` は
+    /// `ColumnAlignmentCostTooHigh` と同様、超過した予算に応じた2種類の
+    /// 値のいずれか（`max_gap_myers_d` 自体、または行数で重み付けした
+    /// コスト積）。詳細は[diff/row_alignment.md](diff/row_alignment.md)参照。
+    #[error("row alignment cost too high: {cost} exceeds limit {limit}")]
+    RowAlignmentCostTooHigh { cost: usize, limit: usize },
+
     // --- フェーズ5: JSON生成 ---
     /// JSONへのシリアライズに失敗した（`serde_json` が返すエラーを包む）。
     /// `source` は `XmlParse::source` と同じ理由で `Box<dyn Error>` として

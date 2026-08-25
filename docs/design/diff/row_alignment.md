@@ -40,7 +40,7 @@ Issue #4では、`poc/issue4-poc`から`poc/issue4-poc-v8`まで8ラウンドに
 
 ```rust
 pub struct RowAlignmentLimits {
-    pub max_gap_myers_d: usize, // 1ギャップあたりのMyers編集距離予算
+    pub max_gap_myers_d: usize, // 1ギャップあたりのMyers編集距離予算(MAX_GAP_MYERS_D_CEILING独立チェックあり)
     pub max_cost: usize,        // 2 * max(distinct_rows_base, distinct_rows_target) * max_gap_myers_d の上限
 }
 
@@ -53,14 +53,15 @@ pub fn diff_workbooks_aligned_rows(
 
 アルゴリズム（1シートあたり、両側に存在する場合）:
 
-1. `iter_cells()`を1回走査し、distinct行数をbase/target双方について求める（`distinct_row_count`、O(cells)）。
-2. 予算チェック: `2 * max(distinct_rows_base, distinct_rows_target) * limits.max_gap_myers_d > limits.max_cost`なら、実際の照合処理を始める前に即座にエラーを返す（`MAX_ROW_ALIGNMENT_COST`のdocコメントに実測根拠あり）。
-3. 行ごとの内容を抽出する（`RowContent`: 列→セルの`Vec`、`RandomState`（プロセスごとにランダム化されたシード）でハッシュした内容シグネチャ、書式のみセルを除いた実データ数）。
-4. 共通prefix/suffixをO(1)/行でトリムする——両端から見て同一シグネチャが続く限り、O(n²)の作業を一切せずに確定マッチとする。
-5. トリム後の「アクティブ領域」内で、シグネチャが両側で一意な行をアンカー候補とし、patience-sort LIS（`lis_indices`）で順序を保った最大の確定マッチ集合を求める（`align_rows`）。
-6. 確定マッチの間の各ギャップを`myers_diff_gap`でMyers diffにより解決する。バックトレースは対角線（Match）・垂直（Inserted）・水平（Deleted）の全ステップを直接デコードする——スネークだけ記録して残りを位置合わせで穴埋めする近道は取らない。予算(`max_gap_myers_d`)を超えた場合は`fill_gap_no_match`で対象区間全体を安全に全削除+全追加として報告する。
-7. Myersが解決したがシグネチャの完全一致では説明できなかった残余のDeleted/Insertedの連続区間は、`merge_leftover_spans_by_content_similarity`で内容類似度によるペアリングを試みる——区間長が`CONTENT_SIMILARITY_SPAN_CAP`を超える場合はO(span²)コストを避けるためスキップし、安全な全削除+全追加のまま残す。
-8. マッチした行ペアはマージジョインでセル差分を計算し(`diff_matched_rows`)、行がシフトしていれば`CellDiff::old_row`を付与する。マッチしなかった行の全populatedセルはAdded/Deleted扱いにする。
+1. 予算チェックはメモリ上限を先にチェックする: `limits.max_gap_myers_d > MAX_GAP_MYERS_D_CEILING`なら即座にエラーを返す。これは行数に依存しないメモリ上限（`myers_diff_gap`の`flat_trace`バッファはO(max_gap_myers_d²)で、行数を掛けた時間予算だけでは、呼び出し側が`max_cost`と`max_gap_myers_d`を両方大きく設定した場合にこのバッファ単体がGB単位に膨れ上がるのを防げない——`diff::col_alignment::MAX_COLUMN_PAIR_COUNT`が列アライメントの`max_cost`単体では不十分だったのと同じ理由。PR #21のレビューで指摘）。
+2. `iter_cells()`を1回走査し、distinct行数をbase/target双方について求める（`distinct_row_count`、真のO(cells)——`Sheet::iter_cells()`が既に行昇順であることを利用し、行番号の遷移回数を数えるだけで済ませる。`BTreeSet`への挿入はO(log distinct_rows)の追加コストを払うため使わない。PR #21のレビューで指摘）。
+3. 時間予算チェック: `2 * max(distinct_rows_base, distinct_rows_target) * limits.max_gap_myers_d > limits.max_cost`なら、実際の照合処理を始める前に即座にエラーを返す（`MAX_ROW_ALIGNMENT_COST`のdocコメントに実測根拠あり）。
+4. 行ごとの内容を抽出する（`RowContent`: 列→セルの`Vec`、`RandomState`（プロセスごとにランダム化されたシード）でハッシュした内容シグネチャ、書式のみセルを除いた実データ数）。
+5. 共通prefix/suffixをO(1)/行でトリムする——両端から見て同一シグネチャが続く限り、O(n²)の作業を一切せずに確定マッチとする。
+6. トリム後の「アクティブ領域」内で、シグネチャが両側で一意な行をアンカー候補とし、patience-sort LIS（`lis_indices`）で順序を保った最大の確定マッチ集合を求める（`align_rows`）。
+7. 確定マッチの間の各ギャップを`myers_diff_gap`でMyers diffにより解決する。バックトレースは対角線（Match）・垂直（Inserted）・水平（Deleted）の全ステップを直接デコードする——スネークだけ記録して残りを位置合わせで穴埋めする近道は取らない。予算(`max_gap_myers_d`)を超えた場合は`fill_gap_no_match`で対象区間全体を安全に全削除+全追加として報告する。
+8. Myersが解決したがシグネチャの完全一致では説明できなかった残余のDeleted/Insertedの連続区間は、`merge_leftover_spans_by_content_similarity`で内容類似度によるペアリングを試みる——区間長が`CONTENT_SIMILARITY_SPAN_CAP`を超える場合はO(span²)コストを避けるためスキップし、安全な全削除+全追加のまま残す。
+9. マッチした行ペアはマージジョインでセル差分を計算し(`diff_matched_rows`)、行がシフトしていれば`CellDiff::old_row`を付与する。マッチしなかった行の全populatedセルはAdded/Deleted扱いにする。
 
 ## 依存関係
 

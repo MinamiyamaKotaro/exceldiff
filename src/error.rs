@@ -235,12 +235,23 @@ pub enum Error {
 
     // --- diff (Issue #4): opt-in row alignment ---
     /// `diff::row_alignment::diff_workbooks_aligned_rows`'s estimated cost
-    /// exceeded `RowAlignmentLimits::max_cost`. `cost` is `2 ×
-    /// max(distinct_rows_base, distinct_rows_target) × max_gap_myers_d` —
-    /// the worst-case time budget for a single unresolved gap spanning
-    /// nearly the whole sheet on both sides (see
-    /// `diff::row_alignment::MAX_ROW_ALIGNMENT_COST`'s doc comment for how
-    /// this was measured). Checked before any O(gap²) matching work
+    /// exceeded a budget in `RowAlignmentLimits`. Like
+    /// `ColumnAlignmentCostTooHigh`, `cost`/`limit` are not a literal row
+    /// count — they're one of two different quantities, depending on
+    /// which budget tripped: either `max_gap_myers_d` itself (checked
+    /// against `MAX_GAP_MYERS_D_CEILING`, bounding `myers_diff_gap`'s
+    /// O(max_gap_myers_d²) trace-buffer *memory*, independent of row
+    /// count) or `2 × max(distinct_rows_base, distinct_rows_target) ×
+    /// max_gap_myers_d` (checked against `max_cost`, bounding matching
+    /// *time* for a single unresolved gap spanning nearly the whole sheet
+    /// — see `diff::row_alignment::MAX_ROW_ALIGNMENT_COST`'s doc comment
+    /// for how this was measured). A `max_cost` alone isn't enough on its
+    /// own here, the same way `ColumnAlignmentCostTooHigh`'s `max_cost`
+    /// alone wasn't enough for columns: a caller could raise `max_cost`
+    /// and `max_gap_myers_d` together so the row-count-weighted time
+    /// budget stays satisfied while the trace buffer alone still
+    /// allocates gigabytes, since its size never depends on row count at
+    /// all. Both budgets are checked before any O(gap²) matching work
     /// begins, the same fail-fast-before-the-expensive-part timing
     /// `ColumnAlignmentCostTooHigh` already establishes. Unlike the
     /// default coordinate-based `diff_workbooks` (infallible), this

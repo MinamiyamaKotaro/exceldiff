@@ -40,7 +40,7 @@ When multiple candidate rows are *equally* similar to a deleted row (e.g. severa
 
 ```rust
 pub struct RowAlignmentLimits {
-    pub max_gap_myers_d: usize, // per-gap Myers edit-distance budget
+    pub max_gap_myers_d: usize, // per-gap Myers edit-distance budget (checked against MAX_GAP_MYERS_D_CEILING independently)
     pub max_cost: usize,        // cap on 2 * max(distinct_rows_base, distinct_rows_target) * max_gap_myers_d
 }
 
@@ -53,14 +53,15 @@ pub fn diff_workbooks_aligned_rows(
 
 Algorithm (per sheet present on both sides):
 
-1. Walk `iter_cells()` once to find the distinct row count on each of base/target (`distinct_row_count`, O(cells)).
-2. Budget check: if `2 * max(distinct_rows_base, distinct_rows_target) * limits.max_gap_myers_d > limits.max_cost`, return an error immediately, before any real matching work (see `MAX_ROW_ALIGNMENT_COST`'s doc comment for the measured basis).
-3. Extract each row's content (`RowContent`: a `Vec` from column to cell, a content signature hashed with `RandomState` (a fresh, process-randomized seed), and the real (non-formatting-only) cell count).
-4. Trim the common prefix/suffix in O(1) per row — as long as the same signature continues from either end, those rows are confirmed matches with zero O(n²) work.
-5. Within the trimmed "active region," rows whose signature is unique on both sides become anchor candidates; a patience-sort LIS (`lis_indices`) finds the largest order-preserving set of confirmed matches (`align_rows`).
-6. Each gap between confirmed matches is resolved by `myers_diff_gap` via Myers diff. The backtrace decodes every step directly — diagonal (Match), vertical (Inserted), horizontal (Deleted) — never taking the shortcut of recording only the snake and bridging the rest positionally. When the budget (`max_gap_myers_d`) is exceeded, `fill_gap_no_match` reports the whole span as a safe delete-everything + insert-everything.
-7. Any leftover contiguous Deleted/Inserted span Myers resolved but couldn't explain via an exact signature match is handed to `merge_leftover_spans_by_content_similarity`, which attempts content-similarity pairing — skipped (left as plain Deleted/Inserted) whenever the span exceeds `CONTENT_SIMILARITY_SPAN_CAP`, to avoid its O(span²) cost.
-8. Matched row pairs are diffed cell-by-cell via a merge-join (`diff_matched_rows`), attaching `CellDiff::old_row` when the row shifted. Every populated cell of an unmatched row becomes a plain Added/Deleted.
+1. The budget check looks at the memory bound first: if `limits.max_gap_myers_d > MAX_GAP_MYERS_D_CEILING`, return an error immediately. This is a row-count-independent memory cap — `myers_diff_gap`'s `flat_trace` buffer is O(max_gap_myers_d²), so the row-count-weighted time budget alone can't stop that buffer from ballooning to gigabytes if a caller raises both `max_cost` and `max_gap_myers_d` together, the same reason `diff::col_alignment::MAX_COLUMN_PAIR_COUNT` was needed on top of column alignment's `max_cost` alone (caught in review on PR #21).
+2. Walk `iter_cells()` once to find the distinct row count on each of base/target (`distinct_row_count`, true O(cells) — since `Sheet::iter_cells()` already yields rows in ascending order, this just counts row-number transitions rather than paying `BTreeSet`'s extra O(log distinct_rows) insertion cost per row; caught in review on PR #21).
+3. Time budget check: if `2 * max(distinct_rows_base, distinct_rows_target) * limits.max_gap_myers_d > limits.max_cost`, return an error immediately, before any real matching work (see `MAX_ROW_ALIGNMENT_COST`'s doc comment for the measured basis).
+4. Extract each row's content (`RowContent`: a `Vec` from column to cell, a content signature hashed with `RandomState` (a fresh, process-randomized seed), and the real (non-formatting-only) cell count).
+5. Trim the common prefix/suffix in O(1) per row — as long as the same signature continues from either end, those rows are confirmed matches with zero O(n²) work.
+6. Within the trimmed "active region," rows whose signature is unique on both sides become anchor candidates; a patience-sort LIS (`lis_indices`) finds the largest order-preserving set of confirmed matches (`align_rows`).
+7. Each gap between confirmed matches is resolved by `myers_diff_gap` via Myers diff. The backtrace decodes every step directly — diagonal (Match), vertical (Inserted), horizontal (Deleted) — never taking the shortcut of recording only the snake and bridging the rest positionally. When the budget (`max_gap_myers_d`) is exceeded, `fill_gap_no_match` reports the whole span as a safe delete-everything + insert-everything.
+8. Any leftover contiguous Deleted/Inserted span Myers resolved but couldn't explain via an exact signature match is handed to `merge_leftover_spans_by_content_similarity`, which attempts content-similarity pairing — skipped (left as plain Deleted/Inserted) whenever the span exceeds `CONTENT_SIMILARITY_SPAN_CAP`, to avoid its O(span²) cost.
+9. Matched row pairs are diffed cell-by-cell via a merge-join (`diff_matched_rows`), attaching `CellDiff::old_row` when the row shifted. Every populated cell of an unmatched row becomes a plain Added/Deleted.
 
 ## Dependencies
 
