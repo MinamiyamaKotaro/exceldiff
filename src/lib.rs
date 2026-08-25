@@ -26,7 +26,9 @@
 mod container;
 mod diff;
 mod error;
+mod grid;
 mod json;
+mod markdown;
 mod model;
 mod parse;
 mod pipeline;
@@ -41,8 +43,13 @@ pub use diff::{
     WorkbookDiff,
 };
 pub use error::{Error, Result};
+pub use grid::render_sheet_split;
 pub use json::{
     to_json_string, to_json_writer, JsonBorders, JsonCellValue, JsonColorRef, JsonFont, JsonStyle,
+};
+pub use markdown::{
+    format_file_section, format_workbook_diff, AddedSummary, FileStatus, MarkdownOptions,
+    RevisionSide,
 };
 pub use model::{
     Alignment, AnchorMarker, Borders, Cell, CellRef, CellValue, ColWidthRange, ColorRef,
