@@ -80,9 +80,22 @@ enum LineSlot {
 /// [`CONTEXT_LINES`] of a line that actually changed, plus a single
 /// collapsed [`LineSlot::Gap`] for each stretch of lines with nothing of
 /// interest in it.
+///
+/// A sheet with no changes on this axis at all (e.g. a visibility-only
+/// `SheetDiff`, or a change confined entirely to the other axis) has
+/// nothing to collapse *around*, so the usual "context around each
+/// change" construction doesn't apply — the whole axis is either shown
+/// (small enough that a gap wouldn't save any space, per
+/// [`MIN_GAP_TO_COLLAPSE`]'s own rationale) or collapsed into one gap
+/// (otherwise; a large unrelated sheet shouldn't render thousands of
+/// lines nobody asked to see).
 fn build_line_plan(max: u32, changed: &BTreeSet<u32>) -> Vec<LineSlot> {
     if changed.is_empty() {
-        return (1..=max).map(LineSlot::Line).collect();
+        return if max < MIN_GAP_TO_COLLAPSE {
+            (1..=max).map(LineSlot::Line).collect()
+        } else {
+            vec![LineSlot::Gap { start: 1, end: max }]
+        };
     }
 
     let mut windows: Vec<(u32, u32)> = changed
@@ -905,6 +918,35 @@ mod tests {
 
         let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
         assert!(!html.contains("gap-row"));
+    }
+
+    #[test]
+    fn no_changes_at_all_on_a_large_sheet_collapses_into_a_single_gap() {
+        // A visibility-only SheetDiff (or any diff with nothing in
+        // `cells`/`merges`) has no changed rows/columns at all. Without
+        // special-casing this, `build_line_plan` used to fall back to
+        // rendering every single line — for a large sheet, a huge HTML
+        // payload for a diff with nothing visual to show.
+        let mut base = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        for row in 1..=50 {
+            base.insert_cell(CellRef { row, col: 1 }, cell(CellValue::Number(row.into())));
+        }
+        let head = base.clone();
+
+        let base_wb = workbook_with(base.clone());
+        let head_wb = workbook_with(head.clone());
+        let sheet_diff = SheetDiff {
+            name: "Sheet1".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: Vec::new(),
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
+        assert!(html.contains("class=\"gap-row\""));
+        assert!(html.contains("50 row(s) omitted"));
     }
 
     #[test]

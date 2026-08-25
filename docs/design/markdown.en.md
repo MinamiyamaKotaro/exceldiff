@@ -76,7 +76,7 @@ None of this module's functions return a `Result` — the `WorkbookDiff`/`FileSt
 - All three merge-change patterns (added/deleted/resized) format to the correct `@@ ... (merge) @@` hunk shape (`+ merged` / `- merged` / `- merged A:B` followed by `+ merged A:C`), and merge changes correctly count toward the summary line's "modified" total
 - A sheet visibility change renders a `` _Visibility: `old` → `new`_ `` line
 - Every `FileStatus` variant (`Added`, `AddedParseError`, `Deleted`, `Modified`, `ModifiedMissingContent`, `ModifiedParseError`, `Unrecognized`) formats the expected heading badge and body text; `ModifiedParseError` is checked with both `RevisionSide::Base` and `Head`, confirming the error message names the correct failing side ("the previous version" / "the new version")
-- A newline embedded in a text value is escaped so it can't break the diff line's one-line-per-value shape, while `|` is left entirely unescaped now that this isn't Markdown table syntax anymore (a deliberate behavior change from the old table format)
+- A `\n` or `\r` embedded in a text value is escaped so it can't break the diff line's one-line-per-value shape (some Markdown renderers treat a bare `\r` as a line break the same way `\n` is, so both need it), while `|` is left entirely unescaped now that this isn't Markdown table syntax anymore (a deliberate behavior change from the old table format)
 
 ## Open questions
 

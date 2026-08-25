@@ -301,11 +301,12 @@ fn count(sheet: &SheetDiff, status: DiffStatus) -> usize {
     sheet.cells.iter().filter(|c| c.status == status).count()
 }
 
-/// Renders one cell value for a `-`/`+` diff line — escaping a newline
-/// embedded in a text value, which would otherwise spill it across
-/// multiple lines and desync the diff fence's one-line-per-value shape.
-/// `|` needs no escaping here (unlike a Markdown table cell), since a
-/// diff line isn't Markdown table syntax.
+/// Renders one cell value for a `-`/`+` diff line — escaping a `\n` or
+/// `\r` embedded in a text value, either of which some Markdown renderers
+/// treat as a line break on its own, which would otherwise spill the
+/// value across multiple lines and desync the diff fence's
+/// one-line-per-value shape. `|` needs no escaping here (unlike a
+/// Markdown table cell), since a diff line isn't Markdown table syntax.
 fn format_value(v: &JsonCellValue) -> String {
     match v {
         JsonCellValue::Number(n) => n.to_string(),
@@ -318,7 +319,7 @@ fn format_value(v: &JsonCellValue) -> String {
 }
 
 fn escape_diff_value(s: &str) -> String {
-    s.replace('\n', "\\n")
+    s.replace('\r', "\\r").replace('\n', "\\n")
 }
 
 /// Wraps `text` in Markdown inline-code backticks, safe for text that may
@@ -641,6 +642,16 @@ mod tests {
     fn escapes_newline_in_text_values() {
         let v = JsonCellValue::Text(std::sync::Arc::from("a|b\nc"));
         assert_eq!(format_value(&v), "\"a|b\\nc\"");
+    }
+
+    #[test]
+    fn escapes_carriage_return_in_text_values() {
+        // Some Markdown renderers treat a bare `\r` as a line break the
+        // same way `\n` is, which would otherwise let a text value spill
+        // across lines and desync the diff fence's one-line-per-value
+        // shape — so `\r` needs the same escaping `\n` already gets.
+        let v = JsonCellValue::Text(std::sync::Arc::from("a\rb\r\nc"));
+        assert_eq!(format_value(&v), "\"a\\rb\\r\\nc\"");
     }
 
     #[test]

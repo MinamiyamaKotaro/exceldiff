@@ -79,7 +79,7 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 - 結合セルの追加/解除/リサイズ3パターンすべてが、それぞれ正しい`@@ ... (merge) @@`ハンク形状(`+ merged`/`- merged`/`- merged A:B` + `+ merged A:C`)へ整形されること、および集計行の`modified`件数に結合セルの変更が正しく算入されることの確認
 - シートの可視性が変わった場合に`` _Visibility: `old` → `new`_ ``行が出力されることの確認
 - `FileStatus`の全バリアント(`Added`/`AddedParseError`/`Deleted`/`Modified`/`ModifiedMissingContent`/`ModifiedParseError`/`Unrecognized`)それぞれについて、見出しのバッジ文言と本文が期待通りに整形されることの確認。`ModifiedParseError`は`RevisionSide::Base`/`Head`両方で、エラーメッセージにどちら側が失敗したか正しい文言(the previous version/the new version)が現れることを確認
-- テキスト値中の改行がdiff行の1行構造を壊さないようエスケープされること、一方で`|`はMarkdownテーブル構文ではなくなったため一切エスケープされないことの確認（旧テーブル形式からの意図的な変更点）
+- テキスト値中の`\n`・`\r`がdiff行の1行構造を壊さないようエスケープされること（一部のMarkdownレンダラーは裸の`\r`も`\n`と同様に改行として扱うため両方エスケープする）、一方で`|`はMarkdownテーブル構文ではなくなったため一切エスケープされないことの確認（旧テーブル形式からの意図的な変更点）
 
 ## 未決事項 / オープンクエスチョン
 

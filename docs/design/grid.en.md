@@ -55,6 +55,7 @@ Builds synthetic `Sheet`/`Workbook` instances directly via `Sheet::new`/`insert_
 - A cell whose value changed gets `border-value`; a cell whose value stayed the same but whose style changed gets `border-style` instead — and the two are mutually exclusive (verifies the `CellChange::ValueChanged`/`StyleOnly` decision logic)
 - A merged region's extent change (`old_end`/`new_end`) is correctly reflected as a real `colspan` attribute on each respective side, with no dedicated merge-change visual marker emitted at all (a regression check for a feature removed during review), and that it correctly counts toward the summary line's "modified" total
 - Unchanged rows between two far-apart changes collapse into a `gap-row`; conversely, a small sheet needing no collapsing never emits one
+- A `SheetDiff` with nothing changed on an axis at all (e.g. a visibility-only diff) collapses that whole axis into a single gap when it's large enough that a gap would actually save space, and renders it in full otherwise — it doesn't unconditionally render every line just because nothing on that axis is "changed"
 - On a multi-sheet workbook, the sheet heading's position number (`sheet1：`/`sheet2：`) correctly reflects head's own sheet order
 - `excel_width_to_px` returns the correct value for a known conversion (2.14 characters — a common grid-paper width — → 15px), directly testing the implementation of Excel's own official formula
 - `column_letters` correctly converts a multi-letter column (e.g. the column right after Z, AA)
