@@ -208,14 +208,27 @@ fn format_sheet_diff(sheet: &SheetDiff, options: &MarkdownOptions) -> String {
         return out;
     }
 
-    out.push_str("```diff\n");
+    let mut body = String::new();
     for cell in sheet.cells.iter().take(options.max_rows_per_sheet) {
-        out.push_str(&format_cell_hunk(cell));
+        body.push_str(&format_cell_hunk(cell));
     }
     for merge in &sheet.merges {
-        out.push_str(&format_merge_hunk(merge));
+        body.push_str(&format_merge_hunk(merge));
     }
-    out.push_str("```\n");
+    // A cell's rendered value can itself contain a run of backticks (an
+    // `Error` value is wrapped in single backticks; `Text` isn't escaped
+    // for backticks at all, only for `\n`). A hardcoded ` ```diff ` fence
+    // would let such a run terminate the fence early once it's at least
+    // as long as the fence itself, corrupting everything rendered after
+    // it in the PR comment. Widening the fence past the longest backtick
+    // run actually present in `body` closes this off, the same way
+    // `code_span` widens an inline span's delimiter.
+    let fence = "`".repeat((longest_backtick_run(&body) + 1).max(3));
+    out.push_str(&fence);
+    out.push_str("diff\n");
+    out.push_str(&body);
+    out.push_str(&fence);
+    out.push('\n');
     if sheet.cells.len() > options.max_rows_per_sheet {
         out.push_str(&format!(
             "_...and {} more change(s) in this sheet._\n",
@@ -315,6 +328,20 @@ fn escape_diff_value(s: &str) -> String {
 /// in `text`, and a padding space on each side is required whenever `text`
 /// starts or ends with a backtick so the delimiter doesn't fuse with it.
 fn code_span(text: &str) -> String {
+    let fence = "`".repeat(longest_backtick_run(text) + 1);
+    if text.starts_with('`') || text.ends_with('`') {
+        format!("{fence} {text} {fence}")
+    } else {
+        format!("{fence}{text}{fence}")
+    }
+}
+
+/// The length of the longest run of consecutive backticks in `text`, or 0
+/// if it contains none. Shared by [`code_span`] (an inline span's own
+/// delimiter) and [`format_sheet_diff`] (the ` ```diff ` block fence
+/// wrapping a sheet's rendered hunks) — both need a fence strictly longer
+/// than anything it's meant to contain, or the fence closes early.
+fn longest_backtick_run(text: &str) -> usize {
     let mut longest_run = 0usize;
     let mut current_run = 0usize;
     for ch in text.chars() {
@@ -325,12 +352,7 @@ fn code_span(text: &str) -> String {
             current_run = 0;
         }
     }
-    let fence = "`".repeat(longest_run + 1);
-    if text.starts_with('`') || text.ends_with('`') {
-        format!("{fence} {text} {fence}")
-    } else {
-        format!("{fence}{text}{fence}")
-    }
+    longest_run
 }
 
 #[cfg(test)]
@@ -644,6 +666,36 @@ mod tests {
     fn code_span_pads_when_content_starts_or_ends_with_a_backtick() {
         assert_eq!(code_span("`leading"), "`` `leading ``");
         assert_eq!(code_span("trailing`"), "`` trailing` ``");
+    }
+
+    #[test]
+    fn format_sheet_diff_widens_the_diff_fence_past_a_cell_error_values_backticks() {
+        // An `Error` value renders as `` `{e}` ``; an error message that
+        // itself ends in backticks pushes a 4-long run right up against
+        // the value's own closing backtick, which a fixed 3-backtick
+        // fence could not contain without closing early.
+        let diff = WorkbookDiff {
+            sheets: vec![SheetDiff {
+                name: "Sheet1".to_string(),
+                status: DiffStatus::Modified,
+                old_visibility: None,
+                new_visibility: None,
+                merges: Vec::new(),
+                cells: vec![CellDiff {
+                    row: 1,
+                    col: 1,
+                    status: DiffStatus::Modified,
+                    old_col: None,
+                    old_row: None,
+                    old_value: None,
+                    new_value: Some(JsonCellValue::Error("err```".to_string())),
+                    old_style: None,
+                    new_style: None,
+                }],
+            }],
+        };
+        let md = format_workbook_diff(&diff, &MarkdownOptions::default());
+        assert!(md.contains("\n`````diff\n@@ A1 @@\n+ `err````\n`````\n"));
     }
 
     #[test]

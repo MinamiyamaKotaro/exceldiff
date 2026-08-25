@@ -50,7 +50,7 @@ pub fn format_file_section(display_path: &str, status: &FileStatus, options: &Ma
 pub fn format_workbook_diff(diff: &WorkbookDiff, options: &MarkdownOptions) -> String;
 ```
 
-See [`src/markdown.rs`](../../src/markdown.rs) for the actual implementation. `format_sheet_diff`, `format_cell_hunk`, `format_merge_hunk`, `format_value`, and `code_span` are private helpers. `code_span` safely embeds a caller/user-controlled string (a display path, a sheet name) as a Markdown inline code span, following CommonMark's code span rule: the delimiter uses more consecutive backticks than the longest backtick run found in the content, and a padding space is added on each side whenever the content starts or ends with a backtick.
+See [`src/markdown.rs`](../../src/markdown.rs) for the actual implementation. `format_sheet_diff`, `format_cell_hunk`, `format_merge_hunk`, `format_value`, `code_span`, and `longest_backtick_run` are private helpers. `code_span` safely embeds a caller/user-controlled string (a display path, a sheet name) as a Markdown inline code span, following CommonMark's code span rule: the delimiter uses more consecutive backticks than the longest backtick run found in the content, and a padding space is added on each side whenever the content starts or ends with a backtick. The ` ```diff ` block fence `format_sheet_diff` builds isn't fixed-length for the same reason: it measures the longest backtick run actually present in the rendered hunk body via `longest_backtick_run` and widens the fence (3 or more backticks) past it — an `Error` cell value renders wrapped in backticks, so skipping this could let a hunk's own content close the fence early and corrupt the rest of the PR comment.
 
 ## Design decision: why a diff fence instead of a Markdown table
 
