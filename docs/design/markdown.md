@@ -50,7 +50,7 @@ pub fn format_file_section(display_path: &str, status: &FileStatus, options: &Ma
 pub fn format_workbook_diff(diff: &WorkbookDiff, options: &MarkdownOptions) -> String;
 ```
 
-実装本体は[`src/markdown.rs`](../../src/markdown.rs)を参照。`format_sheet_diff`・`format_cell_hunk`・`format_merge_hunk`・`format_value` は非公開のヘルパー。
+実装本体は[`src/markdown.rs`](../../src/markdown.rs)を参照。`format_sheet_diff`・`format_cell_hunk`・`format_merge_hunk`・`format_value`・`code_span` は非公開のヘルパー。`code_span`はファイルパスやシート名のような呼び出し側/ユーザー由来の文字列をMarkdownのインラインコードスパンとして安全に埋め込む（CommonMarkの規則に従い、内容中の最長バッククォート連続より長いフェンスを選び、内容がバッククォートで始まる/終わる場合はパディング用のスペースを追加する）。
 
 ## 設計判断: なぜMarkdownテーブルではなくdiffフェンスか
 

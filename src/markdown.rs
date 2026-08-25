@@ -116,7 +116,7 @@ pub fn format_file_section(
     options: &MarkdownOptions,
 ) -> String {
     let badge = file_status_badge(status);
-    let mut out = format!("### {badge} · `{display_path}`\n\n");
+    let mut out = format!("### {badge} · {}\n\n", code_span(display_path));
     match status {
         FileStatus::Added(summary) => {
             out.push_str("**New file.**\n");
@@ -196,8 +196,8 @@ fn format_sheet_diff(sheet: &SheetDiff, options: &MarkdownOptions) -> String {
         DiffStatus::Modified => "",
     };
     out.push_str(&format!(
-        "**Sheet `{}`{sheet_note}** — {added} added, {modified} modified, {deleted} deleted\n",
-        sheet.name
+        "**Sheet {}{sheet_note}** — {added} added, {modified} modified, {deleted} deleted\n",
+        code_span(&sheet.name)
     ));
     if let (Some(old_v), Some(new_v)) = (sheet.old_visibility, sheet.new_visibility) {
         out.push_str(&format!("_Visibility: `{old_v}` → `{new_v}`_\n"));
@@ -306,6 +306,31 @@ fn format_value(v: &JsonCellValue) -> String {
 
 fn escape_diff_value(s: &str) -> String {
     s.replace('\n', "\\n")
+}
+
+/// Wraps `text` in Markdown inline-code backticks, safe for text that may
+/// itself contain backticks (a file path, a sheet name — both effectively
+/// caller/user controlled). Per CommonMark's code span rule, the delimiter
+/// must use more consecutive backticks than the longest backtick run found
+/// in `text`, and a padding space on each side is required whenever `text`
+/// starts or ends with a backtick so the delimiter doesn't fuse with it.
+fn code_span(text: &str) -> String {
+    let mut longest_run = 0usize;
+    let mut current_run = 0usize;
+    for ch in text.chars() {
+        if ch == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    let fence = "`".repeat(longest_run + 1);
+    if text.starts_with('`') || text.ends_with('`') {
+        format!("{fence} {text} {fence}")
+    } else {
+        format!("{fence}{text}{fence}")
+    }
 }
 
 #[cfg(test)]
@@ -602,5 +627,46 @@ mod tests {
         // isn't table syntax, so `|` needs no escaping.
         let v = JsonCellValue::Text(std::sync::Arc::from("a|b"));
         assert_eq!(format_value(&v), "\"a|b\"");
+    }
+
+    #[test]
+    fn code_span_wraps_plain_text_with_single_backticks() {
+        assert_eq!(code_span("Sheet1"), "`Sheet1`");
+    }
+
+    #[test]
+    fn code_span_widens_the_fence_past_an_embedded_backtick_run() {
+        assert_eq!(code_span("a`b"), "``a`b``");
+        assert_eq!(code_span("a``b"), "```a``b```");
+    }
+
+    #[test]
+    fn code_span_pads_when_content_starts_or_ends_with_a_backtick() {
+        assert_eq!(code_span("`leading"), "`` `leading ``");
+        assert_eq!(code_span("trailing`"), "`` trailing` ``");
+    }
+
+    #[test]
+    fn format_file_section_escapes_backticks_in_the_display_path() {
+        let out = format_file_section(
+            "a`b.xlsx",
+            &FileStatus::Deleted,
+            &MarkdownOptions::default(),
+        );
+        assert!(out.starts_with("### 🗑️ Deleted · ``a`b.xlsx``\n"));
+    }
+
+    #[test]
+    fn format_sheet_diff_escapes_backticks_in_the_sheet_name() {
+        let sheet = SheetDiff {
+            name: "a`b".to_string(),
+            status: DiffStatus::Modified,
+            cells: vec![],
+            merges: vec![],
+            old_visibility: None,
+            new_visibility: None,
+        };
+        let out = format_sheet_diff(&sheet, &MarkdownOptions::default());
+        assert!(out.starts_with("**Sheet ``a`b``** — 0 added, 0 modified, 0 deleted\n"));
     }
 }

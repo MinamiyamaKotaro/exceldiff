@@ -66,14 +66,19 @@ fn render_added(display_path: &str, head_path: Option<&str>, options: &MarkdownO
     let Some(head_path) = head_path else {
         return exceldiff::format_file_section(display_path, &FileStatus::Added(None), options);
     };
-    let file_status = match parse_workbook(head_path) {
-        Ok(wb) => FileStatus::Added(Some(AddedSummary {
-            sheet_count: wb.sheets().len(),
-            cell_count: wb.sheets().iter().map(|s| s.iter_cells().count()).sum(),
-        })),
-        Err(e) => FileStatus::AddedParseError(&e.to_string()),
+    let wb = match parse_workbook(head_path) {
+        Ok(wb) => wb,
+        Err(e) => {
+            let message = e.to_string();
+            let status = FileStatus::AddedParseError(&message);
+            return exceldiff::format_file_section(display_path, &status, options);
+        }
     };
-    exceldiff::format_file_section(display_path, &file_status, options)
+    let summary = AddedSummary {
+        sheet_count: wb.sheets().len(),
+        cell_count: wb.sheets().iter().map(|s| s.iter_cells().count()).sum(),
+    };
+    exceldiff::format_file_section(display_path, &FileStatus::Added(Some(summary)), options)
 }
 
 fn render_modified(
@@ -93,14 +98,16 @@ fn render_modified(
     let base = match parse_workbook(base_path) {
         Ok(wb) => wb,
         Err(e) => {
-            let status = FileStatus::ModifiedParseError(RevisionSide::Base, &e.to_string());
+            let message = e.to_string();
+            let status = FileStatus::ModifiedParseError(RevisionSide::Base, &message);
             return exceldiff::format_file_section(display_path, &status, options);
         }
     };
     let head = match parse_workbook(head_path) {
         Ok(wb) => wb,
         Err(e) => {
-            let status = FileStatus::ModifiedParseError(RevisionSide::Head, &e.to_string());
+            let message = e.to_string();
+            let status = FileStatus::ModifiedParseError(RevisionSide::Head, &message);
             return exceldiff::format_file_section(display_path, &status, options);
         }
     };
