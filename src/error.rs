@@ -205,7 +205,7 @@ pub enum Error {
     },
 
     // --- diff (Issue #5): opt-in column alignment ---
-    /// `diff::alignment::diff_workbooks_aligned_columns`'s estimated cost
+    /// `diff::col_alignment::diff_workbooks_aligned_columns`'s estimated cost
     /// exceeded a budget in `ColumnAlignmentLimits`. `cost`/`limit` are not
     /// a literal column count — they're one of two different products,
     /// depending on which budget tripped: either the raw column-pair count
@@ -214,14 +214,14 @@ pub enum Error {
     /// same pair count scaled by row count (bounding the matching *time*,
     /// checked against `max_cost`). Unlike `TooManyMergedRanges`'s flat
     /// count cap, a single distinct-column-count limit isn't enough for
-    /// either axis here on its own: `diff::alignment`'s matching cost is
+    /// either axis here on its own: `diff::col_alignment`'s matching cost is
     /// O(distinct_cols_base × distinct_cols_target × max_row) — a column
     /// count safe at 500 rows becomes unsafe by an order of magnitude at
     /// 50,000 rows — while its score-matrix memory is O(distinct_cols_base
     /// × distinct_cols_target) *regardless* of row count, so a sheet with
     /// very few rows but many columns could pass a rows-weighted check yet
     /// still allocate hundreds of megabytes (measured directly — see
-    /// `diff::alignment::MAX_COLUMN_ALIGNMENT_COST`/
+    /// `diff::col_alignment::MAX_COLUMN_ALIGNMENT_COST`/
     /// `MAX_COLUMN_PAIR_COUNT`'s doc comments). Both budgets are checked
     /// before any O(cols²) matching work begins, the same
     /// fail-fast-before-the-expensive-part timing `TooManyMergedRanges`
@@ -232,6 +232,35 @@ pub enum Error {
     /// catch this and call `diff_workbooks` itself.
     #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
     ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
+
+    // --- diff (Issue #4): opt-in row alignment ---
+    /// `diff::row_alignment::diff_workbooks_aligned_rows`'s estimated cost
+    /// exceeded a budget in `RowAlignmentLimits`. Like
+    /// `ColumnAlignmentCostTooHigh`, `cost`/`limit` are not a literal row
+    /// count — they're one of two different quantities, depending on
+    /// which budget tripped: either `max_gap_myers_d` itself (checked
+    /// against `MAX_GAP_MYERS_D_CEILING`, bounding `myers_diff_gap`'s
+    /// O(max_gap_myers_d²) trace-buffer *memory*, independent of row
+    /// count) or `2 × max(distinct_rows_base, distinct_rows_target) ×
+    /// max_gap_myers_d` (checked against `max_cost`, bounding matching
+    /// *time* for a single unresolved gap spanning nearly the whole sheet
+    /// — see `diff::row_alignment::MAX_ROW_ALIGNMENT_COST`'s doc comment
+    /// for how this was measured). A `max_cost` alone isn't enough on its
+    /// own here, the same way `ColumnAlignmentCostTooHigh`'s `max_cost`
+    /// alone wasn't enough for columns: a caller could raise `max_cost`
+    /// and `max_gap_myers_d` together so the row-count-weighted time
+    /// budget stays satisfied while the trace buffer alone still
+    /// allocates gigabytes, since its size never depends on row count at
+    /// all. Both budgets are checked before any O(gap²) matching work
+    /// begins, the same fail-fast-before-the-expensive-part timing
+    /// `ColumnAlignmentCostTooHigh` already establishes. Unlike the
+    /// default coordinate-based `diff_workbooks` (infallible), this
+    /// opt-in alignment mode returns `Result` specifically so this case
+    /// can be reported rather than silently downgraded — a caller that
+    /// wants automatic fallback can catch this and call `diff_workbooks`
+    /// itself.
+    #[error("row alignment cost too high: {cost} exceeds limit {limit}")]
+    RowAlignmentCostTooHigh { cost: usize, limit: usize },
 
     // --- diff (Issue #3), `diff-storage` Cargo feature only ---
     /// A `diff::DiffStore` operation (opening the database, running a
@@ -449,6 +478,15 @@ mod tests {
             }
             .to_string(),
             "column alignment cost too high: 25000001 exceeds limit 25000000"
+        );
+
+        assert_eq!(
+            Error::RowAlignmentCostTooHigh {
+                cost: 50_000_001,
+                limit: 50_000_000,
+            }
+            .to_string(),
+            "row alignment cost too high: 50000001 exceeds limit 50000000"
         );
 
         assert_eq!(

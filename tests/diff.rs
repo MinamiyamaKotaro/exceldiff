@@ -9,8 +9,9 @@
 mod fixtures;
 
 use exceldiff::{
-    diff_workbooks, diff_workbooks_aligned_columns, parse_workbook_reader, ColumnAlignmentLimits,
-    DiffStatus, JsonCellValue, WorkbookDiff,
+    diff_workbooks, diff_workbooks_aligned_columns, diff_workbooks_aligned_rows,
+    parse_workbook_reader, ColumnAlignmentLimits, DiffStatus, JsonCellValue, RowAlignmentLimits,
+    WorkbookDiff,
 };
 use fixtures::diff;
 use std::io::Cursor;
@@ -49,7 +50,7 @@ fn cell_value_modification_is_detected_end_to_end() {
 fn column_insertion_does_not_cascade_when_aligned_end_to_end() {
     // Counterpart to cell_addition/cell_deletion above, but through
     // diff_workbooks_aligned_columns (Issue #5) rather than diff_workbooks
-    // — proves the cascade-avoidance behavior src/diff/alignment.rs's unit
+    // — proves the cascade-avoidance behavior src/diff/col_alignment.rs's unit
     // tests already lock in also holds through the real parse pipeline,
     // not just the public-model-API fixtures those tests build directly.
     let (base_bytes, target_bytes) = fixtures::diff::column_inserted();
@@ -66,6 +67,28 @@ fn column_insertion_does_not_cascade_when_aligned_end_to_end() {
     assert!(cells
         .iter()
         .all(|c| c.col == 1 && c.status == DiffStatus::Added));
+}
+
+#[test]
+fn row_insertion_does_not_cascade_when_aligned_end_to_end() {
+    // Row counterpart to column_insertion_does_not_cascade_when_aligned_end_to_end
+    // above, but through diff_workbooks_aligned_rows (Issue #4) — proves
+    // the cascade-avoidance behavior src/diff/row_alignment.rs's unit
+    // tests already lock in also holds through the real parse pipeline.
+    let (base_bytes, target_bytes) = fixtures::diff::row_inserted();
+    let base = parse_workbook_reader(Cursor::new(base_bytes)).unwrap();
+    let target = parse_workbook_reader(Cursor::new(target_bytes)).unwrap();
+
+    let result =
+        diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+    assert_eq!(result.sheets.len(), 1);
+    let cells = &result.sheets[0].cells;
+    // Only the 2 newly inserted row 1 cells should be reported — the 10
+    // shifted-but-unchanged rows produce no diff at all.
+    assert_eq!(cells.len(), 2);
+    assert!(cells
+        .iter()
+        .all(|c| c.row == 1 && c.status == DiffStatus::Added));
 }
 
 #[test]

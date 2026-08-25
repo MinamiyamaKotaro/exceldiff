@@ -133,13 +133,22 @@ pub enum Error {
     TooManyColumnWidthRanges { count: usize, limit: usize },
 
     // --- diff（Issue #5）: オプトインの列アライメント ---
-    /// `diff::alignment::diff_workbooks_aligned_columns` の推定コストが
+    /// `diff::col_alignment::diff_workbooks_aligned_columns` の推定コストが
     /// `ColumnAlignmentLimits` のいずれかの予算を超えた。`cost`/`limit` は
     /// 列数そのものではなく、超過した予算に応じた2種類の積のいずれか
     /// （`distinct_cols_base × distinct_cols_target`、または行数を掛けた
-    /// もの）。詳細は[diff/alignment.md](diff/alignment.md)参照。
+    /// もの）。詳細は[diff/col_alignment.md](diff/col_alignment.md)参照。
     #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
     ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
+
+    // --- diff（Issue #4）: オプトインの行アライメント ---
+    /// `diff::row_alignment::diff_workbooks_aligned_rows` の推定コストが
+    /// `RowAlignmentLimits` のいずれかの予算を超えた。`cost`/`limit` は
+    /// `ColumnAlignmentCostTooHigh` と同様、超過した予算に応じた2種類の
+    /// 値のいずれか（`max_gap_myers_d` 自体、または行数で重み付けした
+    /// コスト積）。詳細は[diff/row_alignment.md](diff/row_alignment.md)参照。
+    #[error("row alignment cost too high: {cost} exceeds limit {limit}")]
+    RowAlignmentCostTooHigh { cost: usize, limit: usize },
 
     // --- フェーズ5: JSON生成 ---
     /// JSONへのシリアライズに失敗した（`serde_json` が返すエラーを包む）。

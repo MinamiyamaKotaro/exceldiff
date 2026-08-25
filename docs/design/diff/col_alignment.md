@@ -1,12 +1,12 @@
-# `diff/alignment.rs` 設計書
+# `diff/col_alignment.rs` 設計書
 
-*[English](alignment.en.md)*
+*[English](col_alignment.en.md)*
 
-`src/diff/alignment.rs` に対応する設計書。[`diff/engine.rs`](engine.md) の座標一致ベースの差分（`diff_workbooks`）に対し、上限付き・オプトインの列アライメントベース差分（`diff_workbooks_aligned_columns`）を提供する（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）。列の挿入・削除が起きても、それより右側のセル全てがカスケードして誤差分化されることを避けるのが目的。
+`src/diff/col_alignment.rs` に対応する設計書。[`diff/engine.rs`](engine.md) の座標一致ベースの差分（`diff_workbooks`）に対し、上限付き・オプトインの列アライメントベース差分（`diff_workbooks_aligned_columns`）を提供する（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）。列の挿入・削除が起きても、それより右側のセル全てがカスケードして誤差分化されることを避けるのが目的。
 
 ## 背景・経緯
 
-[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3)のPoC（`poc/issue3-poc`）が実装していた行+列同時の2D LCSアライメントは、上限チェックが一切無く、O(distinct_rows² + distinct_cols²)（4,000行で約13秒・128MB）というコストが本クレートの設計目標（行・列数が極端に多い「方眼紙Excel」への最適化）と正面から矛盾していたため、`engine.rs`はこれを採用せず座標一致ベースをデフォルトとした（詳細は[engine.md](engine.md)参照）。アライメントベースの差分自体は上限付きオプトイン機能として、行（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)、未着手）と列（本Issue #5）に分けて別途検討することとされていた。
+[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3)のPoC（`poc/issue3-poc`）が実装していた行+列同時の2D LCSアライメントは、上限チェックが一切無く、O(distinct_rows² + distinct_cols²)（4,000行で約13秒・128MB）というコストが本クレートの設計目標（行・列数が極端に多い「方眼紙Excel」への最適化）と正面から矛盾していたため、`engine.rs`はこれを採用せず座標一致ベースをデフォルトとした（詳細は[engine.md](engine.md)参照）。アライメントベースの差分自体は上限付きオプトイン機能として、行（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)、後に`diff::row_alignment`として実装——[row_alignment.md](row_alignment.md)参照）と列（本Issue #5）に分けて別途検討することとされていた。
 
 Issue #5では、`poc/issue5-poc`から`poc/issue5-poc-v4`まで5ラウンドにわたるPoC検証（いずれも使い捨てで非コミット、GitHub Issueのコメント履歴に詳細あり）を経て、以下2点の未決事項に対する具体的な結論が得られた:
 
@@ -21,11 +21,13 @@ Issue #5では、`poc/issue5-poc`から`poc/issue5-poc-v4`まで5ラウンドに
 - 対応付けの予算制チェック（`ColumnAlignmentLimits`）を、実際のO(cols²)照合処理を始める前に行い、超過時は`Err(Error::ColumnAlignmentCostTooHigh)`を返す（黙って`diff_workbooks`相当へフォールバックしない——呼び出し側が明示的にオプトインした処理である以上、実際にアライメントが行われたかどうかを呼び出し側から見えなくすべきではないという判断）
 - 片側にしか存在しないシートは`diff::engine::diff_sheet`をそのまま再利用する（新規/削除されたシート全体には、そもそもアライメントする対象が無い）
 - 結合セルの差分（`SheetDiff::merges`）は`diff::engine::diff_merges`をそのまま再利用し、列アライメントの対象にしない(下記「結合セルは列アライメント非対応」参照)
-- **含まない責務**: 座標一致ベースの差分計算そのもの（[`engine.rs`](engine.md)）、行アライメント（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)、未着手——下記「行は再整列しない」参照）、`diff::storage`へのアライメント結果（特に`CellDiff::old_col`）の永続化（[storage.md 未決事項6](storage.md)参照）
+- **含まない責務**: 座標一致ベースの差分計算そのもの（[`engine.rs`](engine.md)）、行アライメント（[`row_alignment.rs`](row_alignment.md)、Issue #4で実装済み——下記「行は再整列しない」参照）、`diff::storage`へのアライメント結果（特に`CellDiff::old_col`）の永続化（[storage.md 未決事項6](storage.md)参照）
 
-## 行は再整列しない（Issue #4は別issue・未実装）
+## 行は再整列しない（Issue #4は別issueとして実装済み、本モジュールとの統合は未実装）
 
-Issue #4（行挿入/削除検出）は本設計時点でコメント0件・実装ゼロの未着手issueである。そのため本実装は列のみをアライメントし、行は常に座標一致のまま扱う。これは、PoCが検討していたBag-of-Values・Sequence-LCSといった「行シフトに対して不変な」列マッチング手法が、そもそも**行が同時にシフトする**という前提を解決するために存在していたことと関係する——行が動かない前提であれば、単純な「同一行番号でのセル値比較」で十分であり、より複雑な手法は必要ない。将来Issue #4が実装される際は、行の対応付け（`base_row -> target_row`のマッピング）を、`diff_matched_columns`のマージジョインだけでなく`count_matching_rows`（`column_match_score`が閾値経路・完全一致救済の両方で使う、同じ「同一行番号での値比較」を行う関数）にも反映する必要がある——PRレビュー(Copilot)で「列マッチング自体の作り直しは不要」という以前の記述が不正確であると指摘された。`count_matching_rows`を更新しないと、行がシフトした列同士は`diff_matched_columns`に到達する前の時点でスコアが低すぎて一致とすら認識されない。
+> **更新**: Issue #4（行挿入/削除検出）は`diff::row_alignment`として実装済み（[row_alignment.md](row_alignment.md)参照）。ただし本節が指摘する統合（行アライメントと列アライメントを同時に使う）自体は依然未実装——`diff::row_alignment`も列を座標一致のまま扱う独立実装として作られており、双方向の統合は別途のスコープとして残されている（[row_alignment.md「列は再整列しない」](row_alignment.md)参照）。以下は本モジュール設計時点（Issue #4着手前）の記述で、統合ポイントの分析としては引き続き有効。
+
+Issue #4（行挿入/削除検出）は本設計時点でコメント0件・実装ゼロの未着手issueだった。そのため本実装は列のみをアライメントし、行は常に座標一致のまま扱う。これは、PoCが検討していたBag-of-Values・Sequence-LCSといった「行シフトに対して不変な」列マッチング手法が、そもそも**行が同時にシフトする**という前提を解決するために存在していたことと関係する——行が動かない前提であれば、単純な「同一行番号でのセル値比較」で十分であり、より複雑な手法は必要ない。行アライメントと列アライメントを同時に使う際は、行の対応付け（`base_row -> target_row`のマッピング）を、`diff_matched_columns`のマージジョインだけでなく`count_matching_rows`（`column_match_score`が閾値経路・完全一致救済の両方で使う、同じ「同一行番号での値比較」を行う関数）にも反映する必要がある——PRレビュー(Copilot)で「列マッチング自体の作り直しは不要」という以前の記述が不正確であると指摘された。`count_matching_rows`を更新しないと、行がシフトした列同士は`diff_matched_columns`に到達する前の時点でスコアが低すぎて一致とすら認識されない。
 
 ## 結合セルは列アライメント非対応
 
@@ -64,7 +66,7 @@ GitHub Copilotの自動PRレビューが7ラウンドにわたり計21件の重�
 3. **予算チェックが行数に依存しないメモリ量を考慮していなかった**: `max_cost`は行数で重み付けされるため、行数が極端に少なく列数が極端に多いシート（例: 1行×3,162列×3,162列）でもコスト上は上限内に収まる一方、`scores`/`dp`行列自体は行数に関わらずO(cols²)のメモリ（実測約160MB）を要求してしまう。`max_column_pairs`という行数非依存の第2の上限を追加。
 4. **低カーディナリティゲートが「変化していない列」まで対象外にしていた**: ヘッダー無し・distinct値8未満の列は元実装では一律コンテンツマッチング対象外としていたため、実際には一切変化していない（単に列がシフトしただけの）低カーディナリティ列まで、丸ごと削除+丸ごと追加として報告されてしまっていた——これはまさに本機能が回避すべきカスケードそのものである。完全一致（全populated行が両側で一致し、行数も一致）の場合のみ例外的に許可する「完全一致救済」を追加し、この回帰を修正した。
 5. **閾値・完全一致救済の判定に`cells.len()`（書式のみのセルを含む総数）を使っていた**: `min_len`（部分一致閾値の分母）と`long_enough`（完全一致救済のゲート）の両方が、実データを持つセル数ではなく書式のみのセルも含めた総エントリ数を使っていた。Excelでは取り込んだ表の未使用範囲全体に罫線・背景色だけを適用しているようなケースが珍しくなく、そうした大きな「書式のみの空白範囲」があると、実データ8個で本来一致するはずの列が`min_len`の水増しにより閾値を満たせず誤って棄却されたり、逆に実データ数個+書式のみセルで水増しされた列が完全一致救済の最低サンプル数（統計的安全マージン）を不当にクリアしてしまったりする。`ColumnContent::populated_count`（実データを持つセル数、列ごとに1回計算）を追加し、両方のゲートをこちらに切り替えた。
-6. **命名・ドキュメントの整合性**: `Error::TooManyDistinctColumnsForAlignment`を`Error::ColumnAlignmentCostTooHigh`へ改名した（`count`/`limit`→`cost`/`limit`。実際にはコスト積であって列数そのものではないため）。また、存在しない`ColumnAlignmentLimits::MAX_COLUMN_ALIGNMENT_COST`（実際は`diff::alignment`モジュールレベルの定数であり、関連定数ではない）を指すdocコメントの誤りも修正した。
+6. **命名・ドキュメントの整合性**: `Error::TooManyDistinctColumnsForAlignment`を`Error::ColumnAlignmentCostTooHigh`へ改名した（`count`/`limit`→`cost`/`limit`。実際にはコスト積であって列数そのものではないため）。また、存在しない`ColumnAlignmentLimits::MAX_COLUMN_ALIGNMENT_COST`（実際は`diff::col_alignment`モジュールレベルの定数であり、関連定数ではない）を指すdocコメントの誤りも修正した。
 7. **完全一致救済のDPスコアに`cells.len()`（書式のみセル込み）を使っていた**: 5番の修正で適格性ゲートは`populated_count`に切り替えたが、DPに渡すスコア自体は依然`b.cells.len()`のままだった。`align_columns`はスコアの合計を最大化するため、書式のみの巨大な空白範囲を持つ完全一致候補が、水増しされたスコアで本来の（閾値経路による、より正当な）マッチを押しのけてしまう恐れがあった。スコアも`populated_count`ベースに修正。
 8. **完全一致救済が「定数列」を許容していた**: `long_enough`（`populated_count >= 8`）はセル数のみを見ており、値の多様性を一切見ていなかった。全行が同一値（例: 全て`0`）の「定数列」は、8行以上あれば`long_enough`を満たしてしまうが、これは「偶然の一致確率が無視できるほど低い」という完全一致救済の安全性の前提そのものが成立しないケース——同じ定数値を持つ別の無関係な列とは**確率ではなく必然的に**完全一致してしまう。具体例: base列Aが全て`0`、target側で新規の無関係な列Aも全て`0`、Aの本当の継続である（列Bへシフトした）列は値が全て`1`に変化——この場合、修正前はbase列Aが誤って新規のtarget列Aとマッチし、本来検出すべき列Bへの変化（0→1）が握りつぶされてしまう。`ColumnContent::has_at_least_two_distinct_values`を追加し、完全一致救済の前提条件に加えた。
 9. **`identical_low_cardinality_column_with_a_shared_blank_cell_still_produces_no_diff`テストが完全一致救済経路を実際には検証していなかった**: テストデータが8個の*相異なる*実数値を使っていたため、`eligible_for_content_match`（distinct値8以上）を満たしてしまい、実際には低カーディナリティ・完全一致救済経路ではなく通常の閾値経路を通過していた。真に低カーディナリティ（2値のboolean風パターン）なデータに修正し、`populated_count`が7個（閾値未達）の否定側テスト（`seven_populated_values_plus_a_blank_does_not_clear_the_exact_match_floor`）も追加した。
@@ -92,7 +94,7 @@ GitHub Copilotの自動PRレビューが7ラウンドにわたり計21件の重�
 
 ## テスト方針
 
-`src/diff/alignment.rs`内の単体テスト（`Sheet`/`Workbook`を公開モデルAPI経由で直接構築）:
+`src/diff/col_alignment.rs`内の単体テスト（`Sheet`/`Workbook`を公開モデルAPI経由で直接構築）:
 
 - 列挿入・削除でカスケードが起きないこと（`column_insertion_does_not_cascade_when_aligned`、`column_deletion_does_not_cascade_when_aligned`）——`engine.rs`の`column_insertion_cascades_into_shift_diffs_by_design`（本Issue #5対応の一環として新規追加、デフォルトエンジンの列版カスケードテスト）と対をなす
 - シフトした列内の真の値変更が`old_col`付きで正しく検出されること（`genuine_modification_survives_column_alignment`）
@@ -127,7 +129,7 @@ GitHub Copilotの自動PRレビューが7ラウンドにわたり計21件の重�
 
 ## 未決事項 / オープンクエスチョン
 
-1. **行アライメントとの統合**（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)）: 上記「行は再整列しない」節の通り、統合ポイント自体は設計済みだが、Issue #4自体が未着手のため実装されていない。
+1. **行アライメントとの統合**: 行アライメント自体は[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)で`diff::row_alignment`として実装済み（[row_alignment.md](row_alignment.md)参照）だが、上記「行は再整列しない」節の統合ポイント（`diff_matched_columns`のマージジョイン、`count_matching_rows`への行マッピングの反映）自体は依然未実装——`diff::row_alignment`も独立して列を座標一致のまま扱っており、双方向の統合は将来の課題として残っている。
 2. **`old_col`のSQLite永続化**（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）: [storage.md 未決事項6](storage.md)参照。
 3. **超低カーディナリティ・ヘッダー無し列の扱い**: 現状は安全側（座標ベース差分へのフォールバック）に倒しているが、この場合でも呼び出し側に「この列は整列を試みたが低カーディナリティのため断念した」という情報を明示的に伝える手段（例: `SheetDiff`への専用フラグ追加）は無い。実用上必要になった場合に追加を検討する。
 4. **結合セルの列アライメント対応**: 上記「結合セルは列アライメント非対応」節の通り、現状スコープ外。要求が生じた場合に別途検討する。

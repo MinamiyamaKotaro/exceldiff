@@ -63,7 +63,7 @@ pub fn cell_deleted() -> (Vec<u8>, Vec<u8>) {
 /// A new column is inserted before both existing columns; the two
 /// existing columns' data shifts right unchanged. Each column carries 10
 /// distinct numeric values, well over
-/// `diff::alignment::MIN_DISTINCT_FOR_CONTENT_MATCH`, so
+/// `diff::col_alignment::MIN_DISTINCT_FOR_CONTENT_MATCH`, so
 /// `diff_workbooks_aligned_columns` can align them by content alone (no
 /// header row needed) — exercises the plain content-matching path end to
 /// end through the real parse pipeline (Issue #5).
@@ -85,6 +85,34 @@ pub fn column_inserted() -> (Vec<u8>, Vec<u8>) {
 
     let base_rows = rows(&[("A", 0), ("B", 100)]);
     let target_rows = rows(&[("A", 200), ("B", 0), ("C", 100)]);
+
+    (
+        single_sheet("Sheet1", None, &base_rows),
+        single_sheet("Sheet1", None, &target_rows),
+    )
+}
+
+/// A new row is inserted before all existing rows; the existing rows'
+/// data shifts down unchanged. Each row carries 2 distinct numeric values
+/// (row-number-derived, so every row is content-unique), so
+/// `diff_workbooks_aligned_rows` can align them by content alone —
+/// exercises the plain content-matching path end to end through the real
+/// parse pipeline (Issue #4).
+pub fn row_inserted() -> (Vec<u8>, Vec<u8>) {
+    fn row_xml(row: i64, a: i64, b: i64) -> String {
+        format!(r#"<row r="{row}"><c r="A{row}"><v>{a}</v></c><c r="B{row}"><v>{b}</v></c></row>"#)
+    }
+
+    let mut base_rows = String::new();
+    for r in 1..=10i64 {
+        base_rows.push_str(&row_xml(r, r, r * 100));
+    }
+
+    let mut target_rows = String::new();
+    target_rows.push_str(&row_xml(1, 999, 9990));
+    for r in 1..=10i64 {
+        target_rows.push_str(&row_xml(r + 1, r, r * 100));
+    }
 
     (
         single_sheet("Sheet1", None, &base_rows),

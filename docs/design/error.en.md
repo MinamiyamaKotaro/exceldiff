@@ -150,14 +150,25 @@ pub enum Error {
     TooManyColumnWidthRanges { count: usize, limit: usize },
 
     // --- diff (Issue #5): opt-in column alignment ---
-    /// `diff::alignment::diff_workbooks_aligned_columns`'s estimated cost
+    /// `diff::col_alignment::diff_workbooks_aligned_columns`'s estimated cost
     /// exceeded one of `ColumnAlignmentLimits`'s budgets. `cost`/`limit`
     /// aren't a literal column count — they're one of two different
     /// products depending on which budget tripped
     /// (`distinct_cols_base × distinct_cols_target`, or that scaled by row
-    /// count). See [diff/alignment.en.md](diff/alignment.en.md).
+    /// count). See [diff/col_alignment.en.md](diff/col_alignment.en.md).
     #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
     ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
+
+    // --- diff (Issue #4): opt-in row alignment ---
+    /// `diff::row_alignment::diff_workbooks_aligned_rows`'s estimated cost
+    /// exceeded one of `RowAlignmentLimits`'s budgets. `cost`/`limit`
+    /// aren't a literal row count — they're one of two different values
+    /// depending on which budget tripped, the same way
+    /// `ColumnAlignmentCostTooHigh`'s are: either `max_gap_myers_d`
+    /// itself, or that scaled by row count. See
+    /// [diff/row_alignment.en.md](diff/row_alignment.en.md).
+    #[error("row alignment cost too high: {cost} exceeds limit {limit}")]
+    RowAlignmentCostTooHigh { cost: usize, limit: usize },
 
     // --- Phase 5: JSON generation ---
     /// JSON serialization failed (wraps the error `serde_json` returns).
