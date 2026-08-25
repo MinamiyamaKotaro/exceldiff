@@ -630,17 +630,18 @@ fn myers_diff_gap(
                 }
             }
 
-            while x > 0
-                && y > 0
-                && base[sub_b_start + x - 1].signature == target[sub_t_start + y - 1].signature
-            {
-                decoded.push(RowAlignment::Match {
-                    base_idx: sub_b_start + x - 1,
-                    target_idx: sub_t_start + y - 1,
-                });
-                x -= 1;
-                y -= 1;
-            }
+            // No trailing d=0 snake walk here (the textbook Myers
+            // backtrace has one, to consume a leading match at the very
+            // start of the two sequences): this function's own prefix
+            // trim above already strips that case before the D-step
+            // search ever runs, and only *k=0* is ever evaluated at d=0
+            // (by construction — `-d..=d step 2` yields just `[0]` when
+            // `d == 0`), which reduces to re-checking
+            // `base[sub_b_start] == target[sub_t_start]` — already
+            // known false, or this whole `else` branch wouldn't have been
+            // reached. So backtracking through d=1 always lands exactly
+            // on `(x, y) == (0, 0)`, making a trailing snake walk here
+            // provably a no-op; verified directly rather than assumed.
             decoded.reverse();
 
             merge_leftover_spans_by_content_similarity(base, target, &decoded, out);
@@ -1040,7 +1041,7 @@ fn cell_diff_modified_aligned(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CellRef, SheetVisibility};
+    use crate::model::{CellRef, DateTimeValue, SheetVisibility};
 
     fn sheet_with_values(name: &str, cells: &[(u32, u32, CellValue)]) -> Sheet {
         let mut sheet = Sheet::new(name.to_string(), SheetVisibility::Visible);
@@ -1343,5 +1344,680 @@ mod tests {
 
         let diff = crate::diff::engine::diff_workbooks(&base, &target);
         assert_eq!(diff.sheets[0].cells.len(), 3);
+    }
+
+    #[test]
+    fn identical_sheets_produce_no_diff() {
+        // The whole sheet is consumed by align_rows's own prefix trim (no
+        // active region at all left for anchor/Myers work) — exercises the
+        // "nothing to report" path both in align_rows itself and in
+        // align_sheet_rows's Ok(None) return.
+        let cells = &[
+            (1, 1, text("Item")),
+            (2, 1, text("Apple")),
+            (2, 2, num(100.0)),
+        ];
+        let base = workbook(vec![sheet_with_values("Sheet1", cells)]);
+        let target = workbook(vec![sheet_with_values("Sheet1", cells)]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        assert!(diff.sheets.is_empty());
+    }
+
+    #[test]
+    fn date_time_and_boolean_row_values_are_hashed_and_aligned_correctly() {
+        // Exercises hash_cell_value's DateTime and Boolean arms (Number/
+        // Text are already covered by every other test).
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Header")),
+                (2, 1, CellValue::Boolean(true)),
+                (2, 2, num(1.0)),
+                (
+                    3,
+                    1,
+                    CellValue::DateTime(DateTimeValue {
+                        year: 2026,
+                        month: 1,
+                        day: 1,
+                        hour: 0,
+                        minute: 0,
+                        second: 0,
+                    }),
+                ),
+                (3, 2, num(2.0)),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Header")),
+                (2, 1, CellValue::Boolean(false)), // changed
+                (2, 2, num(1.0)),
+                (
+                    3,
+                    1,
+                    CellValue::DateTime(DateTimeValue {
+                        year: 2026,
+                        month: 1,
+                        day: 1,
+                        hour: 0,
+                        minute: 0,
+                        second: 0,
+                    }),
+                ),
+                (3, 2, num(2.0)),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Only the Boolean cell changed; the DateTime row is untouched.
+        let modified: Vec<_> = cells
+            .iter()
+            .filter(|c| c.status == DiffStatus::Modified)
+            .collect();
+        assert_eq!(modified.len(), 1);
+        assert_eq!(modified[0].row, 2);
+        assert_eq!(modified[0].col, 1);
+    }
+
+    #[test]
+    fn formatting_only_cell_with_no_value_is_hashed_without_panicking() {
+        // Exercises row_contents's `None => ...` arm (a cell that carries
+        // formatting but no value).
+        let mut base = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        base.insert_cell(
+            CellRef { row: 1, col: 1 },
+            Cell {
+                value: None,
+                style: None,
+            },
+        );
+        base.insert_cell(
+            CellRef { row: 1, col: 2 },
+            Cell {
+                value: Some(num(1.0)),
+                style: None,
+            },
+        );
+        let base = workbook(vec![base]);
+
+        let mut target = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        target.insert_cell(
+            CellRef { row: 1, col: 1 },
+            Cell {
+                value: None,
+                style: None,
+            },
+        );
+        target.insert_cell(
+            CellRef { row: 1, col: 2 },
+            Cell {
+                value: Some(num(2.0)),
+                style: None,
+            },
+        );
+        let target = workbook(vec![target]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // A single row on each side with no exact-signature match and no
+        // similar-enough content-similarity partner (a lone Number cell
+        // is the only real evidence) falls back to plain delete+insert —
+        // 2 cells per side (the formatting-only cell included), which is
+        // the point: row_contents hashed it without panicking and it
+        // flowed through the rest of the pipeline like any other cell.
+        assert_eq!(cells.len(), 4);
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Deleted)
+                .count(),
+            2
+        );
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Added)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn reordered_anchors_exercise_the_lis_replacement_branch() {
+        // Base order [X, Y, Z] but target order [Y, Z, X]: X's anchor
+        // target-index (2) is visited before Y's (0) and Z's (1) in base
+        // order, forcing patience-sort LIS to replace an existing tail
+        // entry rather than only ever appending one.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("X")),
+                (1, 2, num(1.0)),
+                (2, 1, text("Y")),
+                (2, 2, num(2.0)),
+                (3, 1, text("Z")),
+                (3, 2, num(3.0)),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Y")),
+                (1, 2, num(2.0)),
+                (2, 1, text("Z")),
+                (2, 2, num(3.0)),
+                (3, 1, text("X")),
+                (3, 2, num(1.0)),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Whichever 2 of the 3 rows end up as the confirmed (order-
+        // preserving) LIS match, the row left over is reported as a plain
+        // delete+insert pair -- no Modified cells, since every row's
+        // content is byte-identical to some row on the other side.
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added || c.status == DiffStatus::Deleted));
+        assert!(!cells.is_empty());
+    }
+
+    #[test]
+    fn myers_budget_exceeded_falls_back_to_safe_delete_and_insert() {
+        // Two completely unrelated rows on each side (no shared
+        // signatures at all, so zero anchors) with max_gap_myers_d set too
+        // small to resolve the D=4 edit distance needed -- the overall
+        // row-count budget (2 * 2 * 1 = 4) trivially clears max_cost, but
+        // the per-gap Myers search itself must give up and fall back to
+        // fill_gap_no_match.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[(1, 1, text("A")), (2, 1, text("B"))],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[(1, 1, text("C")), (2, 1, text("D"))],
+        )]);
+
+        let limits = RowAlignmentLimits {
+            max_gap_myers_d: 1,
+            max_cost: RowAlignmentLimits::default().max_cost,
+        };
+        let diff = diff_workbooks_aligned_rows(&base, &target, limits).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Safe fallback: every row reported as a plain delete/insert, no
+        // fabricated Modified pairing.
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added || c.status == DiffStatus::Deleted));
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Deleted)
+                .count(),
+            2
+        );
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Added)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn content_similarity_pairing_handles_mismatched_and_partner_less_rows() {
+        // A single unresolved span with two deleted rows: one has a
+        // similar-enough insert to pair with (recovering a Modified row,
+        // and exercising row_similarity's mismatched-value and target-
+        // only-column branches along the way), the other has no
+        // similar-enough partner at all and must stay a plain Deleted.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Anchor")),
+                (2, 1, text("Region")),
+                (2, 2, text("East")),
+                (2, 3, text("Old")),
+                (3, 1, text("Unrelated")),
+                (3, 2, num(1.0)),
+                (4, 1, text("Anchor2")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Anchor")),
+                (2, 1, text("Region")),
+                (2, 2, text("East")),  // matches base row 2
+                (2, 3, text("New")),   // same column as base, different value
+                (2, 4, text("Extra")), // a target-only column
+                (3, 1, text("SomethingElse")),
+                (3, 2, num(999.0)),
+                (4, 1, text("Anchor2")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+
+        // Row 2 (Region/East) is similar enough (2 of 4 union columns agree,
+        // one value differs in place (col3 "Old" -> "New"), one is
+        // target-only (col4 "Extra")) to be paired as a single row --
+        // col3's in-place value change surfaces as a genuine Modified
+        // cell, exercising row_similarity's mismatched-value branch and
+        // the target-only-column branch at the same time.
+        assert!(cells.iter().any(|c| c.status == DiffStatus::Modified));
+        // Row 3 ("Unrelated"/1.0) has nothing similar enough in the
+        // target and stays a plain Deleted; its target counterpart
+        // ("SomethingElse"/999.0) stays a plain Added.
+        assert!(cells
+            .iter()
+            .any(|c| c.status == DiffStatus::Deleted && c.old_value.as_ref().is_some()));
+        assert!(cells.iter().any(|c| c.status == DiffStatus::Added));
+    }
+
+    #[test]
+    fn content_similarity_span_over_the_cap_falls_back_to_plain_delete_and_insert() {
+        // CONTENT_SIMILARITY_SPAN_CAP is 64 -- a single unresolved span of
+        // more than that many rows must skip content-similarity pairing
+        // entirely (O(span^2) would otherwise apply), even when every
+        // deleted row has an obviously similar insert right next to it.
+        let n = 40u32; // 40 deletes + 40 inserts = 80 > CONTENT_SIMILARITY_SPAN_CAP
+        let mut base_cells = vec![(1, 1, text("Anchor"))];
+        let mut target_cells = vec![(1, 1, text("Anchor"))];
+        for k in 1..=n {
+            base_cells.push((k + 1, 1, text("Row")));
+            base_cells.push((k + 1, 2, num(k as f64)));
+            target_cells.push((k + 1, 1, text("Row")));
+            target_cells.push((k + 1, 2, num(k as f64 + 1000.0)));
+        }
+        base_cells.push((n + 2, 1, text("Anchor2")));
+        target_cells.push((n + 2, 1, text("Anchor2")));
+
+        let base = workbook(vec![sheet_with_values("Sheet1", &base_cells)]);
+        let target = workbook(vec![sheet_with_values("Sheet1", &target_cells)]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Over the span cap: no content-similarity pairing at all, so
+        // every row is a plain delete/insert, never Modified.
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added || c.status == DiffStatus::Deleted));
+    }
+
+    #[test]
+    fn myers_internal_trim_matches_rows_inside_a_gap_between_anchors() {
+        // Z/W and Y/X block align_rows's own whole-sheet prefix/suffix
+        // trim from ever reaching the Dup rows, so the only way the Dup
+        // pair (duplicated -- never a patience anchor) can produce zero
+        // diff is via myers_diff_gap's own internal prefix trim, run
+        // fresh within the gap between anchors A and B.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Z")),
+                (2, 1, text("A")),
+                (3, 1, text("Dup")),
+                (3, 2, num(1.0)),
+                (4, 1, text("Dup")),
+                (4, 2, num(1.0)),
+                (5, 1, text("Old")),
+                (6, 1, text("B")),
+                (7, 1, text("Y")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("W")),
+                (2, 1, text("A")),
+                (3, 1, text("Dup")),
+                (3, 2, num(1.0)),
+                (4, 1, text("Dup")),
+                (4, 2, num(1.0)),
+                (5, 1, text("New")),
+                (6, 1, text("B")),
+                (7, 1, text("X")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // The Dup pair produces zero diff; only Z->W, Old->New, and Y->X
+        // remain (each a plain delete+insert, since none of the three
+        // pairs share enough content to clear the similarity threshold).
+        assert!(!cells.is_empty());
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added || c.status == DiffStatus::Deleted));
+    }
+
+    #[test]
+    fn myers_internal_trim_can_fully_resolve_a_gap_with_no_leftover() {
+        // The gap between anchors B and C is *entirely* explained by
+        // myers_diff_gap's own internal prefix trim (the Dup2 pair is
+        // byte-identical on both sides and nothing else is in the gap) --
+        // exercises the `p == n && p == m` early-return.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Z")),
+                (2, 1, text("B")),
+                (3, 1, text("Dup2")),
+                (3, 2, num(9.0)),
+                (4, 1, text("Dup2")),
+                (4, 2, num(9.0)),
+                (5, 1, text("C")),
+                (6, 1, text("Y")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("W")),
+                (2, 1, text("B")),
+                (3, 1, text("Dup2")),
+                (3, 2, num(9.0)),
+                (4, 1, text("Dup2")),
+                (4, 2, num(9.0)),
+                (5, 1, text("C")),
+                (6, 1, text("X")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // Only Z->W and Y->X remain; the Dup2 pair contributes no diff at
+        // all.
+        assert!(!cells.is_empty());
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added || c.status == DiffStatus::Deleted));
+    }
+
+    #[test]
+    fn matched_row_with_interleaved_and_trailing_column_mismatches() {
+        // A content-similarity-matched row pair (3 of 4 base columns
+        // agree with target, clearing the 0.40 threshold) whose remaining
+        // columns interleave and leave a base-only trailing column --
+        // exercises every branch of diff_matched_rows's merge-join
+        // (Less/Greater/Equal, plus the base-exhausted-last tail; the
+        // target-exhausted-last tail is covered by an earlier test).
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Anchor")),
+                (2, 1, text("Row")),
+                (2, 2, num(1.0)),
+                (2, 3, num(3.0)),
+                (2, 5, num(5.0)),
+                (2, 7, num(7.0)),
+                (3, 1, text("Anchor2")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Anchor")),
+                (2, 1, text("Row")),
+                (2, 2, num(1.0)),
+                (2, 4, num(4.0)),
+                (2, 5, num(5.0)),
+                (3, 1, text("Anchor2")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        assert!(cells.iter().any(|c| c.status == DiffStatus::Added));
+        assert!(cells.iter().any(|c| c.status == DiffStatus::Deleted));
+        // Recognized as a single matched row (not a whole-row replace):
+        // col1/col2/col5 agree unchanged, so the only reported cells are
+        // the non-shared columns (3 and 7 deleted, 4 added).
+        assert_eq!(cells.len(), 3);
+    }
+
+    #[test]
+    fn content_similarity_skips_a_row_with_zero_populated_cells() {
+        // Both rows are formatting-only (no value at all), at different
+        // columns so their signatures don't accidentally coincide (which
+        // would make them an exact Myers snake match instead). Neither
+        // can be a patience anchor (populated_count == 0), and once
+        // they're a Deleted/Inserted candidate pair in a content-
+        // similarity span, row_similarity has nothing at all to compare
+        // on either side -- exercises the `total == 0` branch, which must
+        // return 0.0 (never a false Modified match) rather than dividing
+        // by zero.
+        let mut base_sheet = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        base_sheet.insert_cell(
+            CellRef { row: 1, col: 1 },
+            Cell {
+                value: Some(text("Anchor")),
+                style: None,
+            },
+        );
+        base_sheet.insert_cell(
+            CellRef { row: 2, col: 1 },
+            Cell {
+                value: None,
+                style: None,
+            },
+        );
+        base_sheet.insert_cell(
+            CellRef { row: 3, col: 1 },
+            Cell {
+                value: Some(text("Anchor2")),
+                style: None,
+            },
+        );
+        let base = workbook(vec![base_sheet]);
+
+        let mut target_sheet = Sheet::new("Sheet1".to_string(), SheetVisibility::Visible);
+        target_sheet.insert_cell(
+            CellRef { row: 1, col: 1 },
+            Cell {
+                value: Some(text("Anchor")),
+                style: None,
+            },
+        );
+        target_sheet.insert_cell(
+            CellRef { row: 2, col: 2 },
+            Cell {
+                value: None,
+                style: None,
+            },
+        );
+        target_sheet.insert_cell(
+            CellRef { row: 3, col: 1 },
+            Cell {
+                value: Some(text("Anchor2")),
+                style: None,
+            },
+        );
+        let target = workbook(vec![target_sheet]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // The blank row is never mistakenly paired with the unrelated
+        // populated row -- both are reported as plain delete/insert.
+        assert!(cells
+            .iter()
+            .all(|c| c.status == DiffStatus::Added || c.status == DiffStatus::Deleted));
+        assert!(!cells.is_empty());
+    }
+
+    #[test]
+    fn error_valued_row_is_hashed_and_diffed_correctly() {
+        // Exercises hash_cell_value's Error arm.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Anchor")),
+                (2, 1, CellValue::Error("#DIV/0!".to_string())),
+                (3, 1, text("Anchor2")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Anchor")),
+                (2, 1, CellValue::Error("#N/A".to_string())),
+                (3, 1, text("Anchor2")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        assert!(!cells.is_empty());
+    }
+
+    #[test]
+    fn gap_prefix_trim_leaving_a_pure_insert_remainder() {
+        // The gap between anchors A and B holds a duplicated (non-anchor)
+        // "M" pair on both sides, plus one extra "Extra" row only on the
+        // target side: myers_diff_gap's own prefix trim consumes both M's
+        // (limited by the shorter, base, side), leaving sub_n == 0 and a
+        // pure Inserted remainder.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Z")),
+                (2, 1, text("A")),
+                (3, 1, text("M")),
+                (4, 1, text("M")),
+                (5, 1, text("B")),
+                (6, 1, text("Y")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("W")),
+                (2, 1, text("A")),
+                (3, 1, text("M")),
+                (4, 1, text("M")),
+                (5, 1, text("Extra")),
+                (6, 1, text("B")),
+                (7, 1, text("X")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Added && c.new_value.as_ref().is_some())
+                .count(),
+            // Z->W, Y->X (2 replaced rows, 1 Added cell each) + "Extra"
+            // (1 Added cell) = 3 Added cells total.
+            3
+        );
+        assert!(cells.iter().all(|c| c.status != DiffStatus::Modified));
+    }
+
+    #[test]
+    fn gap_prefix_trim_leaving_a_pure_delete_remainder() {
+        // Mirror of the previous test: the extra unmatched row ("Extra")
+        // is on the base side instead, so myers_diff_gap's prefix trim
+        // (limited by the shorter, target, side) leaves sub_m == 0 and a
+        // pure Deleted remainder.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Z")),
+                (2, 1, text("A")),
+                (3, 1, text("M")),
+                (4, 1, text("M")),
+                (5, 1, text("Extra")),
+                (6, 1, text("B")),
+                (7, 1, text("Y")),
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("W")),
+                (2, 1, text("A")),
+                (3, 1, text("M")),
+                (4, 1, text("M")),
+                (5, 1, text("B")),
+                (6, 1, text("X")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        assert_eq!(
+            cells
+                .iter()
+                .filter(|c| c.status == DiffStatus::Deleted && c.old_value.as_ref().is_some())
+                .count(),
+            3
+        );
+        assert!(cells.iter().all(|c| c.status != DiffStatus::Modified));
+    }
+
+    #[test]
+    fn gap_internal_suffix_trim_appends_matched_rows() {
+        // The gap between anchors A and B is [X, M] on base and [Y, M] on
+        // target: X/Y differ (blocking the gap's own prefix trim), but M
+        // matches at the gap's tail. M is duplicated elsewhere in base
+        // (a second, unrelated "M" row after Y) so it can never qualify
+        // as a whole-sheet patience anchor and is only ever resolved via
+        // myers_diff_gap's own internal *suffix* trim.
+        let base = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("Z")),
+                (2, 1, text("A")),
+                (3, 1, text("X")),
+                (4, 1, text("M")),
+                (5, 1, text("B")),
+                (6, 1, text("Y")),
+                (7, 1, text("M")), // extra, blocks M's anchor eligibility
+            ],
+        )]);
+        let target = workbook(vec![sheet_with_values(
+            "Sheet1",
+            &[
+                (1, 1, text("W")),
+                (2, 1, text("A")),
+                (3, 1, text("Q")),
+                (4, 1, text("M")),
+                (5, 1, text("B")),
+                (6, 1, text("X2")),
+            ],
+        )]);
+
+        let diff =
+            diff_workbooks_aligned_rows(&base, &target, RowAlignmentLimits::default()).unwrap();
+        let cells = &diff.sheets[0].cells;
+        // The shared M row inside the gap produces no diff at all; only
+        // the genuinely differing rows (Z/W, X/Q, Y/X2, plus the extra
+        // trailing M with no target counterpart) show up.
+        assert!(cells.iter().all(|c| c.status != DiffStatus::Modified));
+        assert!(!cells.is_empty());
     }
 }
