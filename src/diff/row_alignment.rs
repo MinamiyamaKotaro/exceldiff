@@ -423,25 +423,61 @@ fn row_contents<'a>(sheet: &'a Sheet, build_hasher: &RandomState) -> Vec<RowCont
 /// Fraction of `base`'s and `target`'s combined populated columns that
 /// agree in value — a Jaccard-like similarity used only by the bounded
 /// content-similarity pairing step (see `CONTENT_SIMILARITY_SPAN_CAP`'s
-/// doc comment).
+/// doc comment). Merge-joins `base.cells`/`target.cells` (both already
+/// column-ascending — `RowContent::cells`'s invariant, built straight from
+/// `Sheet::iter_cells()`'s own order) instead of collecting one side into
+/// a `HashMap` first: this runs up to `CONTENT_SIMILARITY_SPAN_CAP²`
+/// times per gap, so the per-call allocation and hashing a `HashMap`
+/// would cost is worth avoiding (a Copilot review on PR #21 caught this
+/// after the module's other O(cells) claims had already been fixed the
+/// same way).
 fn row_similarity(base: &RowContent, target: &RowContent) -> f64 {
-    let mut base_values: HashMap<u32, &CellValue> = HashMap::new();
-    for &(col, cell) in &base.cells {
-        if let Some(v) = &cell.value {
-            base_values.insert(col, v);
-        }
-    }
+    let mut total = 0usize;
     let mut matching = 0usize;
-    let mut total = base_values.len();
-    for &(col, cell) in &target.cells {
-        if let Some(tv) = &cell.value {
-            match base_values.get(&col) {
-                Some(&bv) if bv == tv => matching += 1,
-                Some(_) => {}
-                None => total += 1,
+
+    let mut b = base
+        .cells
+        .iter()
+        .filter(|(_, cell)| cell.value.is_some())
+        .peekable();
+    let mut t = target
+        .cells
+        .iter()
+        .filter(|(_, cell)| cell.value.is_some())
+        .peekable();
+
+    loop {
+        match (b.peek(), t.peek()) {
+            (Some(&&(b_col, b_cell)), Some(&&(t_col, t_cell))) => match b_col.cmp(&t_col) {
+                Ordering::Less => {
+                    total += 1;
+                    b.next();
+                }
+                Ordering::Greater => {
+                    total += 1;
+                    t.next();
+                }
+                Ordering::Equal => {
+                    total += 1;
+                    if b_cell.value == t_cell.value {
+                        matching += 1;
+                    }
+                    b.next();
+                    t.next();
+                }
+            },
+            (Some(_), None) => {
+                total += 1;
+                b.next();
             }
+            (None, Some(_)) => {
+                total += 1;
+                t.next();
+            }
+            (None, None) => break,
         }
     }
+
     if total == 0 {
         0.0
     } else {

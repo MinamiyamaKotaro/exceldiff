@@ -60,7 +60,7 @@ pub fn diff_workbooks_aligned_rows(
 5. 共通prefix/suffixをO(1)/行でトリムする——両端から見て同一シグネチャが続く限り、O(n²)の作業を一切せずに確定マッチとする。
 6. トリム後の「アクティブ領域」内で、シグネチャが両側で一意な行をアンカー候補とし、patience-sort LIS（`lis_indices`）で順序を保った最大の確定マッチ集合を求める（`align_rows`）。
 7. 確定マッチの間の各ギャップを`myers_diff_gap`でMyers diffにより解決する。バックトレースは対角線（Match）・垂直（Inserted）・水平（Deleted）の全ステップを直接デコードする——スネークだけ記録して残りを位置合わせで穴埋めする近道は取らない。予算(`max_gap_myers_d`)を超えた場合は`fill_gap_no_match`で対象区間全体を安全に全削除+全追加として報告する。
-8. Myersが解決したがシグネチャの完全一致では説明できなかった残余のDeleted/Insertedの連続区間は、`merge_leftover_spans_by_content_similarity`で内容類似度によるペアリングを試みる——区間長が`CONTENT_SIMILARITY_SPAN_CAP`を超える場合はO(span²)コストを避けるためスキップし、安全な全削除+全追加のまま残す。
+8. Myersが解決したがシグネチャの完全一致では説明できなかった残余のDeleted/Insertedの連続区間は、`merge_leftover_spans_by_content_similarity`で内容類似度によるペアリングを試みる——区間長が`CONTENT_SIMILARITY_SPAN_CAP`を超える場合はO(span²)コストを避けるためスキップし、安全な全削除+全追加のまま残す。類似度計算自体（`row_similarity`）は1区間あたり最大`CONTENT_SIMILARITY_SPAN_CAP²`回呼ばれるため、`HashMap`を毎回確保する実装ではなく、両側の`RowContent::cells`が既に列昇順であることを利用したマージジョインで実装している（PR #21のレビューで指摘・修正）。
 9. マッチした行ペアはマージジョインでセル差分を計算し(`diff_matched_rows`)、行がシフトしていれば`CellDiff::old_row`を付与する。マッチしなかった行の全populatedセルはAdded/Deleted扱いにする。
 
 ## 依存関係
