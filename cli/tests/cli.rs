@@ -14,6 +14,7 @@
 //! doesn't apply to the file's git status, so `""` reaches this binary
 //! as a plain placeholder argument, not a `git show` fallback).
 
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
@@ -32,6 +33,84 @@ fn run(args: &[&str]) -> Output {
         .args(args)
         .output()
         .expect("failed to run xlsxdiff")
+}
+
+/// Builds a minimal, single-cell `.xlsx` with A1 set to `cell_value`, for
+/// the "real diff" test below. Two arbitrary files under
+/// `tests/fixtures/other/` (`basic_types.xlsx` vs `date.xlsx`) were tried
+/// first, but which cells actually differ between two unrelated
+/// real-world fixtures isn't something this test controls or verifies —
+/// it happened to produce a cell-value hunk locally, then produced none
+/// in CI (a different, freshly-resolved dependency graph, since this
+/// library-crate repo doesn't commit `Cargo.lock`), failing
+/// `stdout.contains("@@")` with no hunk at all. Building the pair here
+/// instead guarantees exactly one changed cell regardless of environment
+/// — the same fix `tests/fixtures/diff.rs`'s own `cell_modified()` (and
+/// `src/markdown.rs`'s `minimal_xlsx_zip` unit-test helper) already apply
+/// for the same reason.
+fn minimal_xlsx_zip(cell_value: &str) -> Vec<u8> {
+    const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+    const RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#;
+    const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0"?>
+<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#;
+    const STYLES_XML: &[u8] = br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
+
+    let worksheet_xml = format!(
+        r#"<worksheet><sheetData><row r="1"><c r="A1"><v>{cell_value}</v></c></row></sheetData></worksheet>"#
+    );
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, data) in [
+            ("_rels/.rels", ROOT_RELS_XML),
+            ("xl/_rels/workbook.xml.rels", RELS_XML),
+            ("xl/workbook.xml", WORKBOOK_XML),
+            ("xl/styles.xml", STYLES_XML),
+            ("xl/worksheets/sheet1.xml", worksheet_xml.as_bytes()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    buf
+}
+
+/// Writes `bytes` to a uniquely-named file under `std::env::temp_dir()`
+/// and deletes it on drop, so a failing assertion can't leak it behind.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(test_name: &str, bytes: &[u8]) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "xlsxdiff-cli-test-{}-{test_name}.xlsx",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).unwrap();
+        Self(path)
+    }
+
+    fn path_str(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 #[test]
@@ -83,13 +162,18 @@ fn deleted_file_prints_removed() {
 
 #[test]
 fn modified_file_with_a_real_diff_prints_a_hunk() {
-    let base = fixture("normal/basic_types.xlsx");
-    let head = fixture("other/date.xlsx");
-    let out = run(&["path/m.xlsx", "M", &base, &head]);
+    let base = TempFile::new("modified_base", &minimal_xlsx_zip("42"));
+    let head = TempFile::new("modified_head", &minimal_xlsx_zip("100"));
+    let out = run(&["path/m.xlsx", "M", base.path_str(), head.path_str()]);
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.starts_with("### ✏️ Modified · `path/m.xlsx`\n"));
-    assert!(stdout.contains("@@"));
+    assert!(
+        stdout.starts_with("### ✏️ Modified · `path/m.xlsx`\n"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(stdout.contains("@@ A1 @@"), "unexpected stdout: {stdout}");
+    assert!(stdout.contains("- 42"), "unexpected stdout: {stdout}");
+    assert!(stdout.contains("+ 100"), "unexpected stdout: {stdout}");
 }
 
 #[test]

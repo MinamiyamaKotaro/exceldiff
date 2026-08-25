@@ -34,7 +34,8 @@ CLIをどこに置くかについては3案が検討された(Issue #32のPRレ�
 
 ## 依存関係
 
-- 依存先: [`exceldiff`](lib.md)(`path`依存。`diff_file_section_from_paths`・`MarkdownOptions`のみを使用)
+- 依存先(通常): [`exceldiff`](lib.md)(`path`依存。`diff_file_section_from_paths`・`MarkdownOptions`のみを使用)
+- 依存先(devのみ): `zip`(`cli/tests/cli.rs`が制御されたテスト用`.xlsx`ペアをin-memoryで組み立てるためだけに使用。下記「テスト方針」参照。バイナリ本体には含まれない)
 - 依存元: `.github/workflows/xlsx-diff.yml`(`cargo build --release -p xlsxdiff`でビルドし、`target/release/xlsxdiff`をPRごとに変更された`.xlsx`ファイル1件につき1回起動して、その出力をコメント本文へ連結する)
 
 ## エラー処理方針
@@ -46,9 +47,10 @@ CLIをどこに置くかについては3案が検討された(Issue #32のPRレ�
 - [`markdown.rs`の単体テスト](markdown.md)が`diff_file_section_from_paths`自体の全`FileStatus`分岐(正常系・パースエラー系・リビジョン指定)をプロセス起動なしで検証済みのため、`cli/tests/cli.rs`はそれを再検証しない
 - `cli/tests/cli.rs`は本クレート固有のロジック、すなわち**プロセスとして実際に起動した場合のargv処理**のみを検証する対象とする(`env!("CARGO_BIN_EXE_xlsxdiff")`経由でビルド済みバイナリを起動し、終了コード・stdout/stderrを検証):
   - 引数が3個未満の場合に使用方法がstderrへ出力され非ゼロ終了すること
-  - 空文字列の`base_file`/`head_file`引数が「省略」と同一に扱われること(ワークフローが`git show`失敗時に空文字列を渡す慣習の検証)
+  - 空文字列の`base_file`/`head_file`引数が「省略」と同一に扱われること(ワークフローが該当しない側の引数として空文字列をそのまま渡す慣習の検証。上記「責務・スコープ」参照)
   - 各git status(`A`/`D`/`M`/未知の文字)を渡した場合に、対応する見出しバッジが出力へ現れること(詳細な整形内容そのものは[`markdown.rs`側で検証済み](markdown.md)なので、ここでは「正しい引数が正しく渡っていること」の確認に留める)
-- 実ファイルの用意には`tests/fixtures/`配下の既存フィクスチャ(`normal/basic_types.xlsx`・`other/date.xlsx`・`error/corrupted_xml.xlsx`)を、本クレートの`CARGO_MANIFEST_DIR`からの相対パスで参照する — クレートレベルの統合テストが`tests/fixtures/`を直接使う既存の慣習([`tests/error.rs`](../../tests/error.rs)等)に合わせたもので、[`src/`配下の単体テストがin-memoryなデータのみを使う慣習](markdown.md)とは異なる層であることに注意
+- 実ファイルが必要なテスト(単純に「実在する`.xlsx`を渡すと正常/エラーとして処理される」ことの確認)には`tests/fixtures/`配下の既存フィクスチャ(`normal/basic_types.xlsx`・`error/corrupted_xml.xlsx`)を、本クレートの`CARGO_MANIFEST_DIR`からの相対パスで参照する — クレートレベルの統合テストが`tests/fixtures/`を直接使う既存の慣習([`tests/error.rs`](../../tests/error.rs)等)に合わせたもの
+- 一方、「値が変更された1セルが`@@`ハンクとして出力へ現れること」を確認するテストは、`tests/fixtures/`配下の無関係な2ファイルではなく、`cli/tests/cli.rs`内で最小限の`.xlsx`ペア(A1セルの値だけが違う)をin-memoryで組み立てる(`zip`クレートをdev依存として使用)。2つの無関係な実ファイルのどのセルがどう違うかはテストが制御・保証できる性質のものではなく、実際に依存関係の解決結果が変わった際にCI上でのみ差分内容が変わって失敗する事例が起きたため([`tests/fixtures/diff.rs`の`cell_modified()`](../../tests/fixtures/diff.rs)や[`src/markdown.rs`の単体テスト](markdown.md)が同じ理由でin-memory構築を採用しているのと同じ判断)
 
 ## 未決事項 / オープンクエスチョン
 

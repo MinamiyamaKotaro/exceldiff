@@ -13,3 +13,10 @@ publish = false
 
 [dependencies]
 exceldiff = { path = ".." }
+
+[dev-dependencies]
+# Only for cli/tests/cli.rs's minimal_xlsx_zip helper, which builds a
+# controlled `.xlsx` pair in-memory for the "real diff" test — see that
+# test's own comment for why this replaced picking two arbitrary files
+# under tests/fixtures/other/.
+zip = { version = "8", default-features = false, features = ["deflate"] }

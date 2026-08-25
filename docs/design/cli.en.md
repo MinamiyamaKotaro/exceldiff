@@ -34,7 +34,8 @@ Option 3 keeps option 1's benefit (the library's published surface stays untouch
 
 ## Dependencies
 
-- Depends on: [`exceldiff`](lib.en.md) (a `path` dependency; uses only `diff_file_section_from_paths` and `MarkdownOptions`)
+- Depends on (normal): [`exceldiff`](lib.en.md) (a `path` dependency; uses only `diff_file_section_from_paths` and `MarkdownOptions`)
+- Depends on (dev only): `zip` (used only by `cli/tests/cli.rs` to build a controlled test `.xlsx` pair in-memory — see "Test plan" below; never part of the shipped binary)
 - Depended on by: `.github/workflows/xlsx-diff.yml` (builds it with `cargo build --release -p xlsxdiff`, then runs `target/release/xlsxdiff` once per `.xlsx` file changed in the PR, concatenating each invocation's output into the comment body)
 
 ## Error handling policy
@@ -46,9 +47,10 @@ Option 3 keeps option 1's benefit (the library's published surface stays untouch
 - [`markdown.rs`'s own unit tests](markdown.en.md) already cover every `FileStatus` branch of `diff_file_section_from_paths` itself (normal cases, parse errors, which revision) with no process spawn needed, so `cli/tests/cli.rs` doesn't re-verify those
 - `cli/tests/cli.rs` instead covers what's specific to this crate: **argv handling when actually run as a process** (via `env!("CARGO_BIN_EXE_xlsxdiff")`, checking exit code and stdout/stderr):
   - fewer than 3 arguments prints a usage message to stderr and exits non-zero
-  - an empty-string `base_file`/`head_file` argument is treated the same as the argument being omitted (verifying the workflow's own "pass an empty string when `git show` fails" convention)
+  - an empty-string `base_file`/`head_file` argument is treated the same as the argument being omitted (verifying the workflow's own convention of passing an empty string straight through for whichever side doesn't apply — see "Responsibilities / Scope" above)
   - each git status (`A`/`D`/`M`, and an unrecognized letter) produces output with the matching heading badge — the fine-grained formatting itself is already [verified on the `markdown.rs` side](markdown.en.md), so this only confirms the right arguments actually reach it
-- Real files come from the existing fixtures under `tests/fixtures/` (`normal/basic_types.xlsx`, `other/date.xlsx`, `error/corrupted_xml.xlsx`), referenced by a path relative to this crate's own `CARGO_MANIFEST_DIR` — matching the existing convention of crate-level integration tests using `tests/fixtures/` directly (e.g. [`tests/error.rs`](../../tests/error.rs)), a different layer from [`src/`'s own unit tests, which stick to in-memory data](markdown.en.md)
+- Tests that just need *some* real `.xlsx` (confirming a real file parses/errors as expected) use the existing fixtures under `tests/fixtures/` (`normal/basic_types.xlsx`, `error/corrupted_xml.xlsx`), referenced by a path relative to this crate's own `CARGO_MANIFEST_DIR` — matching the existing convention of crate-level integration tests using `tests/fixtures/` directly (e.g. [`tests/error.rs`](../../tests/error.rs))
+- The test confirming "a changed cell renders as an `@@` hunk," though, builds a minimal `.xlsx` pair in-memory inside `cli/tests/cli.rs` itself (differing in exactly one cell's value, via the `zip` crate as a dev-dependency) rather than picking two unrelated files under `tests/fixtures/`. Which specific cells differ between two unrelated real files isn't something a test controls or guarantees — this one initially did use two unrelated fixtures, passed locally, then failed in CI with zero hunks once dependency resolution came out differently (this library crate doesn't commit `Cargo.lock`). Building the pair in the test is the same fix [`tests/fixtures/diff.rs`'s `cell_modified()`](../../tests/fixtures/diff.rs) and [`src/markdown.rs`'s own unit tests](markdown.en.md) already apply, for the same reason
 
 ## Open questions
 
