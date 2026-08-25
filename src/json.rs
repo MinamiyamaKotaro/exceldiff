@@ -373,8 +373,11 @@ pub(crate) fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
 }
 
 /// Formats a `DateTimeValue` as ISO 8601 without a timezone designator or
-/// fractional seconds, e.g. `"2024-01-01T13:45:30"`.
-fn format_date_time(dt: &DateTimeValue) -> String {
+/// fractional seconds, e.g. `"2024-01-01T13:45:30"`. `pub(crate)` since
+/// [`crate::grid`] reuses it for the same reason this module does: an
+/// Excel date/time's natural display is this format, not `DateTimeValue`'s
+/// derived `Debug` representation.
+pub(crate) fn format_date_time(dt: &DateTimeValue) -> String {
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
         dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second

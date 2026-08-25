@@ -39,7 +39,7 @@ This is the only public function. The internal `LineSlot`/`CellChange`/`Side` en
 
 ## Dependencies
 
-- Depends on: [`diff/model.rs`](diff/model.en.md) (`DiffStatus`, `SheetDiff`), [`model/`](model/) (`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`), [`resolve/color.rs`](resolve/color.en.md) (`resolve_color` — resolves a `ColorRef` to a real RGB value, including theme and indexed colors)
+- Depends on: [`diff/model.rs`](diff/model.en.md) (`DiffStatus`, `SheetDiff`), [`model/`](model/) (`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`), [`resolve/color.rs`](resolve/color.en.md) (`resolve_color` — resolves a `ColorRef` to a real RGB value, including theme and indexed colors), [`json.rs`](json.en.md) (`format_date_time` — renders a `DateTime` cell's value the same ISO-8601-without-timezone way `json.rs` does, instead of `DateTimeValue`'s derived `Debug` form)
 - Depended on by: [`lib.rs`](lib.en.md) (re-exports `render_sheet_split` as public API), `examples/xlsx_diff_grid.rs` (calls `parse_workbook`/`diff_workbooks` and assembles the returned HTML fragment into a full page)
 
 ## Design decision: why a separate module instead of folding into `markdown.rs`

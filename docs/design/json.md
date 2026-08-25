@@ -280,8 +280,9 @@ fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
 }
 
 /// `DateTimeValue` をタイムゾーン指定子・ミリ秒なしのISO 8601形式へ変換する。
-/// 例: `"2024-01-01T13:45:30"`。
-fn format_date_time(dt: &crate::model::cell::DateTimeValue) -> String {
+/// 例: `"2024-01-01T13:45:30"`。`pub(crate)` — [`grid.rs`](grid.md)もHTMLグリッド上で
+/// `DateTime`セルの値を表示する際、`DateTimeValue`の導出`Debug`表現ではなくこの関数を再利用する。
+pub(crate) fn format_date_time(dt: &crate::model::cell::DateTimeValue) -> String {
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
         dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
@@ -316,7 +317,7 @@ fn visibility_tag(v: SheetVisibility) -> &'static str {
 ## 依存関係
 
 - 依存先: [`model/workbook.rs`](model/workbook.md)（`Workbook`）、[`model/sheet.rs`](model/sheet.md)（`Sheet::iter_cells`, `Sheet::merged_region_at`, `Sheet::images`, `SheetVisibility`, `Image`, `ImageAnchor`, `AnchorMarker`——Issue #65）、[`model/cell.rs`](model/cell.md)（`Cell`, `CellRef`, `CellValue`, `DateTimeValue`）、[`model/style.rs`](model/style.md)（`Alignment`——`cell_to_json` 内で `s.horizontal_alignment` として読み取り、直接 `Serialize` を導出せず `alignment_tag` を介して変換する。下記の「`model/` に `serde` を持ち込まない」方針と同じ。`ColorRef`——`s.fill_fg_color`/`fill_bg_color` として読み取り、同様に `color_ref_to_json` を介して変換する。`Borders`——`s.borders` として読み取り、4つの`bool`フィールドを`JsonBorders`へそのままコピーする。`bool`は`ColorRef`/`Alignment`のような`model`→JSON変換関数を必要としない）、[`error.rs`](error.md)（`Error::JsonSerialize`。ストリーミング書き込み時のI/O・シリアライズ失敗を表現するため新設。[PR #10 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332)を踏まえた設計変更に伴い追加）、外部クレート `serde`（`Serialize` の手動・導出実装）・`serde_json`（`to_writer` によるストリーミングシリアライズ）。`serde` は `rc` フィーチャの有効化が必要（実装時に判明: `CellValue::Text` の `Arc<str>` フィールドは、このフィーチャを有効にしないと `Serialize` を実装しない。serde は `Rc`/`Arc` のシリアライズを既定では無効にしており、これは共有データが独立したシリアライズ呼び出しごとに黙って複製されてしまう落とし穴を避けるための設計）。
-- 依存元: `lib.rs`（`Workbook` から明示的に呼び出す。[pipeline.md オープンクエスチョン1](pipeline.md) 参照。`pipeline.rs` の `run` 自体からは呼ばれない）
+- 依存元: `lib.rs`（`Workbook` から明示的に呼び出す。[pipeline.md オープンクエスチョン1](pipeline.md) 参照。`pipeline.rs` の `run` 自体からは呼ばれない）、[`grid.rs`](grid.md)（本モジュールの公開JSONシリアライズ関数群ではなく、`pub(crate)`な`format_date_time`ヘルパーのみを再利用する）
 
 `JsonWorkbook` / `SheetSeq` / `JsonSheet` / `CellSeq` はいずれもモデルへの借用（`&'a Workbook` / `&'a Sheet`）のみを保持し、値を所有しない。`Serialize` 実装は呼び出された時点で初めてモデルを走査するため、`serde_json::to_writer` が内部で行う逐次的なシリアライズ呼び出しと自然に噛み合い、シート全体・ブック全体を表す中間データ構造をヒープ上に一切構築しない。
 

@@ -284,8 +284,10 @@ fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
 }
 
 /// Formats a `DateTimeValue` as ISO 8601 without a timezone designator or
-/// fractional seconds, e.g. `"2024-01-01T13:45:30"`.
-fn format_date_time(dt: &crate::model::cell::DateTimeValue) -> String {
+/// fractional seconds, e.g. `"2024-01-01T13:45:30"`. `pub(crate)`: also
+/// reused by [`grid.rs`](grid.en.md) to render a `DateTime` cell's value
+/// in the HTML grid, rather than `DateTimeValue`'s derived `Debug` form.
+pub(crate) fn format_date_time(dt: &crate::model::cell::DateTimeValue) -> String {
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
         dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
@@ -320,7 +322,7 @@ fn visibility_tag(v: SheetVisibility) -> &'static str {
 ## Dependencies
 
 - Depends on: [`model/workbook.rs`](model/workbook.en.md) (`Workbook`), [`model/sheet.rs`](model/sheet.en.md) (`Sheet::iter_cells`, `Sheet::merged_region_at`, `Sheet::images`, `SheetVisibility`, `Image`, `ImageAnchor`, `AnchorMarker` — Issue #65), [`model/cell.rs`](model/cell.en.md) (`Cell`, `CellRef`, `CellValue`, `DateTimeValue`), [`model/style.rs`](model/style.en.md) (`Alignment` — read via `s.horizontal_alignment` in `cell_to_json`, converted through `alignment_tag` rather than deriving `Serialize` directly, per this file's own no-`serde`-in-`model/` policy below; `ColorRef` — read via `s.fill_fg_color`/`fill_bg_color`, converted through `color_ref_to_json` the same way; `Borders` — read via `s.borders`, its four `bool` fields copied directly into `JsonBorders` since a plain `bool` needs no `model`→JSON conversion function the way `ColorRef`/`Alignment` do), [`error.rs`](error.en.md) (`Error::JsonSerialize` — newly added to represent I/O or serialization failure during streaming writes; added as part of the redesign following the [PR #10 review](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332)), the external `serde` crate (manual and derived `Serialize` impls) and `serde_json` (streaming serialization via `to_writer`). `serde` needs its `rc` feature enabled: `CellValue::Text`'s `Arc<str>` field only gets a `Serialize` impl with that feature on (found at implementation time — without it, `Arc<str>` doesn't implement `Serialize` at all, since serde gates `Rc`/`Arc` support behind `rc` to avoid the footgun of silently duplicating shared data across independent serializations).
-- Depended on by: `lib.rs` (calls it explicitly on a `Workbook` — see [pipeline.md Open Question 1](pipeline.en.md); `pipeline.rs`'s `run` itself never calls it)
+- Depended on by: `lib.rs` (calls it explicitly on a `Workbook` — see [pipeline.md Open Question 1](pipeline.en.md); `pipeline.rs`'s `run` itself never calls it); [`grid.rs`](grid.en.md) (reuses the `pub(crate)` `format_date_time` helper only, not this module's public JSON-serialization entry points)
 
 `JsonWorkbook` / `SheetSeq` / `JsonSheet` / `CellSeq` each hold only a borrow of the model (`&'a Workbook` / `&'a Sheet`), never owning a value. Their `Serialize` impls only walk the model once actually invoked, which naturally lines up with the sequential calls `serde_json::to_writer` makes internally — no intermediate data structure representing a whole sheet or the whole book is ever built on the heap.
 

@@ -609,7 +609,7 @@ fn cell_value_html(v: Option<&CellValue>) -> String {
         None => String::new(),
         Some(CellValue::Number(n)) => format!("<span class=\"num\">{n}</span>"),
         Some(CellValue::Boolean(b)) => b.to_string(),
-        Some(CellValue::DateTime(d)) => html_escape(&format!("{d:?}")),
+        Some(CellValue::DateTime(d)) => html_escape(&crate::json::format_date_time(d)),
         Some(CellValue::Error(e)) => format!("<span class=\"err\">{}</span>", html_escape(e)),
         Some(CellValue::Text(s)) => html_escape(s),
     }
@@ -1167,7 +1167,7 @@ mod tests {
         };
         assert_eq!(
             cell_value_html(Some(&CellValue::DateTime(dt))),
-            html_escape(&format!("{dt:?}"))
+            "2024-01-05T03:05:09"
         );
     }
 

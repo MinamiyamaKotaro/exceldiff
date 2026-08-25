@@ -39,7 +39,7 @@ pub fn render_sheet_split(
 
 ## 依存関係
 
-- 依存先: [`diff/model.rs`](diff/model.md)（`DiffStatus`, `SheetDiff`）、[`model/`](model/)（`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`）、[`resolve/color.rs`](resolve/color.md)（`resolve_color`——`ColorRef`を実際のRGB値へ解決する。テーマカラー・インデックスカラーを含む）
+- 依存先: [`diff/model.rs`](diff/model.md)（`DiffStatus`, `SheetDiff`）、[`model/`](model/)（`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`）、[`resolve/color.rs`](resolve/color.md)（`resolve_color`——`ColorRef`を実際のRGB値へ解決する。テーマカラー・インデックスカラーを含む）、[`json.rs`](json.md)（`format_date_time`——`DateTime`セルの値を、`DateTimeValue`の導出`Debug`表現ではなく`json.rs`と同じタイムゾーンなしISO 8601形式で表示する）
 - 依存元: [`lib.rs`](lib.md)（`render_sheet_split`を公開APIとして再エクスポート）、`examples/xlsx_diff_grid.rs`（`parse_workbook`/`diff_workbooks`の呼び出しと、返されたHTMLフラグメントをページ全体へ組み立てるラッパー）
 
 ## 設計判断: なぜ`markdown.rs`と統合せず別モジュールにしたか
