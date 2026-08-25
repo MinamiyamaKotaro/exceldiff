@@ -36,7 +36,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build xlsx diff CLI
-        run: cargo build --release --example xlsx_diff_cli
+        run: cargo build --release -p xlsxdiff
 
       - name: Compute diffs for changed .xlsx files
         env:
@@ -44,7 +44,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          bin=target/release/examples/xlsx_diff_cli
+          bin=target/release/xlsxdiff
           out=xlsx-diff-comment.md
 
           {

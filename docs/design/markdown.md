@@ -48,6 +48,16 @@ pub enum FileStatus<'a> {
 
 pub fn format_file_section(display_path: &str, status: &FileStatus, options: &MarkdownOptions) -> String;
 pub fn format_workbook_diff(diff: &WorkbookDiff, options: &MarkdownOptions) -> String;
+
+// パス→パース→差分計算→整形を一括で行う高水準API（Issue #32）。
+// CLI（cli/src/main.rs）はargvをこの5引数へ詰め替えるだけの薄いラッパー。
+pub fn diff_file_section_from_paths(
+    display_path: &str,
+    git_status: &str,
+    base_path: Option<&str>,
+    head_path: Option<&str>,
+    options: &MarkdownOptions,
+) -> String;
 ```
 
 実装本体は[`src/markdown.rs`](../../src/markdown.rs)を参照。`format_sheet_diff`・`format_cell_hunk`・`format_merge_hunk`・`format_value`・`code_span`・`longest_backtick_run` は非公開のヘルパー。`code_span`はファイルパスやシート名のような呼び出し側/ユーザー由来の文字列をMarkdownのインラインコードスパンとして安全に埋め込む（CommonMarkの規則に従い、内容中の最長バッククォート連続より長いフェンスを選び、内容がバッククォートで始まる/終わる場合はパディング用のスペースを追加する）。`format_sheet_diff`が組み立てる ```` ```diff ```` ブロックフェンスも同じ理由で固定長ではなく、`longest_backtick_run`でレンダリング済みハンク本文中の最長バッククォート連続を測り、それより長いフェンス（3本以上）を動的に選ぶ — セルの`Error`値はバッククォートで囲んで整形されるため、これを怠るとフェンスが早期に閉じてPRコメントの表示が壊れうる。
@@ -64,7 +74,7 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 ## 依存関係
 
 - 依存先: [`diff/model.rs`](diff/model.md)（`CellDiff`, `CellPos`, `DiffStatus`, `MergeDiff`, `SheetDiff`, `WorkbookDiff`）、[`json.rs`](json.md)（`JsonCellValue` — `CellDiff::old_value`/`new_value`/`format_value`の変換先として再利用。[json.mdの設計判断](json.md)通り、値の種別タグ付き表現をdiffの世界でも一貫させる）、[`model/cell.rs`](model/cell.md)（`CellRef::to_a1` — 座標をA1形式へ変換）
-- 依存元: [`lib.rs`](lib.md)（`FileStatus`/`MarkdownOptions`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`を再エクスポートし、クレートの公開APIとする）、`examples/xlsx_diff_cli.rs`（引数パース・`parse_workbook`/`diff_workbooks`の呼び出し・結果を`FileStatus`へ詰め替える薄いラッパーとして、本モジュールの関数を呼び出す。CLI自体をさらに薄くする作業自体は[Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32)のスコープ）
+- 依存元: [`lib.rs`](lib.md)（`FileStatus`/`MarkdownOptions`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`/`diff_file_section_from_paths`を再エクスポートし、クレートの公開APIとする）、[`cli/`クレート](cli.md)の`cli/src/main.rs`（argvを`diff_file_section_from_paths`の5引数へ詰め替え、結果をstdoutへ書くだけの薄いラッパー。[Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32)でパース・差分計算・結果の`FileStatus`への詰め替えを含む全オーケストレーションを本モジュール側の`diff_file_section_from_paths`へ集約し、CLIは`examples/xlsx_diff_cli.rs`から独立ワークスペースメンバー`cli/`へ移動した）
 
 ## エラー処理方針
 

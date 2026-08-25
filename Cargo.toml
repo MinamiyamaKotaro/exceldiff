@@ -1,3 +1,13 @@
+# A workspace whose root is also a package (`exceldiff` itself): `cli/` is
+# a separate, unpublished consumer crate (the `.xlsx` diff CLI, Issue #32),
+# kept out of `exceldiff`'s own published binary surface entirely — unlike
+# `examples/` (excluded from `cargo install`/plain `cargo build` only by
+# Cargo convention) or `src/bin/` (would be auto-included, Issue #23), a
+# separate workspace member is never built or packaged by `cargo
+# build`/`cargo package` run against the `exceldiff` package alone.
+[workspace]
+members = ["cli"]
+
 [package]
 name = "exceldiff"
 version = "0.13.0"
