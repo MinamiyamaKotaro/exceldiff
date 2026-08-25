@@ -48,6 +48,17 @@ pub enum FileStatus<'a> {
 
 pub fn format_file_section(display_path: &str, status: &FileStatus, options: &MarkdownOptions) -> String;
 pub fn format_workbook_diff(diff: &WorkbookDiff, options: &MarkdownOptions) -> String;
+
+// High-level, path-based API doing parse → diff → format in one call
+// (Issue #32). The CLI (cli/src/main.rs) is a thin wrapper that only
+// turns argv into these five arguments.
+pub fn diff_file_section_from_paths(
+    display_path: &str,
+    git_status: &str,
+    base_path: Option<&str>,
+    head_path: Option<&str>,
+    options: &MarkdownOptions,
+) -> String;
 ```
 
 See [`src/markdown.rs`](../../src/markdown.rs) for the actual implementation. `format_sheet_diff`, `format_cell_hunk`, `format_merge_hunk`, `format_value`, `code_span`, and `longest_backtick_run` are private helpers. `code_span` safely embeds a caller/user-controlled string (a display path, a sheet name) as a Markdown inline code span, following CommonMark's code span rule: the delimiter uses more consecutive backticks than the longest backtick run found in the content, and a padding space is added on each side whenever the content starts or ends with a backtick. The ` ```diff ` block fence `format_sheet_diff` builds isn't fixed-length for the same reason: it measures the longest backtick run actually present in the rendered hunk body via `longest_backtick_run` and widens the fence (3 or more backticks) past it — an `Error` cell value renders wrapped in backticks, so skipping this could let a hunk's own content close the fence early and corrupt the rest of the PR comment.
@@ -61,11 +72,13 @@ A ` ```diff ` fence sidesteps this entirely: GitHub's own syntax highlighting ap
 ## Dependencies
 
 - Depends on: [`diff/model.rs`](diff/model.en.md) (`CellDiff`, `CellPos`, `DiffStatus`, `MergeDiff`, `SheetDiff`, `WorkbookDiff`), [`json.rs`](json.en.md) (`JsonCellValue` — reused as the conversion target for `CellDiff::old_value`/`new_value`/`format_value`, keeping the tagged-value representation consistent with [json.md's design decision](json.en.md) across both the diff and JSON worlds), [`model/cell.rs`](model/cell.en.md) (`CellRef::to_a1` — converts a coordinate to A1 notation)
-- Depended on by: [`lib.rs`](lib.en.md) (re-exports `FileStatus`/`MarkdownOptions`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff` as public crate API), `examples/xlsx_diff_cli.rs` (a thin wrapper that parses args, calls `parse_workbook`/`diff_workbooks`, and maps the outcome onto `FileStatus` before calling into this module — further thinning the CLI itself is [Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32)'s scope)
+- Depended on by: [`lib.rs`](lib.en.md) (re-exports `FileStatus`/`MarkdownOptions`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`/`diff_file_section_from_paths` as public crate API), the [`cli/` crate](cli.en.md)'s `cli/src/main.rs` (a thin wrapper that turns argv into `diff_file_section_from_paths`'s five arguments and writes the result to stdout — [Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32) moved all the orchestration (parsing, diffing, mapping the outcome onto `FileStatus`) into this module's `diff_file_section_from_paths`, and relocated the CLI itself from `examples/xlsx_diff_cli.rs` into its own workspace member, `cli/`)
 
 ## Error handling policy
 
-None of this module's functions return a `Result` — the `WorkbookDiff`/`FileStatus` it receives is already resolved, valid data from the caller (`parse_workbook`/`diff_workbooks`); this module never performs an operation that can fail (parsing a file, computing a diff). A parse failure is instead represented *as data*, via `FileStatus::AddedParseError`/`ModifiedParseError` — the caller supplies the error message, and this module just formats it into the Markdown string like anything else (the same "carry the outcome, including the error case, as data" convention [`CellDiff::old_value`/`new_value`](diff/model.en.md) already follows).
+None of this module's functions return a `Result`. `format_file_section`/`format_workbook_diff` assume the `WorkbookDiff`/`FileStatus` they receive is already resolved, valid data from the caller, and never perform an operation that can fail (parsing a file, computing a diff) themselves. A parse failure is instead represented *as data*, via `FileStatus::AddedParseError`/`ModifiedParseError` — the caller supplies the error message, and these functions just format it into the Markdown string like anything else (the same "carry the outcome, including the error case, as data" convention [`CellDiff::old_value`/`new_value`](diff/model.en.md) already follows).
+
+`diff_file_section_from_paths` (Issue #32) is different: it's the orchestration function that actually calls `parse_workbook`/`diff_workbooks`, both of which can fail. It still follows the same "as data" convention rather than returning a `Result`, though — when `parse_workbook` returns `Err`, it doesn't propagate that error to its own caller; it builds `FileStatus::AddedParseError`/`ModifiedParseError` right there and passes it to `format_file_section`, returning an ordinary, successfully-formatted Markdown string (with the error message embedded in the body). So this function returns a plain `String` too, never a `Result`.
 
 ## Test plan
 

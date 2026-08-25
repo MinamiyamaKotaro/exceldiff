@@ -23,9 +23,12 @@
 //! (`format_merge_hunk`), tagged `(merge)` on the header line to keep it
 //! visually distinct from a cell-value hunk.
 
-use crate::diff::{CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff};
+use crate::diff::{
+    diff_workbooks, CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff,
+};
 use crate::json::JsonCellValue;
 use crate::model::CellRef;
+use crate::parse_workbook;
 
 /// Tunables for [`format_file_section`]. `max_rows_per_sheet` was a
 /// hardcoded `MAX_ROWS_PER_SHEET` constant in the CLI; pulling it out as
@@ -354,6 +357,84 @@ fn longest_backtick_run(text: &str) -> usize {
         }
     }
     longest_run
+}
+
+/// High-level, path-based entry point for the `.xlsx` diff CLI (Issue
+/// #32): given a git status letter and the file paths a caller has
+/// already resolved (e.g. `.github/workflows/xlsx-diff.yml`, extracting
+/// the base/head git revisions via `git show` into temp files before
+/// invoking the `cli/` crate's `xlsxdiff` binary), does the
+/// parsing (`parse_workbook`), diffing (`diff_workbooks`), and Markdown
+/// rendering (`format_file_section`) in one call. This is the one place
+/// that orchestration lives now — the CLI itself only turns argv into
+/// these five arguments and writes the returned `String` to stdout, no
+/// process spawn needed to exercise it (see `tests` below).
+pub fn diff_file_section_from_paths(
+    display_path: &str,
+    git_status: &str,
+    base_path: Option<&str>,
+    head_path: Option<&str>,
+    options: &MarkdownOptions,
+) -> String {
+    match git_status {
+        "A" => {
+            let Some(head_path) = head_path else {
+                return format_file_section(display_path, &FileStatus::Added(None), options);
+            };
+            match parse_workbook(head_path) {
+                Ok(wb) => {
+                    let summary = AddedSummary {
+                        sheet_count: wb.sheets().len(),
+                        cell_count: wb.sheets().iter().map(|s| s.iter_cells().count()).sum(),
+                    };
+                    format_file_section(display_path, &FileStatus::Added(Some(summary)), options)
+                }
+                Err(e) => {
+                    let message = e.to_string();
+                    format_file_section(
+                        display_path,
+                        &FileStatus::AddedParseError(&message),
+                        options,
+                    )
+                }
+            }
+        }
+        "D" => format_file_section(display_path, &FileStatus::Deleted, options),
+        "M" => {
+            let (Some(base_path), Some(head_path)) = (base_path, head_path) else {
+                return format_file_section(
+                    display_path,
+                    &FileStatus::ModifiedMissingContent,
+                    options,
+                );
+            };
+            let base = match parse_workbook(base_path) {
+                Ok(wb) => wb,
+                Err(e) => {
+                    let message = e.to_string();
+                    return format_file_section(
+                        display_path,
+                        &FileStatus::ModifiedParseError(RevisionSide::Base, &message),
+                        options,
+                    );
+                }
+            };
+            let head = match parse_workbook(head_path) {
+                Ok(wb) => wb,
+                Err(e) => {
+                    let message = e.to_string();
+                    return format_file_section(
+                        display_path,
+                        &FileStatus::ModifiedParseError(RevisionSide::Head, &message),
+                        options,
+                    );
+                }
+            };
+            let diff = diff_workbooks(&base, &head);
+            format_file_section(display_path, &FileStatus::Modified(&diff), options)
+        }
+        other => format_file_section(display_path, &FileStatus::Unrecognized(other), options),
+    }
 }
 
 #[cfg(test)]
@@ -731,5 +812,232 @@ mod tests {
         };
         let out = format_sheet_diff(&sheet, &MarkdownOptions::default());
         assert!(out.starts_with("**Sheet ``a`b``** — 0 added, 0 modified, 0 deleted\n"));
+    }
+
+    // --- diff_file_section_from_paths (Issue #32) ---
+    //
+    // Unlike the tests above, `diff_file_section_from_paths` is a
+    // path-based orchestrator (it calls `parse_workbook`), so it can't be
+    // tested with in-memory struct literals alone. It still avoids any
+    // dependency on `tests/fixtures/` (the convention `src/lib.rs`'s own
+    // parser tests already follow): each test builds a minimal `.xlsx` as
+    // bytes with `minimal_xlsx_zip`/`worksheet_xml` below, writes it to a
+    // uniquely-named file under `std::env::temp_dir()`, and cleans up
+    // after itself.
+
+    use std::io::Write as _;
+
+    fn minimal_xlsx_zip(cell_value: &str) -> Vec<u8> {
+        const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+        const RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#;
+        const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0"?>
+<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#;
+        const STYLES_XML: &[u8] =
+            br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
+
+        let worksheet_xml = format!(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>{cell_value}</v></c></row></sheetData></worksheet>"#
+        );
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, data) in [
+                ("_rels/.rels", ROOT_RELS_XML),
+                ("xl/_rels/workbook.xml.rels", RELS_XML),
+                ("xl/workbook.xml", WORKBOOK_XML),
+                ("xl/styles.xml", STYLES_XML),
+                ("xl/worksheets/sheet1.xml", worksheet_xml.as_bytes()),
+            ] {
+                writer.start_file(name, options).unwrap();
+                writer.write_all(data).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    /// Writes `bytes` to a uniquely-named file under `std::env::temp_dir()`
+    /// and returns a guard that deletes it on drop, so a test can't leak a
+    /// temp file behind on an assertion failure/panic.
+    struct TempFile(std::path::PathBuf);
+
+    impl TempFile {
+        fn new(test_name: &str, bytes: &[u8]) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "exceldiff-markdown-test-{}-{test_name}.xlsx",
+                std::process::id()
+            ));
+            std::fs::write(&path, bytes).unwrap();
+            Self(path)
+        }
+
+        fn path_str(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_renders_a_valid_added_file() {
+        let head = TempFile::new("added_valid", &minimal_xlsx_zip("42"));
+        let md = diff_file_section_from_paths(
+            "path/a.xlsx",
+            "A",
+            None,
+            Some(head.path_str()),
+            &MarkdownOptions::default(),
+        );
+        assert!(md.starts_with("### 🆕 Added · `path/a.xlsx`\n"));
+        assert!(md.contains("1 sheet(s), 1 total cell(s)."));
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_added_without_head_path_has_no_summary() {
+        let md = diff_file_section_from_paths(
+            "path/a.xlsx",
+            "A",
+            None,
+            None,
+            &MarkdownOptions::default(),
+        );
+        assert_eq!(
+            md,
+            format_file_section(
+                "path/a.xlsx",
+                &FileStatus::Added(None),
+                &MarkdownOptions::default()
+            )
+        );
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_reports_an_added_parse_error() {
+        let head = TempFile::new("added_parse_error", b"not a zip file");
+        let md = diff_file_section_from_paths(
+            "path/a.xlsx",
+            "A",
+            None,
+            Some(head.path_str()),
+            &MarkdownOptions::default(),
+        );
+        assert!(md.contains("⚠️ Could not parse:"));
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_renders_deleted() {
+        let md = diff_file_section_from_paths(
+            "path/d.xlsx",
+            "D",
+            None,
+            None,
+            &MarkdownOptions::default(),
+        );
+        assert_eq!(
+            md,
+            format_file_section(
+                "path/d.xlsx",
+                &FileStatus::Deleted,
+                &MarkdownOptions::default()
+            )
+        );
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_renders_a_real_modified_diff() {
+        let base = TempFile::new("modified_base", &minimal_xlsx_zip("42"));
+        let head = TempFile::new("modified_head", &minimal_xlsx_zip("100"));
+        let md = diff_file_section_from_paths(
+            "path/m.xlsx",
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            &MarkdownOptions::default(),
+        );
+        assert!(md.contains("@@ A1 @@"));
+        assert!(md.contains("- 42"));
+        assert!(md.contains("+ 100"));
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_modified_missing_content() {
+        let md = diff_file_section_from_paths(
+            "path/m.xlsx",
+            "M",
+            None,
+            None,
+            &MarkdownOptions::default(),
+        );
+        assert_eq!(
+            md,
+            format_file_section(
+                "path/m.xlsx",
+                &FileStatus::ModifiedMissingContent,
+                &MarkdownOptions::default()
+            )
+        );
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_reports_a_base_parse_error() {
+        let base = TempFile::new("modified_base_error", b"not a zip file");
+        let head = TempFile::new("modified_base_error_head", &minimal_xlsx_zip("42"));
+        let md = diff_file_section_from_paths(
+            "path/m.xlsx",
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            &MarkdownOptions::default(),
+        );
+        assert!(md.contains("⚠️ Could not parse the previous version:"));
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_reports_a_head_parse_error() {
+        let base = TempFile::new("modified_head_error_base", &minimal_xlsx_zip("42"));
+        let head = TempFile::new("modified_head_error", b"not a zip file");
+        let md = diff_file_section_from_paths(
+            "path/m.xlsx",
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            &MarkdownOptions::default(),
+        );
+        assert!(md.contains("⚠️ Could not parse the new version:"));
+    }
+
+    #[test]
+    fn diff_file_section_from_paths_renders_unrecognized_status() {
+        let md = diff_file_section_from_paths(
+            "path/x.xlsx",
+            "R",
+            None,
+            None,
+            &MarkdownOptions::default(),
+        );
+        assert_eq!(
+            md,
+            format_file_section(
+                "path/x.xlsx",
+                &FileStatus::Unrecognized("R"),
+                &MarkdownOptions::default()
+            )
+        );
     }
 }

@@ -1,0 +1,22 @@
+[package]
+name = "xlsxdiff"
+version = "0.1.0"
+edition = "2021"
+description = "CLI that renders one .xlsx file's git-status diff as a GitHub-flavored Markdown section"
+repository = "https://github.com/MinamiyamaKotaro/exceldiff"
+license = "AGPL-3.0-only"
+# Not published to crates.io yet — this crate exists to back
+# `.github/workflows/xlsx-diff.yml` today. Whether/how it ships as an
+# installable binary of its own (`cargo install xlsxdiff`, a composite
+# `action.yml`) is Issue #23's decision, not this one's.
+publish = false
+
+[dependencies]
+exceldiff = { path = ".." }
+
+[dev-dependencies]
+# Only for cli/tests/cli.rs's minimal_xlsx_zip helper, which builds a
+# controlled `.xlsx` pair in-memory for the "real diff" test — see that
+# test's own comment for why this replaced picking two arbitrary files
+# under tests/fixtures/other/.
+zip = { version = "8", default-features = false, features = ["deflate"] }
