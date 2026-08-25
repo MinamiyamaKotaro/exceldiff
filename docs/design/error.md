@@ -133,11 +133,11 @@ pub enum Error {
     TooManyColumnWidthRanges { count: usize, limit: usize },
 
     // --- diff（Issue #5）: オプトインの列アライメント ---
-    /// `diff::alignment::diff_workbooks_aligned_columns` の推定コストが
+    /// `diff::col_alignment::diff_workbooks_aligned_columns` の推定コストが
     /// `ColumnAlignmentLimits` のいずれかの予算を超えた。`cost`/`limit` は
     /// 列数そのものではなく、超過した予算に応じた2種類の積のいずれか
     /// （`distinct_cols_base × distinct_cols_target`、または行数を掛けた
-    /// もの）。詳細は[diff/alignment.md](diff/alignment.md)参照。
+    /// もの）。詳細は[diff/col_alignment.md](diff/col_alignment.md)参照。
     #[error("column alignment cost too high: {cost} exceeds limit {limit}")]
     ColumnAlignmentCostTooHigh { cost: usize, limit: usize },
 

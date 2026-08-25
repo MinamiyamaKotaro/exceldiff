@@ -864,6 +864,7 @@ fn cell_diff_added_aligned(row: u32, col: u32, new: &Cell) -> CellDiff {
         col,
         status: DiffStatus::Added,
         old_col: None,
+        old_row: None,
         old_value: None,
         new_value: Some(cell_value_to_json(new.value.as_ref())),
         old_style: None,
@@ -877,6 +878,7 @@ fn cell_diff_deleted_aligned(row: u32, col: u32, old: &Cell) -> CellDiff {
         col,
         status: DiffStatus::Deleted,
         old_col: None,
+        old_row: None,
         old_value: Some(cell_value_to_json(old.value.as_ref())),
         new_value: None,
         old_style: old.style.as_deref().map(style_to_json),
@@ -899,6 +901,7 @@ fn cell_diff_modified_aligned(
         col: new_col,
         status: DiffStatus::Modified,
         old_col: (old_col != new_col).then_some(old_col),
+        old_row: None,
         old_value: Some(cell_value_to_json(old.value.as_ref())),
         new_value: Some(cell_value_to_json(new.value.as_ref())),
         old_style: style_changed

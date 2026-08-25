@@ -34,7 +34,7 @@
 - シート名の和集合を走査し、片側にのみ存在するシート（`Added`/`Deleted`）、両側に存在するシート（`Modified`——可視性変更やセル/結合差分の有無を判定）をそれぞれ処理する
 - 1シート内のセル差分を、`Sheet::iter_cells` が返す `CellRef` 昇順（行→列）のイテレータを2本同時に前進させる「マージジョイン」方式で計算する（`diff_cells`）。座標を比較し、一致すれば値・スタイルを比較して `Modified` の要否を判定、片側にしか無い座標はそのまま `Added`/`Deleted` とする
 - 1シート内の結合差分を、`Sheet::merged_regions()`（Issue #8で新設した `pub(crate)` アクセサ）が返す `HashMap<CellRef, MergedRegion>` を起点座標でルックアップ・比較することで計算する（`diff_merges`）。詳細度・計算量は下記参照
-- **含まない責務**: 差分結果の型定義そのもの（[`diff/model.rs`](model.md)）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。スタイル・結合差分も[Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)で永続化された）、列挿入を検出するアライメントベースの差分（[`diff/alignment.rs`](alignment.md)、Issue #5で実装済み）、行挿入を検出するアライメントベースの差分（Issue #4、未着手）
+- **含まない責務**: 差分結果の型定義そのもの（[`diff/model.rs`](model.md)）、SQLiteへの永続化（[`diff/storage.rs`](storage.md)。スタイル・結合差分も[Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)で永続化された）、列挿入を検出するアライメントベースの差分（[`diff/col_alignment.rs`](col_alignment.md)、Issue #5で実装済み）、行挿入を検出するアライメントベースの差分（[`diff/row_alignment.rs`](row_alignment.md)、Issue #4で実装済み）
 
 ## 主要な型・関数（案）
 
@@ -199,8 +199,8 @@ fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
 
 ## 未決事項 / オープンクエスチョン
 
-1. ~~行/列挿入アライメントモードの実装場所・API形状~~ → **列については解決**（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）: 独立したサブモジュール`diff::alignment`として分離し、`diff_workbooks_aligned_columns(base, target, limits: ColumnAlignmentLimits) -> Result<WorkbookDiff, Error>`を実装した。詳細は[alignment.md](alignment.md)参照。行アライメント（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)）は引き続き未着手。
-2. ~~`similarity_score` ヒューリスティックの頑健性~~ → **解決**（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）: 5ラウンドにわたるPoC検証の結果、「一致セル数が閾値（列長の20%、最小2）以上」への置き換えと、超低カーディナリティ列（distinct値2〜4）向けの事前カーディナリティ除外ゲート（`MIN_DISTINCT_FOR_CONTENT_MATCH`）を採用した。詳細は[alignment.md](alignment.md)の「マッチングヒューリスティック」節参照。
+1. ~~行/列挿入アライメントモードの実装場所・API形状~~ → **列・行とも解決**: 列は[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)で独立したサブモジュール`diff::col_alignment`として分離し、`diff_workbooks_aligned_columns(base, target, limits: ColumnAlignmentLimits) -> Result<WorkbookDiff, Error>`を実装した（詳細は[col_alignment.md](col_alignment.md)参照）。行は[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)で独立したサブモジュール`diff::row_alignment`として分離し、`diff_workbooks_aligned_rows(base, target, limits: RowAlignmentLimits) -> Result<WorkbookDiff, Error>`を実装した（詳細は[row_alignment.md](row_alignment.md)参照）。
+2. ~~`similarity_score` ヒューリスティックの頑健性~~ → **解決**（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）: 5ラウンドにわたるPoC検証の結果、「一致セル数が閾値（列長の20%、最小2）以上」への置き換えと、超低カーディナリティ列（distinct値2〜4）向けの事前カーディナリティ除外ゲート（`MIN_DISTINCT_FOR_CONTENT_MATCH`）を採用した。詳細は[col_alignment.md](col_alignment.md)の「マッチングヒューリスティック」節参照。
 3. ~~スタイル差分の詳細化~~ → **解決**（[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)）: `CellDiff::old_style`/`new_style` を追加し、fill色・フォント・罫線・配置・書式の新旧を出力するようにした（本ファイル「スタイル差分の疎さ」節参照）。
 4. **シート順序変更の扱い**: `diff_workbooks` はシートを名前（`BTreeSet<&str>` によるソート順）で対応付けており、`workbook.xml` の `<sheets>` 定義順が入れ替わった場合でも「シート順序が変わった」という差分は一切報告しない（同名シートの中身が同一なら無視される）。ワークブックレベルでシート順序の変更を追跡する要求が生じた場合、`WorkbookDiff` へ別途フィールドを追加するかは未決定。
 5. **`MergeDiff` の上限**: `diff_merges` 自体には `resolve::merge::MAX_MERGE_REGIONS` のような専用の上限チェックは無い——ただし結合登録自体が `resolve::merge::resolve` の時点で既にその上限（20,000件）で制限されているため、diff計算時点で追加の上限を設ける必要は無いと判断した（実測上も20,000件で1.5ms程度）。将来的に上限自体が緩和された場合は再検討が必要。

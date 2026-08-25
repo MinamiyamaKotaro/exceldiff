@@ -109,11 +109,11 @@ pub fn diff_workbooks(base: &Workbook, target: &Workbook) -> WorkbookDiff {
 /// identical visibility and zero cell/merge diffs — the "nothing to
 /// report" case documented on `SheetDiff`.
 ///
-/// `pub(crate)` (rather than private) so `diff::alignment` (Issue #5) can
+/// `pub(crate)` (rather than private) so `diff::col_alignment` (Issue #5) can
 /// reuse the `(None, Some)`/`(Some, None)` whole-sheet-added/deleted
 /// branches as-is — a sheet that exists on only one side needs the exact
 /// same treatment regardless of which cell-diffing strategy the `(Some,
-/// Some)` case uses, so `diff::alignment` calls this function directly for
+/// Some)` case uses, so `diff::col_alignment` calls this function directly for
 /// that case instead of duplicating it.
 pub(crate) fn diff_sheet(
     name: &str,
@@ -162,7 +162,7 @@ pub(crate) fn diff_sheet(
 
 /// Reports `base`/`target`'s `SheetVisibility` as an `old_visibility`/
 /// `new_visibility` pair, `(None, None)` when unchanged — shared by
-/// `diff_sheet`'s `(Some, Some)` branch and `diff::alignment`'s aligned
+/// `diff_sheet`'s `(Some, Some)` branch and `diff::col_alignment`'s aligned
 /// equivalent (Issue #5), which reports sheet-level visibility exactly the
 /// same way regardless of how cells within the sheet are matched.
 pub(crate) fn visibility_diff(
@@ -225,6 +225,7 @@ fn cell_diff_added(r: CellRef, new: &Cell) -> CellDiff {
         col: r.col,
         status: DiffStatus::Added,
         old_col: None,
+        old_row: None,
         old_value: None,
         new_value: Some(cell_value_to_json(new.value.as_ref())),
         old_style: None,
@@ -238,6 +239,7 @@ fn cell_diff_deleted(r: CellRef, old: &Cell) -> CellDiff {
         col: r.col,
         status: DiffStatus::Deleted,
         old_col: None,
+        old_row: None,
         old_value: Some(cell_value_to_json(old.value.as_ref())),
         new_value: None,
         old_style: old.style.as_deref().map(style_to_json),
@@ -255,6 +257,7 @@ fn cell_diff_modified(r: CellRef, old: &Cell, new: &Cell) -> CellDiff {
         col: r.col,
         status: DiffStatus::Modified,
         old_col: None,
+        old_row: None,
         old_value: Some(cell_value_to_json(old.value.as_ref())),
         new_value: Some(cell_value_to_json(new.value.as_ref())),
         old_style: style_changed
@@ -280,10 +283,10 @@ fn cell_diff_modified(r: CellRef, old: &Cell, new: &Cell) -> CellDiff {
 /// for a full sort of every unchanged merge would be wasted work on a
 /// sheet with many merges but few actual changes.
 ///
-/// `pub(crate)` so `diff::alignment` (Issue #5) can reuse it as-is for
+/// `pub(crate)` so `diff::col_alignment` (Issue #5) can reuse it as-is for
 /// merge diffing — column alignment only changes how *cell* diffs are
 /// matched; merged-region alignment across a column shift is explicitly
-/// out of scope for now (see `diff::alignment`'s module doc), so aligned
+/// out of scope for now (see `diff::col_alignment`'s module doc), so aligned
 /// mode reports merges exactly the same coordinate-based way this default
 /// engine does.
 pub(crate) fn diff_merges(base: &Sheet, target: &Sheet) -> Vec<MergeDiff> {
@@ -603,7 +606,7 @@ mod tests {
     fn column_insertion_cascades_into_shift_diffs_by_design() {
         // Column counterpart of row_insertion_cascades_into_shift_diffs_by_design
         // above — locks in the same documented tradeoff for the other axis.
-        // diff::alignment::diff_workbooks_aligned_columns (Issue #5) is the
+        // diff::col_alignment::diff_workbooks_aligned_columns (Issue #5) is the
         // opt-in escape hatch from this behavior; see its
         // column_insertion_does_not_cascade_when_aligned test for the
         // direct contrast on this exact shape of input.

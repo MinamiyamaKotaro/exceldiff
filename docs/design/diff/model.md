@@ -31,7 +31,7 @@ pub enum DiffStatus {
 
 /// 変更されたセル1件。`row`/`col` はデフォルトの座標一致エンジン
 /// （`diff::engine::diff_workbooks`）では両リビジョンで共通の座標。
-/// `diff::alignment::diff_workbooks_aligned_columns`（Issue #5）はこの
+/// `diff::col_alignment::diff_workbooks_aligned_columns`（Issue #5）はこの
 /// 同じ型を再利用し、`col` は target 側（`Deleted` のみ base 側）の列、
 /// `old_col` はアライメントで列がシフトしたと判定された場合のみ base 側
 /// の列を保持する。
@@ -128,11 +128,11 @@ pub struct WorkbookDiff {
 ## 依存関係
 
 - 依存先: [`json.rs`](../json.md)（`JsonCellValue`、`JsonStyle`——いずれも`pub`化して再利用。`JsonStyle`が内部で持つ`JsonFont`/`JsonColorRef`/`JsonBorders`も同様に`pub`化し、かつ構造体の全フィールドを`pub`にした——`CellDiff`/`SheetDiff`同様、外部からフィールドを直接読める全公開データ型という設計方針にJsonStyle一族を揃えるため）、[`model/cell.rs`](../model/cell.md)（`CellRef`——`CellPos`への変換元）。外部クレート`serde`。
-- 依存元: [`diff/engine.rs`](engine.md)（各型を構築して返す。`old_col`は常に`None`で構築する）、[`diff/alignment.rs`](alignment.md)（Issue #5。同じ`CellDiff`型を再利用し、`old_col`を実際に populate する）、[`diff/storage.rs`](storage.md)（`CellDiff::old_value`/`new_value`/`old_style`/`new_style`・`DiffStatus`・`SheetDiff::merges`をSQLへ変換する際に参照——[Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)でスタイル・結合差分も参照対象に加わった。`old_col`は未対応、[storage.md](storage.md)参照）、[`lib.rs`](../lib.md)（`CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff`を[`diff/mod.rs`](mod.md)経由でクレートルートへ再エクスポート）
+- 依存元: [`diff/engine.rs`](engine.md)（各型を構築して返す。`old_col`は常に`None`で構築する）、[`diff/col_alignment.rs`](col_alignment.md)（Issue #5。同じ`CellDiff`型を再利用し、`old_col`を実際に populate する）、[`diff/storage.rs`](storage.md)（`CellDiff::old_value`/`new_value`/`old_style`/`new_style`・`DiffStatus`・`SheetDiff::merges`をSQLへ変換する際に参照——[Issue #9](https://github.com/MinamiyamaKotaro/exceldiff/issues/9)でスタイル・結合差分も参照対象に加わった。`old_col`は未対応、[storage.md](storage.md)参照）、[`lib.rs`](../lib.md)（`CellDiff`/`CellPos`/`DiffStatus`/`MergeDiff`/`SheetDiff`/`WorkbookDiff`を[`diff/mod.rs`](mod.md)経由でクレートルートへ再エクスポート）
 
 `JsonCellValue`/`JsonStyle`を独自に複製せず再利用する設計は、同一のセル値・スタイルが`to_json_string`（完全スナップショット）経由でも`diff_workbooks`（差分）経由でも同じ形でシリアライズされることを型レベルで保証し、2つの独立した表現が将来ズレていくリスクを構造的に排除する（[Issue #3](https://github.com/MinamiyamaKotaro/exceldiff/issues/3)のPoCが独自の`JsonValue`型を新設していた点からの意図的な変更を、スタイルにも一貫して適用したもの）。
 
-`CellDiff`に`old_col`を追加した（Issue #5、`diff::alignment`参照）一方、`old_row`は追加していない——行は`diff::alignment`ではシフトしない（行アライメントは別issue #4、未着手）ため、追加しても常に`None`になる投機的なフィールドになってしまう。`MergeDiff`にも`old_start`/`new_start`の別対を持たせていないのは、現状どちらのエンジンも結合の起点座標移動を検出しない設計であるため（[engine.md](engine.md)/[alignment.md](alignment.md)参照）。
+`CellDiff`に`old_col`（Issue #5、`diff::col_alignment`参照）と`old_row`（Issue #4、`diff::row_alignment`参照）の両方を追加した。`old_col`は`diff::col_alignment::diff_workbooks_aligned_columns`のみ、`old_row`は`diff::row_alignment::diff_workbooks_aligned_rows`のみが実際にpopulateする——`diff::engine::diff_workbooks`は両方とも常に`None`のままであり、`diff::col_alignment`は行をシフトさせず、`diff::row_alignment`は列をシフトさせないため、互いに他方のフィールドを populate することは無い（両者を同時に使う組み合わせは未統合、[col_alignment.md 未決事項1](col_alignment.md)参照）。`MergeDiff`にも`old_start`/`new_start`の別対を持たせていないのは、現状どのエンジンも結合の起点座標移動を検出しない設計であるため（[engine.md](engine.md)/[col_alignment.md](col_alignment.md)/[row_alignment.md](row_alignment.md)参照）。
 
 ## エラー処理方針
 
@@ -144,7 +144,7 @@ pub struct WorkbookDiff {
 
 ## 未決事項 / オープンクエスチョン
 
-1. ~~行/列挿入アライメントモード導入時の型拡張~~ → **列については解決**（[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)）: `CellDiff::old_col`を追加し、`diff::alignment::diff_workbooks_aligned_columns`と`diff::engine::diff_workbooks`の両方で同じ`CellDiff`型を共有する設計にした（詳細は[alignment.md](alignment.md)）。行アライメント（[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)、未着手）が実装される際に`old_row`をどう追加するかは引き続き未決定。
+1. ~~行/列挿入アライメントモード導入時の型拡張~~ → **列・行とも解決**: 列は[Issue #5](https://github.com/MinamiyamaKotaro/exceldiff/issues/5)で`CellDiff::old_col`を追加し（詳細は[col_alignment.md](col_alignment.md)）、行は[Issue #4](https://github.com/MinamiyamaKotaro/exceldiff/issues/4)で`CellDiff::old_row`を追加した（詳細は[row_alignment.md](row_alignment.md)）。いずれも`diff::engine::diff_workbooks`と同じ`CellDiff`型を共有する設計。
 
    **バージョニングについて**（Issue #5のPRレビュー(Copilot)で指摘）: `CellDiff`は全フィールドが`pub`な非`#[non_exhaustive]`構造体であるため、`old_col`の追加は既存の`CellDiff { .. }`構造体リテラル構築コードを壊す破壊的変更である。本クレートは現在`0.13.0`だが、同じパターン（`CellDiff`へのフィールド追加）を行った[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)の`old_style`/`new_style`追加時もバージョンは上げられておらず、本リポジトリにCHANGELOGも存在しない。本PRもその既存の慣例に従い、`Cargo.toml`のバージョンはPR単位では上げない——バージョン番号の管理はpublish（crates.io公開）のタイミングでメンテナが別途判断する方針であることを、ここに明示的に記録しておく。
 2. ~~スタイル・結合セルの差分~~ → **部分的に解決**（[Issue #8](https://github.com/MinamiyamaKotaro/exceldiff/issues/8)）: `CellDiff::old_style`/`new_style`（fill色・フォント・罫線・配置・書式）と`SheetDiff::merges`を追加した。数式・列幅・画像の差分は依然未着手。

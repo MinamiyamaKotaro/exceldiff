@@ -23,7 +23,7 @@ pub enum DiffStatus {
 /// revisions from the default coordinate-based engine
 /// (`diff::engine::diff_workbooks`, which never reports a cell moving from
 /// one coordinate to another — see that function's doc comment for why).
-/// `diff::alignment::diff_workbooks_aligned_columns` (Issue #5) reuses this
+/// `diff::col_alignment::diff_workbooks_aligned_columns` (Issue #5) reuses this
 /// same type rather than introducing a parallel one: `col` there is the
 /// cell's column in `target` (or in `base`, for a `Deleted` cell with no
 /// `target` side — the same convention `row` already uses, since rows
@@ -49,6 +49,16 @@ pub struct CellDiff {
     /// move.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_col: Option<u32>,
+    /// The cell's row before row alignment, present only when it differs
+    /// from `row` — the row-alignment counterpart of `old_col` (Issue #4),
+    /// with the identical sparseness convention: only
+    /// `diff_workbooks_aligned_rows` ever populates this, and only for a
+    /// `Modified` cell whose row was recognized as shifted. Always `None`
+    /// from `diff::engine::diff_workbooks` and from
+    /// `diff_workbooks_aligned_columns` (Issue #5), neither of which ever
+    /// shifts rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_row: Option<u32>,
     /// Present for `Modified`/`Deleted`, absent for `Added`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_value: Option<JsonCellValue>,
