@@ -135,7 +135,7 @@ use crate::json::{cell_value_to_json, style_to_json};
 use crate::model::{Cell, CellValue, Sheet, Workbook};
 use std::cmp::Ordering;
 use std::collections::hash_map::RandomState;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hash, Hasher};
 
 /// Similarity threshold (fraction of populated columns that must agree)
@@ -365,39 +365,59 @@ fn distinct_row_count(sheet: &Sheet) -> usize {
     count
 }
 
-/// Buckets `sheet.iter_cells()` by row in one O(cells) pass, then builds
-/// each row's `RowContent` (also O(cells) total, not per-row). Each
-/// bucket comes out already column-sorted for free, since `iter_cells`
-/// yields row-then-column order.
+/// Groups `sheet.iter_cells()` into one `RowContent` per row, in a single
+/// true-O(cells) linear pass — no `BTreeMap` bucketing step. Relies on the
+/// same row-major-order invariant `distinct_row_count` does
+/// (`Sheet::iter_cells()` already yields `CellRef`s row-ascending, `Sheet`'s
+/// own `BTreeMap` invariant), so distinct rows are always contiguous runs:
+/// a row transition just closes out the previous row's accumulator and
+/// starts a fresh one, computing each row's hash incrementally as its
+/// cells are visited rather than in a second pass over a collected `Vec`
+/// (a Copilot review on PR #21 caught the earlier `BTreeMap`-bucketing
+/// version paying an avoidable O(cells·log distinct_rows), the same class
+/// of issue as `distinct_row_count`'s).
 fn row_contents<'a>(sheet: &'a Sheet, build_hasher: &RandomState) -> Vec<RowContent<'a>> {
-    let mut by_row: BTreeMap<u32, Vec<(u32, &'a Cell)>> = BTreeMap::new();
+    let mut result = Vec::new();
+    let mut current_row: Option<u32> = None;
+    let mut cells: Vec<(u32, &'a Cell)> = Vec::new();
+    let mut hasher = build_hasher.build_hasher();
+    let mut populated_count = 0usize;
+
     for (r, cell) in sheet.iter_cells() {
-        by_row.entry(r.row).or_default().push((r.col, cell));
+        if current_row != Some(r.row) {
+            if let Some(row) = current_row {
+                result.push(RowContent {
+                    row,
+                    cells: std::mem::take(&mut cells),
+                    signature: hasher.finish(),
+                    populated_count,
+                });
+            }
+            current_row = Some(r.row);
+            hasher = build_hasher.build_hasher();
+            populated_count = 0;
+        }
+
+        cells.push((r.col, cell));
+        r.col.hash(&mut hasher);
+        match &cell.value {
+            Some(v) => {
+                populated_count += 1;
+                hash_cell_value(v, &mut hasher);
+            }
+            None => 0xFFu8.hash(&mut hasher),
+        }
+    }
+    if let Some(row) = current_row {
+        result.push(RowContent {
+            row,
+            cells,
+            signature: hasher.finish(),
+            populated_count,
+        });
     }
 
-    by_row
-        .into_iter()
-        .map(|(row, cells)| {
-            let mut hasher = build_hasher.build_hasher();
-            let mut populated_count = 0usize;
-            for &(col, cell) in &cells {
-                col.hash(&mut hasher);
-                match &cell.value {
-                    Some(v) => {
-                        populated_count += 1;
-                        hash_cell_value(v, &mut hasher);
-                    }
-                    None => 0xFFu8.hash(&mut hasher),
-                }
-            }
-            RowContent {
-                row,
-                cells,
-                signature: hasher.finish(),
-                populated_count,
-            }
-        })
-        .collect()
+    result
 }
 
 /// Fraction of `base`'s and `target`'s combined populated columns that
