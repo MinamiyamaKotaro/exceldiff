@@ -7,6 +7,16 @@
 # build`/`cargo package` run against the `exceldiff` package alone.
 [workspace]
 members = ["cli"]
+# Not required for a warning-free build — this workspace's root manifest
+# also defines a real `[package]` (`exceldiff`, edition 2021), and Cargo
+# infers the workspace resolver from a root package's edition when one
+# exists (verified: a from-scratch `cargo clean && rm Cargo.lock &&
+# cargo build --workspace` emits no resolver warning either way). Only a
+# *virtual* workspace manifest (`[workspace]` with no `[package]`) needs
+# this set explicitly to avoid defaulting to resolver "1". Set anyway so
+# the resolver version is explicit rather than relying on a reader
+# knowing that inference rule.
+resolver = "2"
 
 [package]
 name = "exceldiff"

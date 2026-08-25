@@ -9,7 +9,10 @@
 //! don't re-check every `FileStatus` rendering in detail. What's specific
 //! to this crate and untested elsewhere: the `argv` slice pattern (too
 //! few args), and the empty-string-means-absent convention the workflow
-//! relies on (`git show` writing to `""` when a revision has no file).
+//! relies on (`.github/workflows/xlsx-diff.yml` initializes `base_file`/
+//! `head_file` to `""` and never runs `git show` for whichever side
+//! doesn't apply to the file's git status, so `""` reaches this binary
+//! as a plain placeholder argument, not a `git show` fallback).
 
 use std::path::PathBuf;
 use std::process::{Command, Output};

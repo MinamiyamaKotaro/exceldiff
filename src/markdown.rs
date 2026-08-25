@@ -361,8 +361,9 @@ fn longest_backtick_run(text: &str) -> usize {
 
 /// High-level, path-based entry point for the `.xlsx` diff CLI (Issue
 /// #32): given a git status letter and the file paths a caller has
-/// already resolved (e.g. `examples/xlsx_diff_cli.rs`, extracting the
-/// base/head git revisions via `git show` into temp files), does the
+/// already resolved (e.g. `.github/workflows/xlsx-diff.yml`, extracting
+/// the base/head git revisions via `git show` into temp files before
+/// invoking the `cli/` crate's `xlsxdiff` binary), does the
 /// parsing (`parse_workbook`), diffing (`diff_workbooks`), and Markdown
 /// rendering (`format_file_section`) in one call. This is the one place
 /// that orchestration lives now — the CLI itself only turns argv into

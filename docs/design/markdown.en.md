@@ -76,7 +76,9 @@ A ` ```diff ` fence sidesteps this entirely: GitHub's own syntax highlighting ap
 
 ## Error handling policy
 
-None of this module's functions return a `Result` — the `WorkbookDiff`/`FileStatus` it receives is already resolved, valid data from the caller (`parse_workbook`/`diff_workbooks`); this module never performs an operation that can fail (parsing a file, computing a diff). A parse failure is instead represented *as data*, via `FileStatus::AddedParseError`/`ModifiedParseError` — the caller supplies the error message, and this module just formats it into the Markdown string like anything else (the same "carry the outcome, including the error case, as data" convention [`CellDiff::old_value`/`new_value`](diff/model.en.md) already follows).
+None of this module's functions return a `Result`. `format_file_section`/`format_workbook_diff` assume the `WorkbookDiff`/`FileStatus` they receive is already resolved, valid data from the caller, and never perform an operation that can fail (parsing a file, computing a diff) themselves. A parse failure is instead represented *as data*, via `FileStatus::AddedParseError`/`ModifiedParseError` — the caller supplies the error message, and these functions just format it into the Markdown string like anything else (the same "carry the outcome, including the error case, as data" convention [`CellDiff::old_value`/`new_value`](diff/model.en.md) already follows).
+
+`diff_file_section_from_paths` (Issue #32) is different: it's the orchestration function that actually calls `parse_workbook`/`diff_workbooks`, both of which can fail. It still follows the same "as data" convention rather than returning a `Result`, though — when `parse_workbook` returns `Err`, it doesn't propagate that error to its own caller; it builds `FileStatus::AddedParseError`/`ModifiedParseError` right there and passes it to `format_file_section`, returning an ordinary, successfully-formatted Markdown string (with the error message embedded in the body). So this function returns a plain `String` too, never a `Result`.
 
 ## Test plan
 

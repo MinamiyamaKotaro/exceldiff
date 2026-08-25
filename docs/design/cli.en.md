@@ -9,7 +9,7 @@ It originally lived as `examples/xlsx_diff_cli.rs`. Even after the Markdown-form
 ## Responsibilities / Scope
 
 - Parses argv (`<display_path> <A|M|D> [base_file] [head_file]`), maps it onto [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s arguments, calls it, and writes the returned Markdown string to stdout (`main.rs`)
-- Treats the workflow's own convention for "this revision has no file" — an empty-string argument (the workflow redirects `git show`'s output to an empty file when the revision doesn't have the path) — as `None` when calling `diff_file_section_from_paths` (`.filter(|s| !s.is_empty())`)
+- Treats the workflow's own convention for "this revision has no file" — an empty-string argument — as `None` when calling `diff_file_section_from_paths` (`.filter(|s| !s.is_empty())`). `.github/workflows/xlsx-diff.yml` initializes `base_file`/`head_file` to the empty string and simply never runs `git show` for whichever side doesn't apply (e.g. `base_file` for status `A`, `head_file` for status `D`), passing that empty string straight through to `xlsxdiff` — this isn't a fallback for a failed `git show`
 - Prints a usage message to stderr and exits non-zero when fewer than 3 arguments are given (program name + `display_path` + `status`)
 - **Explicitly out of scope**: parsing `.xlsx`, computing the diff, or Markdown formatting itself (all of it [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s responsibility), the GitHub Actions workflow itself (`.github/workflows/xlsx-diff.yml`), and distributing this as an installable binary or composite action (a separate, still-open question — see "Relationship to the `exceldiff` crate" below)
 

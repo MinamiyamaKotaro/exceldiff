@@ -78,7 +78,9 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 
 ## エラー処理方針
 
-本モジュールの関数はすべて `Result` を返さない — 入力として受け取る `WorkbookDiff`/`FileStatus` は既に呼び出し側（`parse_workbook`/`diff_workbooks`）で解決済みの正常なデータであり、失敗しうる操作（ファイルパース・差分計算）は一切行わない。パース失敗そのものは `FileStatus::AddedParseError`/`ModifiedParseError` という**データとして**表現し、呼び出し側がその情報を渡せば、本モジュールはエラーメッセージをそのままMarkdown文字列へ整形するだけである（[`CellDiff::old_value`/`new_value`](diff/model.md)が「結果を列挙子で保持する」慣習と同じ設計）。
+本モジュールの関数はすべて `Result` を返さない。`format_file_section`/`format_workbook_diff`は、入力として受け取る `WorkbookDiff`/`FileStatus` が既に呼び出し側で解決済みの正常なデータであることを前提に、失敗しうる操作（ファイルパース・差分計算）を一切行わない——パース失敗そのものは `FileStatus::AddedParseError`/`ModifiedParseError` という**データとして**表現し、呼び出し側がその情報を渡せば、これらの関数はエラーメッセージをそのままMarkdown文字列へ整形するだけである（[`CellDiff::old_value`/`new_value`](diff/model.md)が「結果を列挙子で保持する」慣習と同じ設計）。
+
+一方`diff_file_section_from_paths`(Issue #32)は、`parse_workbook`/`diff_workbooks`という失敗しうる操作を自ら呼び出すオーケストレーション関数である。ただしその失敗も`Result`ではなく同じ「データとして表現する」慣習に従う——`parse_workbook`が`Err`を返した場合、それを呼び出し元へ伝播させるのではなく、その場で`FileStatus::AddedParseError`/`ModifiedParseError`を構築して`format_file_section`へ渡し、正常に整形されたMarkdown文字列(エラーメッセージを本文に含む)を返す。そのため本関数も`Result`を返さず、常に`String`を返す。
 
 ## テスト方針
 

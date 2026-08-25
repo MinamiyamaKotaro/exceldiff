@@ -9,7 +9,7 @@
 ## 責務・スコープ
 
 - argv(`<display_path> <A|M|D> [base_file] [head_file]`)をパースし、[`exceldiff::diff_file_section_from_paths`](markdown.md)の引数へ詰め替えて呼び出し、返ってきたMarkdown文字列をstdoutへ書き出す(`main.rs`)
-- ワークフロー側の慣習である「該当リビジョンにファイルが存在しない」ことを表す空文字列引数(`git show`が失敗した場合に空ファイルへリダイレクトする)を、`None`として`diff_file_section_from_paths`へ渡す(`.filter(|s| !s.is_empty())`)
+- ワークフロー側の慣習である「該当リビジョンにファイルが存在しない」ことを表す空文字列引数を、`None`として`diff_file_section_from_paths`へ渡す(`.filter(|s| !s.is_empty())`)——`.github/workflows/xlsx-diff.yml`は`base_file`/`head_file`をまず空文字列で初期化し、該当しない側(例: `A`の`base_file`、`D`の`head_file`)は`git show`自体を一切実行せず空文字列のまま`xlsxdiff`へ渡す。`git show`が失敗した場合の空ファイルへのフォールバックではない
 - 引数が3個未満(プログラム名 + `display_path` + `status`)の場合、使用方法をstderrへ出力し非ゼロ終了する
 - **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)の責務)、GitHub Actionsワークフロー自体の実装(`.github/workflows/xlsx-diff.yml`)、`cargo install`可能な形での配布やcomposite action化(別issueの検討事項。下記「`exceldiff`本体との関係」参照)
 
