@@ -111,16 +111,16 @@ pub fn diff_workbooks_best_effort(
                     best_sheet = Some(row_sheet);
                 }
             }
-            Err(Error::RowAlignmentCostTooHigh { .. }) => {} // fall back to what we have
-            Err(other) => {
-                // align_sheet_rows's own doc comment promises this is the
-                // only error it returns — surface a violation loudly in
-                // debug/test builds rather than silently falling back to
-                // coordinate-based diffing the same way a real cost-cap
-                // does, which could otherwise mask a real bug.
+            Err(err) => {
+                // align_sheet_rows's own doc comment promises
+                // RowAlignmentCostTooHigh is the only error it returns —
+                // fall back to what we have either way, but surface a
+                // violation of that promise loudly in debug/test builds
+                // rather than silently treating it the same as a real
+                // cost cap, which could otherwise mask a real bug.
                 debug_assert!(
-                    false,
-                    "align_sheet_rows returned an unexpected error: {other:?}"
+                    matches!(err, Error::RowAlignmentCostTooHigh { .. }),
+                    "align_sheet_rows returned an unexpected error: {err:?}"
                 );
             }
         }
@@ -133,11 +133,10 @@ pub fn diff_workbooks_best_effort(
                         best_sheet = Some(col_sheet);
                     }
                 }
-                Err(Error::ColumnAlignmentCostTooHigh { .. }) => {}
-                Err(other) => {
+                Err(err) => {
                     debug_assert!(
-                        false,
-                        "align_sheet_columns returned an unexpected error: {other:?}"
+                        matches!(err, Error::ColumnAlignmentCostTooHigh { .. }),
+                        "align_sheet_columns returned an unexpected error: {err:?}"
                     );
                 }
             }
