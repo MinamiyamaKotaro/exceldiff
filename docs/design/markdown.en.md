@@ -11,7 +11,8 @@ This is the Markdown-formatting logic that originally lived inline in `examples/
 - Takes a [`diff::WorkbookDiff`](diff/model.en.md) (plus the enclosing file's git status A/M/D and its display path) and returns a GitHub Flavored Markdown string (`format_file_section`, see below)
 - Renders the list of changed cells as ` ```diff ` fence content — one `@@ <A1 coord> @@` hunk plus `-`/`+` lines per cell (`format_cell_hunk`). See "Design decision: why a diff fence instead of a Markdown table" below for why this shape was chosen over a table
 - Renders merged-region changes ([`diff::MergeDiff`](diff/model.en.md), Issue #8) into the same ` ```diff ` fence as the cell hunks, as `@@ <start>:<end> (merge) @@` hunks (`format_merge_hunk`). The summary line (`{added} added, {modified} modified, {deleted} deleted`) counts every merge change — added, removed, or resized — toward "modified": a merge change isn't really the addition or removal of a specific cell, it's a change in how existing cells are grouped, which reads as a modification either way you look at it
-- Lets the caller cap how many cell hunks render per sheet via `MarkdownOptions::max_rows_per_sheet` (feeds into [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)'s action input design). Merge hunks are never capped — see the doc comment in the code for why
+- Lets the caller cap how many cell hunks render per sheet via `MarkdownOptions::max_rows_per_sheet` (feeds [`action.yml`'s `max-rows-per-sheet` input](action.en.md)). Merge hunks are never capped — see the doc comment in the code for why
+- Lets the caller pick the diffing strategy for a modified file via `MarkdownOptions::diff_mode` ([`DiffMode`](#key-types--functions-draft)): `Auto` (default, `diff_workbooks_best_effort`) or `Coordinate` (`diff_workbooks`, plain coordinate comparison with no alignment detection) — feeds [`action.yml`'s `diff-mode` input](action.en.md), [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)
 - Tags the file heading (`` ### <badge> · `path` ``) with an emoji status badge (🆕/✏️/🗑️/❓) so added/modified/deleted is obvious at a glance (`file_status_badge`) — the path alone doesn't say what happened to a file once a PR touches several `.xlsx` files at once
 - **Explicitly out of scope**: parsing `.xlsx` or computing the diff itself ([`parse_workbook`](lib.en.md), [`diff::diff_workbooks_best_effort`](diff/best_effort.en.md), Issue #25 — the caller's responsibility), the GitHub Actions workflow itself (`.github/workflows/xlsx-diff.yml`), and rendering a grid-paper `.xlsx` as an actual Excel-looking HTML grid (a separate, still-open design question: GitHub sanitizes a `style=` attribute out of HTML pasted into a PR comment, so colored borders/fills can never be embedded directly in the comment body — that visual grid view needs a different output path entirely, e.g. a screenshot image plus a link to a page hosted on GitHub Pages, which is out of this module's scope)
 
@@ -22,9 +23,17 @@ use crate::diff::{CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookD
 use crate::json::JsonCellValue;
 use crate::model::CellRef;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffMode {
+    #[default]
+    Auto,       // diff_workbooks_best_effort (auto-picks coordinate/row/column alignment)
+    Coordinate, // diff_workbooks (plain coordinate comparison, no alignment detection)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MarkdownOptions {
     pub max_rows_per_sheet: usize, // default 30
+    pub diff_mode: DiffMode,       // default Auto
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,8 +80,8 @@ A ` ```diff ` fence sidesteps this entirely: GitHub's own syntax highlighting ap
 
 ## Dependencies
 
-- Depends on: [`diff/model.rs`](diff/model.en.md) (`CellDiff`, `CellPos`, `DiffStatus`, `MergeDiff`, `SheetDiff`, `WorkbookDiff`), [`json.rs`](json.en.md) (`JsonCellValue` — reused as the conversion target for `CellDiff::old_value`/`new_value`/`format_value`, keeping the tagged-value representation consistent with [json.md's design decision](json.en.md) across both the diff and JSON worlds), [`model/cell.rs`](model/cell.en.md) (`CellRef::to_a1` — converts a coordinate to A1 notation)
-- Depended on by: [`lib.rs`](lib.en.md) (re-exports `FileStatus`/`MarkdownOptions`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`/`diff_file_section_from_paths` as public crate API), the [`cli/` crate](cli.en.md)'s `cli/src/main.rs` (a thin wrapper that turns argv into `diff_file_section_from_paths`'s five arguments and writes the result to stdout — [Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32) moved all the orchestration (parsing, diffing, mapping the outcome onto `FileStatus`) into this module's `diff_file_section_from_paths`, and relocated the CLI itself from `examples/xlsx_diff_cli.rs` into its own workspace member, `cli/`)
+- Depends on: [`diff/model.rs`](diff/model.en.md) (`CellDiff`, `CellPos`, `DiffStatus`, `MergeDiff`, `SheetDiff`, `WorkbookDiff`), [`json.rs`](json.en.md) (`JsonCellValue` — reused as the conversion target for `CellDiff::old_value`/`new_value`/`format_value`, keeping the tagged-value representation consistent with [json.md's design decision](json.en.md) across both the diff and JSON worlds), [`model/cell.rs`](model/cell.en.md) (`CellRef::to_a1` — converts a coordinate to A1 notation), [`diff/engine.rs`](diff/mod.en.md) (`diff_workbooks` — `DiffMode::Coordinate`) and [`diff/best_effort.rs`](diff/best_effort.en.md) (`diff_workbooks_best_effort` — `DiffMode::Auto`), between which `diff_file_section_from_paths` picks based on `options.diff_mode`
+- Depended on by: [`lib.rs`](lib.en.md) (re-exports `FileStatus`/`MarkdownOptions`/`DiffMode`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`/`diff_file_section_from_paths` as public crate API), the [`cli/` crate](cli.en.md)'s `cli/src/main.rs` (a thin wrapper that turns argv into `diff_file_section_from_paths`'s five arguments and writes the result to stdout — [Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32) moved all the orchestration (parsing, diffing, mapping the outcome onto `FileStatus`) into this module's `diff_file_section_from_paths`, and relocated the CLI itself from `examples/xlsx_diff_cli.rs` into its own workspace member, `cli/`), [`action.yml`](action.en.md) (bridges its `max-rows-per-sheet`/`diff-mode` inputs to `MarkdownOptions` via `cli/`'s flags, [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))
 
 ## Error handling policy
 
@@ -86,6 +95,7 @@ None of this module's functions return a `Result`. `format_file_section`/`format
 - A `WorkbookDiff` with one value-changed cell formats to the correct ` ```diff ` fence (`@@ A1 @@` / `- 1` / `+ 2`)
 - A `WorkbookDiff` with zero sheets formats to `_No differences detected._`
 - `max_rows_per_sheet` correctly caps the number of cell hunks and reports the remainder as `_...and N more change(s) in this sheet._`
+- `DiffMode::Auto` and `DiffMode::Coordinate` actually dispatch to different diff functions: build an `.xlsx` pair via `xlsx_zip_column_a` with a single blank row inserted at the top (no value changes at all), and confirm `Auto` explains the whole shift away via row alignment (`_No differences detected._`) while `Coordinate` shows the coordinate-based cascade (every shifted cell appears as its own change) — the same scenario [`diff_workbooks_best_effort`'s own test](diff/best_effort.en.md) verifies with a 20-row grid, here at a 2-row scale
 - All three merge-change patterns (added/deleted/resized) format to the correct `@@ ... (merge) @@` hunk shape (`+ merged` / `- merged` / `- merged A:B` followed by `+ merged A:C`), and merge changes correctly count toward the summary line's "modified" total
 - A sheet visibility change renders a `` _Visibility: `old` → `new`_ `` line
 - Every `FileStatus` variant (`Added`, `AddedParseError`, `Deleted`, `Modified`, `ModifiedMissingContent`, `ModifiedParseError`, `Unrecognized`) formats the expected heading badge and body text; `ModifiedParseError` is checked with both `RevisionSide::Base` and `Head`, confirming the error message names the correct failing side ("the previous version" / "the new version")

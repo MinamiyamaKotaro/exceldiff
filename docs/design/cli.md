@@ -8,19 +8,21 @@
 
 ## 責務・スコープ
 
-- argv(`<display_path> <A|M|D> [base_file] [head_file]`)をパースし、[`exceldiff::diff_file_section_from_paths`](markdown.md)の引数へ詰め替えて呼び出し、返ってきたMarkdown文字列をstdoutへ書き出す(`main.rs`)
+- argv(`[--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] <display_path> <A|M|D> [base_file] [head_file]`)をパースし、[`exceldiff::diff_file_section_from_paths`](markdown.md)の引数(`display_path`/`status`/`base_path`/`head_path`/`MarkdownOptions`)へ詰め替えて呼び出し、返ってきたMarkdown文字列をstdoutへ書き出す(`main.rs`)
+- 先頭の`--max-rows-per-sheet <N>`/`--diff-mode <auto|coordinate>`(いずれも省略可・順不同ではなく先頭からの`--flag value`ペアとして認識)を`MarkdownOptions::max_rows_per_sheet`/`diff_mode`へ反映する([`action.yml`の同名inputs](action.md)を橋渡しするため、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))。値が不正(`--max-rows-per-sheet`が数値でない、`--diff-mode`が`auto`/`coordinate`のいずれでもない、フラグに値が続かない)な場合は使用方法をstderrへ出力し非ゼロ終了する——`clap`等の引数解析クレートは追加せず(下記「`exceldiff`本体との関係」参照)、`parse_options`という手書きのループで完結させている
 - ワークフロー側の慣習である「該当リビジョンにファイルが存在しない」ことを表す空文字列引数を、`None`として`diff_file_section_from_paths`へ渡す(`.filter(|s| !s.is_empty())`)——`.github/workflows/xlsx-diff.yml`は`base_file`/`head_file`をまず空文字列で初期化し、該当しない側(例: `A`の`base_file`、`D`の`head_file`)は`git show`自体を一切実行せず空文字列のまま`xlsxdiff`へ渡す。`git show`が失敗した場合の空ファイルへのフォールバックではない
-- 引数が3個未満(プログラム名 + `display_path` + `status`)の場合、使用方法をstderrへ出力し非ゼロ終了する
-- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)の責務)、GitHub Actionsワークフロー自体の実装(`.github/workflows/xlsx-diff.yml`)、`cargo install`可能な形での配布やcomposite action化(別issueの検討事項。下記「`exceldiff`本体との関係」参照)
+- フラグ解析後の位置引数が3個未満(`display_path` + `status`)の場合、使用方法をstderrへ出力し非ゼロ終了する
+- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)の責務)、GitHub Actionsワークフロー自体の実装(`.github/workflows/xlsx-diff.yml`・[`action.yml`](action.md))、`cargo install`可能な形での配布(下記「`exceldiff`本体との関係」参照)
 
 ## 主要な型・関数
 
 ```rust
 // cli/src/main.rs
+fn parse_options(args: &[String]) -> Option<(MarkdownOptions, &[String])>;
 fn main() -> std::process::ExitCode;
 ```
 
-`main`一関数のみの薄いバイナリクレート。実装本体は[`cli/src/main.rs`](../../cli/src/main.rs)を参照。
+`parse_options`が`--max-rows-per-sheet`/`--diff-mode`を消費して`MarkdownOptions`と残りの位置引数を返し(不正な値は`None`)、`main`がそれを使って`diff_file_section_from_paths`を呼ぶ、という2関数構成。実装本体は[`cli/src/main.rs`](../../cli/src/main.rs)を参照。
 
 ## `exceldiff`本体との関係: なぜ`examples/`でも`src/bin/`でもなく独立クレートか
 
@@ -49,6 +51,7 @@ CLIをどこに置くかについては3案が検討された(Issue #32のPRレ�
   - 引数が3個未満の場合に使用方法がstderrへ出力され非ゼロ終了すること
   - 空文字列の`base_file`/`head_file`引数が「省略」と同一に扱われること(ワークフローが該当しない側の引数として空文字列をそのまま渡す慣習の検証。上記「責務・スコープ」参照)
   - 各git status(`A`/`D`/`M`/未知の文字)を渡した場合に、対応する見出しバッジが出力へ現れること(詳細な整形内容そのものは[`markdown.rs`側で検証済み](markdown.md)なので、ここでは「正しい引数が正しく渡っていること」の確認に留める)
+  - `--max-rows-per-sheet`/`--diff-mode`が実際に`MarkdownOptions`へ届き出力を変えること、および不正な値(非数値・未知のモード名)が使用方法エラーになること(フラグの意味そのもの——`max_rows_per_sheet`の上限計算・`DiffMode`ごとの差分計算アルゴリズムの違い——は[`markdown.rs`側で単体テスト済み](markdown.md)なので、ここでは argv からの橋渡しが正しいことのみ確認する)
 - 実ファイルが必要なテスト(単純に「実在する`.xlsx`を渡すと正常/エラーとして処理される」ことの確認)には`tests/fixtures/`配下の既存フィクスチャ(`normal/basic_types.xlsx`・`error/corrupted_xml.xlsx`)を、本クレートの`CARGO_MANIFEST_DIR`からの相対パスで参照する — クレートレベルの統合テストが`tests/fixtures/`を直接使う既存の慣習([`tests/error.rs`](../../tests/error.rs)等)に合わせたもの
 - 一方、「値が変更された1セルが`@@`ハンクとして出力へ現れること」を確認するテストは、`tests/fixtures/`配下の無関係な2ファイルではなく、`cli/tests/cli.rs`内で最小限の`.xlsx`ペア(A1セルの値だけが違う)をin-memoryで組み立てる(`zip`クレートをdev依存として使用)。2つの無関係な実ファイルのどのセルがどう違うかはテストが制御・保証できる性質のものではなく、実際に依存関係の解決結果が変わった際にCI上でのみ差分内容が変わって失敗する事例が起きたため([`tests/fixtures/diff.rs`の`cell_modified()`](../../tests/fixtures/diff.rs)や[`src/markdown.rs`の単体テスト](markdown.md)が同じ理由でin-memory構築を採用しているのと同じ判断)
 

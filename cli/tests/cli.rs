@@ -88,6 +88,62 @@ fn minimal_xlsx_zip(cell_value: &str) -> Vec<u8> {
     buf
 }
 
+/// Builds a worksheet with one row per entry of `values`, each holding a
+/// single numeric cell in column A — `None` renders as a row with no `<c>`
+/// element at all (a blank row). Used by the `--diff-mode` test below to
+/// build a "blank row inserted" pair, matching
+/// `src/markdown.rs`'s own `diff_mode_*` unit tests (same scenario, this
+/// time verified through the real `xlsxdiff` process to confirm the flag
+/// is actually wired through, not just that the underlying library
+/// behavior exists).
+fn xlsx_column_a(values: &[Option<i64>]) -> Vec<u8> {
+    let mut rows = String::new();
+    for (i, value) in values.iter().enumerate() {
+        let row = i + 1;
+        match value {
+            Some(v) => rows.push_str(&format!(
+                r#"<row r="{row}"><c r="A{row}"><v>{v}</v></c></row>"#
+            )),
+            None => rows.push_str(&format!(r#"<row r="{row}"/>"#)),
+        }
+    }
+    let worksheet_xml = format!(r#"<worksheet><sheetData>{rows}</sheetData></worksheet>"#);
+
+    const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+    const RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#;
+    const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0"?>
+<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#;
+    const STYLES_XML: &[u8] = br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, data) in [
+            ("_rels/.rels", ROOT_RELS_XML),
+            ("xl/_rels/workbook.xml.rels", RELS_XML),
+            ("xl/workbook.xml", WORKBOOK_XML),
+            ("xl/styles.xml", STYLES_XML),
+            ("xl/worksheets/sheet1.xml", worksheet_xml.as_bytes()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    buf
+}
+
 /// Writes `bytes` to a uniquely-named file under `std::env::temp_dir()`
 /// and deletes it on drop, so a failing assertion can't leak it behind.
 struct TempFile(PathBuf);
@@ -192,4 +248,92 @@ fn unrecognized_status_is_reported() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.starts_with("### ❓ Unrecognized · `path/x.xlsx`\n"));
     assert!(stdout.contains("_Unrecognized git status `R`, skipped._"));
+}
+
+// --- `--max-rows-per-sheet` / `--diff-mode` (Issue #24) ---
+
+#[test]
+fn max_rows_per_sheet_flag_caps_cell_hunks() {
+    let base = TempFile::new("max_rows_base", &minimal_xlsx_zip("0"));
+    // 3 distinct value changes on the same fixture shape wouldn't be
+    // possible with the single-cell `minimal_xlsx_zip` helper, so this
+    // reuses the same one-cell pair `modified_file_with_a_real_diff_prints_a_hunk`
+    // already relies on and just caps a 1-hunk diff down to 0 — enough to
+    // prove the flag reaches `MarkdownOptions`, without needing a
+    // multi-cell fixture builder just for this.
+    let head = TempFile::new("max_rows_head", &minimal_xlsx_zip("1"));
+    let out = run(&[
+        "--max-rows-per-sheet",
+        "0",
+        "path/m.xlsx",
+        "M",
+        base.path_str(),
+        head.path_str(),
+    ]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("@@ A1 @@"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("_...and 1 more change(s) in this sheet._"),
+        "unexpected stdout: {stdout}"
+    );
+}
+
+#[test]
+fn max_rows_per_sheet_flag_rejects_a_non_numeric_value() {
+    let out = run(&["--max-rows-per-sheet", "not-a-number", "path/a.xlsx", "A"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: xlsxdiff "));
+}
+
+#[test]
+fn diff_mode_flag_rejects_an_unknown_value() {
+    let out = run(&["--diff-mode", "nonsense", "path/a.xlsx", "A"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: xlsxdiff "));
+}
+
+#[test]
+fn a_recognized_flag_with_no_value_following_it_is_a_usage_error() {
+    // "--diff-mode" is the only argument — nothing left for
+    // parse_options to consume as its value.
+    let out = run(&["--diff-mode"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: xlsxdiff "));
+}
+
+#[test]
+fn diff_mode_coordinate_sees_a_row_shift_that_auto_mode_explains_away() {
+    // Same "blank row inserted" scenario as
+    // `src/markdown.rs`'s `diff_mode_*` unit tests — verified again here
+    // through the actual `xlsxdiff` process, to confirm `--diff-mode`
+    // itself is correctly threaded from argv through to `MarkdownOptions`
+    // (not just that the underlying library behavior exists).
+    let base = TempFile::new("diff_mode_cli_base", &xlsx_column_a(&[Some(1), Some(2)]));
+    let head = TempFile::new(
+        "diff_mode_cli_head",
+        &xlsx_column_a(&[None, Some(1), Some(2)]),
+    );
+
+    let auto = run(&["path/m.xlsx", "M", base.path_str(), head.path_str()]);
+    assert!(auto.status.success());
+    assert!(
+        String::from_utf8_lossy(&auto.stdout).contains("_No differences detected._"),
+        "unexpected stdout: {}",
+        String::from_utf8_lossy(&auto.stdout)
+    );
+
+    let coordinate = run(&[
+        "--diff-mode",
+        "coordinate",
+        "path/m.xlsx",
+        "M",
+        base.path_str(),
+        head.path_str(),
+    ]);
+    assert!(coordinate.status.success());
+    let stdout = String::from_utf8_lossy(&coordinate.stdout);
+    assert!(stdout.contains("@@ A1 @@"), "unexpected stdout: {stdout}");
+    assert!(stdout.contains("@@ A2 @@"), "unexpected stdout: {stdout}");
+    assert!(stdout.contains("@@ A3 @@"), "unexpected stdout: {stdout}");
 }

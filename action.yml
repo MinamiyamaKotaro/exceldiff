@@ -13,9 +13,9 @@ author: 'MinamiyamaKotaro'
 #     commit).
 #   - `permissions: pull-requests: write` (composite actions cannot
 #     declare their own `permissions:` block — that's workflow/job-level
-#     only).
-#   - trigger `on: pull_request: paths: ["**/*.xlsx"]` (this action does
-#     nothing useful outside a pull_request event: the diff step reads
+#     only; only needed when `comment: true`, the default).
+#   - trigger `on: pull_request` (this action does nothing useful outside
+#     a pull_request event: the diff step reads
 #     `github.event.pull_request.base.sha`/`head.sha`).
 
 inputs:
@@ -25,6 +25,48 @@ inputs:
       Defaults to the calling workflow's own GITHUB_TOKEN.
     required: false
     default: ${{ github.token }}
+  files:
+    description: >-
+      Git pathspec selecting which changed files to diff (passed straight
+      to `git diff -- <files>`, so it's pathspec syntax, not a shell glob
+      — e.g. the default already matches at any depth without a leading
+      `**/`).
+    required: false
+    default: '*.xlsx'
+  comment:
+    description: 'Post/update a PR comment with the diff.'
+    required: false
+    default: 'true'
+  job-summary:
+    description: >-
+      Also write the diff to the job's `$GITHUB_STEP_SUMMARY`. Useful when
+      `comment` is turned off (e.g. no `pull-requests: write` permission
+      available, such as a fork PR) but the diff should still be visible
+      somewhere.
+    required: false
+    default: 'false'
+  max-rows-per-sheet:
+    description: >-
+      Caps the number of cell-change hunks rendered per sheet
+      (`MarkdownOptions::max_rows_per_sheet`).
+    required: false
+    default: '30'
+  diff-mode:
+    description: >-
+      `auto` (default) picks whichever of coordinate/row-aligned/
+      column-aligned diffing reports the fewest changes per sheet.
+      `coordinate` forces plain coordinate-based diffing, skipping
+      alignment detection — see docs/design/action.md for the tradeoff.
+    required: false
+    default: 'auto'
+
+outputs:
+  has-changes:
+    description: 'Whether any file matching `files` changed in the PR.'
+    value: ${{ steps.diff.outputs.has-changes }}
+  changed-files-count:
+    description: 'Number of files matching `files` that changed in the PR.'
+    value: ${{ steps.diff.outputs.changed-files-count }}
 
 runs:
   using: composite
@@ -50,13 +92,17 @@ runs:
         cargo build --release -p xlsxdiff \
           --manifest-path "${{ github.action_path }}/Cargo.toml"
 
-    - name: Compute diffs for changed .xlsx files
+    - name: Compute diffs for changed files
+      id: diff
       shell: bash
       env:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         BIN: ${{ github.action_path }}/target/release/xlsxdiff
         OUT: ${{ runner.temp }}/xlsx-diff-comment.md
+        FILES: ${{ inputs.files }}
+        MAX_ROWS_PER_SHEET: ${{ inputs.max-rows-per-sheet }}
+        DIFF_MODE: ${{ inputs.diff-mode }}
       run: |
         set -euo pipefail
 
@@ -69,11 +115,16 @@ runs:
         # --no-renames: a rename shows up as a plain Delete + Add pair
         # instead of an "R###" status line, which keeps the status
         # parsing below to exactly A/M/D.
-        changed=$(git diff --no-renames --name-status "$BASE_SHA" "$HEAD_SHA" -- '*.xlsx' || true)
+        changed=$(git diff --no-renames --name-status "$BASE_SHA" "$HEAD_SHA" -- "$FILES" || true)
 
         if [ -z "$changed" ]; then
-          echo "_No .xlsx changes detected._" >> "$OUT"
+          echo "has-changes=false" >> "$GITHUB_OUTPUT"
+          echo "changed-files-count=0" >> "$GITHUB_OUTPUT"
+          echo "_No changes detected._" >> "$OUT"
         else
+          echo "has-changes=true" >> "$GITHUB_OUTPUT"
+          echo "changed-files-count=$(wc -l <<< "$changed" | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
           while IFS=$'\t' read -r file_status path; do
             [ -z "$path" ] && continue
 
@@ -99,17 +150,39 @@ runs:
                 ;;
             esac
 
-            "$BIN" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
+            "$BIN" \
+              --max-rows-per-sheet "$MAX_ROWS_PER_SHEET" \
+              --diff-mode "$DIFF_MODE" \
+              "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
 
             [ -n "$base_file" ] && rm -f "$base_file"
             [ -n "$head_file" ] && rm -f "$head_file"
           done <<< "$changed"
         fi
 
+        # `read` returns non-zero once the herestring above is exhausted —
+        # normal, expected loop termination, not a real failure. But since
+        # that `while` is the last command this script runs, its exit
+        # status (1) would otherwise become *this whole step's* exit
+        # status under `set -e`, intermittently failing a step that
+        # actually completed successfully (observed happening for a
+        # single-changed-file diff, where there's only one iteration
+        # before the terminating EOF read). An explicit always-succeeding
+        # command as the true last statement prevents that.
+        :
+
+    - name: Write job summary
+      if: ${{ inputs.job-summary == 'true' }}
+      shell: bash
+      env:
+        OUT: ${{ runner.temp }}/xlsx-diff-comment.md
+      run: cat "$OUT" >> "$GITHUB_STEP_SUMMARY"
+
     # A comment marker (<!-- xlsx-diff-comment -->, written above) lets
     # this find-then-update pair edit the same comment across pushes to
     # the PR instead of piling up a new one each time.
-    - uses: peter-evans/find-comment@v3
+    - if: ${{ inputs.comment == 'true' }}
+      uses: peter-evans/find-comment@v3
       id: find_comment
       with:
         token: ${{ inputs.github-token }}
@@ -120,8 +193,10 @@ runs:
     # NOTE: for a PR opened from a fork, GitHub Actions forces the
     # GITHUB_TOKEN to read-only regardless of the caller's `permissions:`
     # block — this step then fails to post, harmlessly (nothing else in
-    # this job depends on it). Same-repo-branch PRs are unaffected.
-    - uses: peter-evans/create-or-update-comment@v4
+    # this job depends on it). Same-repo-branch PRs are unaffected. A
+    # fork PR should instead set `comment: false` / `job-summary: true`.
+    - if: ${{ inputs.comment == 'true' }}
+      uses: peter-evans/create-or-update-comment@v4
       with:
         token: ${{ inputs.github-token }}
         comment-id: ${{ steps.find_comment.outputs.comment-id }}

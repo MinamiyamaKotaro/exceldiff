@@ -11,7 +11,8 @@
 - [`diff::WorkbookDiff`](diff/model.md)（+ ファイルのgit状態A/M/D、表示パス）を受け取り、GitHub Flavored MarkdownのMarkdown文字列を返す（[`format_file_section`](#主要な型関数案)）
 - 変更セルの一覧を ```` ```diff ```` フェンス内の `@@ <A1座標> @@` ハンク＋`-`/`+`行として整形する(`format_cell_hunk`)。Markdownテーブルではなくこの形式を選んだ理由は下記「設計判断: なぜMarkdownテーブルではなくdiffフェンスか」を参照
 - 結合セルの変更（[`diff::MergeDiff`](diff/model.md)、Issue #8）を、セルのハンクと同じ ```` ```diff ```` フェンス内に `@@ <始点>:<終点> (merge) @@` ハンクとして整形する(`format_merge_hunk`)。集計行(`{added} added, {modified} modified, {deleted} deleted`)では、結合セルの追加/解除/リサイズをすべて「modified」に算入する — 結合の変更は特定の1セルの追加・削除ではなく「既存セルのグルーピングが変わった」ことなので、どちらから見ても一種の変更と捉える方が座りが良いため
-- `MarkdownOptions::max_rows_per_sheet` で1シートあたりのセルハンク表示件数上限を呼び出し側から指定可能にする（[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)のinput化と接続。結合セルハンクは上限の対象外 — 理由は下記コード中のドキュメントコメント参照）
+- `MarkdownOptions::max_rows_per_sheet` で1シートあたりのセルハンク表示件数上限を呼び出し側から指定可能にする（[`action.yml`の`max-rows-per-sheet`input](action.md)と接続。結合セルハンクは上限の対象外 — 理由は下記コード中のドキュメントコメント参照）
+- `MarkdownOptions::diff_mode`（[`DiffMode`](#主要な型関数案)）で`M`ステータスの差分計算アルゴリズムを`Auto`（既定、`diff_workbooks_best_effort`）と`Coordinate`（`diff_workbooks`、アライメント検出なしの単純座標比較）から選択可能にする（[`action.yml`の`diff-mode`input](action.md)と接続、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)）
 - ファイルの見出し(`` ### <バッジ> · `path` ``)に、追加/変更/削除を一目で判別できる絵文字バッジ(🆕/✏️/🗑️/❓)を付与する(`file_status_badge`) — パスだけでは複数ファイルが変更されたPRで状態を見分けにくいため
 - **含まない責務**: `.xlsx` のパース・差分計算そのもの（[`parse_workbook`](lib.md)・[`diff::diff_workbooks_best_effort`](diff/best_effort.md)、Issue #25。呼び出し側の責務）、GitHub Actionsワークフロー自体の実装（`.github/workflows/xlsx-diff.yml`）、方眼紙Excelを実際のExcelグリッドのような見た目でHTML表示する機能（別issueの検討事項。GitHubのPRコメントは投稿されたHTML内の `style=` 属性をサニタイズして無効化するため、色付きの罫線・塗りつぶしをコメント本文へ直接埋め込むことはできない — この制約により、そうした視覚的なグリッド表示は別の出力先（例: スクリーンショット画像＋GitHub Pagesのリンク）を要する設計上の判断であり、本モジュールのスコープ外）
 
@@ -22,9 +23,17 @@ use crate::diff::{CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookD
 use crate::json::JsonCellValue;
 use crate::model::CellRef;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffMode {
+    #[default]
+    Auto,       // diff_workbooks_best_effort（座標一致/行/列アライメントを自動選択）
+    Coordinate, // diff_workbooks（アライメント検出なしの単純座標比較）
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct MarkdownOptions {
     pub max_rows_per_sheet: usize, // デフォルト30
+    pub diff_mode: DiffMode,       // デフォルト Auto
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,8 +82,8 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 
 ## 依存関係
 
-- 依存先: [`diff/model.rs`](diff/model.md)（`CellDiff`, `CellPos`, `DiffStatus`, `MergeDiff`, `SheetDiff`, `WorkbookDiff`）、[`json.rs`](json.md)（`JsonCellValue` — `CellDiff::old_value`/`new_value`/`format_value`の変換先として再利用。[json.mdの設計判断](json.md)通り、値の種別タグ付き表現をdiffの世界でも一貫させる）、[`model/cell.rs`](model/cell.md)（`CellRef::to_a1` — 座標をA1形式へ変換）
-- 依存元: [`lib.rs`](lib.md)（`FileStatus`/`MarkdownOptions`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`/`diff_file_section_from_paths`を再エクスポートし、クレートの公開APIとする）、[`cli/`クレート](cli.md)の`cli/src/main.rs`（argvを`diff_file_section_from_paths`の5引数へ詰め替え、結果をstdoutへ書くだけの薄いラッパー。[Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32)でパース・差分計算・結果の`FileStatus`への詰め替えを含む全オーケストレーションを本モジュール側の`diff_file_section_from_paths`へ集約し、CLIは`examples/xlsx_diff_cli.rs`から独立ワークスペースメンバー`cli/`へ移動した）
+- 依存先: [`diff/model.rs`](diff/model.md)（`CellDiff`, `CellPos`, `DiffStatus`, `MergeDiff`, `SheetDiff`, `WorkbookDiff`）、[`json.rs`](json.md)（`JsonCellValue` — `CellDiff::old_value`/`new_value`/`format_value`の変換先として再利用。[json.mdの設計判断](json.md)通り、値の種別タグ付き表現をdiffの世界でも一貫させる）、[`model/cell.rs`](model/cell.md)（`CellRef::to_a1` — 座標をA1形式へ変換）、[`diff/engine.rs`](diff/mod.md)（`diff_workbooks` — `DiffMode::Coordinate`）・[`diff/best_effort.rs`](diff/best_effort.md)（`diff_workbooks_best_effort` — `DiffMode::Auto`。`diff_file_section_from_paths`が`options.diff_mode`で選択する）
+- 依存元: [`lib.rs`](lib.md)（`FileStatus`/`MarkdownOptions`/`DiffMode`/`AddedSummary`/`RevisionSide`/`format_file_section`/`format_workbook_diff`/`diff_file_section_from_paths`を再エクスポートし、クレートの公開APIとする）、[`cli/`クレート](cli.md)の`cli/src/main.rs`（argvを`diff_file_section_from_paths`の5引数へ詰め替え、結果をstdoutへ書くだけの薄いラッパー。[Issue #32](https://github.com/MinamiyamaKotaro/exceldiff/issues/32)でパース・差分計算・結果の`FileStatus`への詰め替えを含む全オーケストレーションを本モジュール側の`diff_file_section_from_paths`へ集約し、CLIは`examples/xlsx_diff_cli.rs`から独立ワークスペースメンバー`cli/`へ移動した）、[`action.yml`](action.md)（`max-rows-per-sheet`/`diff-mode`inputsを`cli/`のフラグ経由で`MarkdownOptions`へ橋渡しする、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)）
 
 ## エラー処理方針
 
@@ -88,6 +97,7 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 - 値が変更されたセル1件を持つ`WorkbookDiff`が正しい ```` ```diff ```` フェンス(`@@ A1 @@`/`- 1`/`+ 2`)へ整形されることの確認
 - シートが0件の`WorkbookDiff`が`_No differences detected._`として整形されることの確認
 - `max_rows_per_sheet`がセルハンクの件数を正しく上限し、超過分を`_...and N more change(s) in this sheet._`として報告することの確認
+- `DiffMode::Auto`/`DiffMode::Coordinate`が実際に異なる差分計算関数を呼び分けることの確認: 先頭に空白行が1行挿入された(値の変更は無い)`.xlsx`ペアを`xlsx_zip_column_a`で構築し、`Auto`ではその行シフトが行アライメントにより完全に解消され(`_No differences detected._`)、`Coordinate`では座標比較によるカスケード(シフトした全セルがそれぞれ変更として現れる)が見えることを確認する — [`diff_workbooks_best_effort`のテスト](diff/best_effort.md)が20行のグリッドで検証している同じシナリオの2行版
 - 結合セルの追加/解除/リサイズ3パターンすべてが、それぞれ正しい`@@ ... (merge) @@`ハンク形状(`+ merged`/`- merged`/`- merged A:B` + `+ merged A:C`)へ整形されること、および集計行の`modified`件数に結合セルの変更が正しく算入されることの確認
 - シートの可視性が変わった場合に`` _Visibility: `old` → `new`_ ``行が出力されることの確認
 - `FileStatus`の全バリアント(`Added`/`AddedParseError`/`Deleted`/`Modified`/`ModifiedMissingContent`/`ModifiedParseError`/`Unrecognized`)それぞれについて、見出しのバッジ文言と本文が期待通りに整形されることの確認。`ModifiedParseError`は`RevisionSide::Base`/`Head`両方で、エラーメッセージにどちら側が失敗したか正しい文言(the previous version/the new version)が現れることを確認
