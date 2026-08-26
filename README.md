@@ -29,6 +29,39 @@ let json = exceldiff::to_json_string(&workbook)?;
   ディレクトリ全体の構成・各モジュールの責務・設計方針([English](docs/design/architecture.en.md)版もあります)。
   ここから、全ファイルそれぞれの設計書(責務・スコープ、主要な型・関数シグネチャ、依存関係、エラー処理方針、テスト方針、未決事項を記載)にリンクしており、各設計書は日英両方(`*.md` / `*.en.md`)で書かれています。実装が設計書のドラフトと異なる形に落ち着いた場合(外部APIの詳細が想定と違う形で確定した、テスト作成中にバグが見つかった等)は、何がどう変わったかを記録するため設計書自体をその場で更新しています。
 
+## 使い方
+
+### インストール
+
+`Cargo.toml` に追加します:
+
+```toml
+[dependencies]
+exceldiff = "0.13"
+```
+
+またはコマンドで:
+
+```bash
+cargo add exceldiff
+```
+
+### 基本的な使い方
+
+```rust
+use exceldiff::{parse_workbook, to_json_string};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let workbook = parse_workbook("book.xlsx")?;
+    let json = to_json_string(&workbook)?;
+    println!("{json}");
+    Ok(())
+}
+```
+
+- ファイルシステムのパスではなく、`Read + Seek` を実装する任意の入力(インメモリバッファなど)から読み込みたい場合は `parse_workbook_reader` を使用します。
+- Zip Bomb上限やシートあたりのセル数上限など既定値を変更したい場合は、`_with_limits` 版(`parse_workbook_with_limits` など)に `SizeLimits` を渡します。出力JSONの形やこれらの上限の詳細は後述の[入出力](#入出力)を参照してください。
+
 ## 入出力
 
 **入力**: `.xlsx` ファイルを、2つのエントリポイントのいずれかで受け取ります——

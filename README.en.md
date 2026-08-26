@@ -46,6 +46,43 @@ let json = exceldiff::to_json_string(&workbook)?;
   detail settled differently than planned, a bug found while writing
   tests, etc.), the doc was updated in place to record what changed and why.
 
+## Usage
+
+### Installation
+
+Add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+exceldiff = "0.13"
+```
+
+or via the command line:
+
+```bash
+cargo add exceldiff
+```
+
+### Basic usage
+
+```rust
+use exceldiff::{parse_workbook, to_json_string};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let workbook = parse_workbook("book.xlsx")?;
+    let json = to_json_string(&workbook)?;
+    println!("{json}");
+    Ok(())
+}
+```
+
+- Use `parse_workbook_reader` instead when reading from any `Read + Seek`
+  input (an in-memory buffer, etc.) rather than a filesystem path.
+- To change the defaults for the zip bomb limit or the per-sheet cell-count
+  limit, pass a `SizeLimits` to the `_with_limits` variant (e.g.
+  `parse_workbook_with_limits`). See [Input / Output](#input--output) below
+  for the output JSON shape and details on these limits.
+
 ## Input / Output
 
 **Input**: a `.xlsx` file, via one of two entry points —
