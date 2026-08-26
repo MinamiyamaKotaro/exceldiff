@@ -160,6 +160,17 @@ runs:
           done <<< "$changed"
         fi
 
+        # `read` returns non-zero once the herestring above is exhausted —
+        # normal, expected loop termination, not a real failure. But since
+        # that `while` is the last command this script runs, its exit
+        # status (1) would otherwise become *this whole step's* exit
+        # status under `set -e`, intermittently failing a step that
+        # actually completed successfully (observed happening for a
+        # single-changed-file diff, where there's only one iteration
+        # before the terminating EOF read). An explicit always-succeeding
+        # command as the true last statement prevents that.
+        :
+
     - name: Write job summary
       if: ${{ inputs.job-summary == 'true' }}
       shell: bash
