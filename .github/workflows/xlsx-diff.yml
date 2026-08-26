@@ -15,7 +15,7 @@ name: .xlsx diff preview
 # from (see action.yml's own "Preconditions" comment).
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 on:
@@ -41,3 +41,5 @@ jobs:
           fetch-depth: 0
 
       - uses: ./
+        with:
+          visual: 'true'
