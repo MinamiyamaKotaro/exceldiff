@@ -14,6 +14,13 @@ author: 'MinamiyamaKotaro'
 #   - `permissions: pull-requests: write` (composite actions cannot
 #     declare their own `permissions:` block — that's workflow/job-level
 #     only; only needed when `comment: true`, the default).
+#   - `permissions: contents: write` — only needed when `visual: true`:
+#     rendered grid screenshots get committed to a dedicated orphan
+#     branch (`xlsx-diff-images`) in this same repository, which needs
+#     write access. See docs/design/grid.md for why (GitHub sanitizes
+#     `style=` out of PR comment HTML, so the grid itself can't be pasted
+#     into the comment directly — a hosted image is the only way to show
+#     it there).
 #   - trigger `on: pull_request` (this action does nothing useful outside
 #     a pull_request event: the diff step reads
 #     `github.event.pull_request.base.sha`/`head.sha`).
@@ -59,6 +66,16 @@ inputs:
       alignment detection — see docs/design/action.md for the tradeoff.
     required: false
     default: 'auto'
+  visual:
+    description: >-
+      Also render an Excel-like Before/After grid screenshot for each
+      changed sheet (via `grid.rs`'s `render_sheet_split`) and embed it
+      under that file's text diff. Requires `permissions: contents:
+      write` (see "Preconditions" above) and installs Node.js +
+      Playwright + a Chromium download, which meaningfully adds to job
+      runtime — off by default for that reason.
+    required: false
+    default: 'false'
 
 outputs:
   has-changes:
@@ -92,6 +109,25 @@ runs:
         cargo build --release -p xlsxdiff \
           --manifest-path "${{ github.action_path }}/Cargo.toml"
 
+    # `action-scripts/` (screenshot.mjs + package.json) is this action's
+    # own — installed from `github.action_path`, same reasoning as the
+    # Rust build above. Only installed when `visual: true` is actually
+    # requested, since Playwright's Chromium download is the single
+    # biggest cost this action can add to a job's runtime.
+    - name: Install Node.js
+      if: ${{ inputs.visual == 'true' }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Install screenshot dependencies
+      if: ${{ inputs.visual == 'true' }}
+      shell: bash
+      working-directory: ${{ github.action_path }}/action-scripts
+      run: |
+        npm install
+        npx playwright install --with-deps chromium
+
     - name: Compute diffs for changed files
       id: diff
       shell: bash
@@ -103,6 +139,12 @@ runs:
         FILES: ${{ inputs.files }}
         MAX_ROWS_PER_SHEET: ${{ inputs.max-rows-per-sheet }}
         DIFF_MODE: ${{ inputs.diff-mode }}
+        VISUAL: ${{ inputs.visual }}
+        SCREENSHOT_SCRIPT: ${{ github.action_path }}/action-scripts/screenshot.mjs
+        IMAGES_BRANCH: xlsx-diff-images
+        IMAGES_WORKTREE: ${{ runner.temp }}/xlsx-diff-images-worktree
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
 
@@ -111,6 +153,69 @@ runs:
           echo "## 📊 .xlsx diff preview"
           echo
         } > "$OUT"
+
+        # Keeps a path/branch component filesystem- and URL-safe —
+        # non-alphanumeric runs collapse to a single "_" so a nested file
+        # path or a sheet name with spaces/slashes can't escape the
+        # directory it's placed under or produce an ambiguous raw URL.
+        # `printf` (not `echo`) so there's no trailing "\n" for `tr -c`
+        # (which maps every byte *not* in the allowed set, newline
+        # included) to turn into a stray trailing "_".
+        sanitize() {
+          printf '%s' "$1" | tr -c '[:alnum:]._-' '_'
+        }
+
+        # Sets up $IMAGES_WORKTREE as a checkout of $IMAGES_BRANCH,
+        # creating that branch (as a parentless orphan — it holds nothing
+        # but generated screenshots, no reason to share history with the
+        # code) the first time this ever runs for the repo. A *separate*
+        # worktree (not the caller's own checkout `git worktree add`
+        # already has) so none of this ever touches the tree the diff
+        # step above reads from.
+        setup_images_worktree() {
+          if git ls-remote --exit-code --heads origin "$IMAGES_BRANCH" > /dev/null 2>&1; then
+            git fetch origin "$IMAGES_BRANCH" --quiet
+            git worktree add "$IMAGES_WORKTREE" -B "$IMAGES_BRANCH" "origin/$IMAGES_BRANCH" --quiet
+          else
+            git worktree add --orphan -B "$IMAGES_BRANCH" "$IMAGES_WORKTREE" --quiet
+          fi
+          git -C "$IMAGES_WORKTREE" config user.name "github-actions[bot]"
+          git -C "$IMAGES_WORKTREE" config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+        }
+
+        # Copies $1 (a local PNG) to $2 (its path within $IMAGES_BRANCH),
+        # commits, and pushes — retrying a few times against a fetch +
+        # rebase if another concurrent run raced this one onto the branch
+        # first (expected on a repo with multiple PRs touching .xlsx
+        # files at once; the branch itself has no other writers). Prints
+        # the resulting commit SHA on success, for the caller to build a
+        # raw.githubusercontent.com URL pinned to that exact commit
+        # (rather than the branch tip, which the next push moves).
+        push_image() {
+          local src="$1" dest_rel="$2"
+          local dest_abs="$IMAGES_WORKTREE/$dest_rel"
+          mkdir -p "$(dirname "$dest_abs")"
+          cp "$src" "$dest_abs"
+          (
+            cd "$IMAGES_WORKTREE"
+            git add "$dest_rel"
+            git commit -m "xlsx-diff: $dest_rel" --quiet
+            for attempt in 1 2 3 4 5; do
+              if git push origin "HEAD:$IMAGES_BRANCH" --quiet 2> /dev/null; then
+                git rev-parse HEAD
+                exit 0
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "warning: giving up pushing $dest_rel after 5 attempts" >&2
+                exit 1
+              fi
+              git fetch origin "$IMAGES_BRANCH" --quiet
+              git rebase "origin/$IMAGES_BRANCH" --quiet
+              sleep "$attempt"
+            done
+          )
+        }
 
         # --no-renames: a rename shows up as a plain Delete + Add pair
         # instead of an "R###" status line, which keeps the status
@@ -124,6 +229,10 @@ runs:
         else
           echo "has-changes=true" >> "$GITHUB_OUTPUT"
           echo "changed-files-count=$(wc -l <<< "$changed" | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+          if [ "$VISUAL" = "true" ]; then
+            setup_images_worktree
+          fi
 
           while IFS=$'\t' read -r file_status path; do
             [ -z "$path" ] && continue
@@ -150,10 +259,45 @@ runs:
                 ;;
             esac
 
-            "$BIN" \
-              --max-rows-per-sheet "$MAX_ROWS_PER_SHEET" \
-              --diff-mode "$DIFF_MODE" \
-              "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
+            bin_args=(--max-rows-per-sheet "$MAX_ROWS_PER_SHEET" --diff-mode "$DIFF_MODE")
+            grid_dir=""
+            if [ "$VISUAL" = "true" ]; then
+              grid_dir=$(mktemp -d)
+              bin_args+=(--grid-html-dir "$grid_dir")
+            fi
+
+            "$BIN" "${bin_args[@]}" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
+
+            # A screenshot/push failure for one sheet is reported to
+            # stderr (visible in the job log) and skipped — never fatal
+            # to the rest of the comment, the same "one file's problem
+            # doesn't stop the others" policy the text diff above already
+            # follows for a parse error.
+            if [ "$VISUAL" = "true" ] && [ -s "$grid_dir/manifest.tsv" ]; then
+              while IFS=$'\t' read -r sheet_name html_path; do
+                [ -z "$html_path" ] && continue
+                # A directory + fixed filename, not `mktemp --suffix=.png`
+                # directly — `--suffix` is a GNU-only mktemp extension
+                # (BSD/macOS mktemp, which a caller could hit on a
+                # `macos-latest` runner, rejects it outright).
+                png_dir=$(mktemp -d)
+                png_path="$png_dir/screenshot.png"
+                if ! node "$SCREENSHOT_SCRIPT" "$html_path" "$png_path" 2> /dev/null; then
+                  echo "warning: screenshot failed for $path : $sheet_name" >&2
+                  rm -rf "$png_dir"
+                  continue
+                fi
+                dest_rel="pr-${PR_NUMBER}/$(sanitize "${HEAD_SHA:0:7}")/$(sanitize "$path")/sheet-$(sanitize "$sheet_name").png"
+                if commit_sha=$(push_image "$png_path" "$dest_rel"); then
+                  {
+                    echo "![${sheet_name}](https://raw.githubusercontent.com/${REPO}/${commit_sha}/${dest_rel})"
+                    echo
+                  } >> "$OUT"
+                fi
+                rm -rf "$png_dir"
+              done < "$grid_dir/manifest.tsv"
+            fi
+            [ -n "$grid_dir" ] && rm -rf "$grid_dir"
 
             [ -n "$base_file" ] && rm -f "$base_file"
             [ -n "$head_file" ] && rm -f "$head_file"
