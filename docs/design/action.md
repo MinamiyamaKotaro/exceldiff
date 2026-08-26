@@ -10,7 +10,8 @@
 
 - Rustツールチェーンのセットアップ・`cli/`(パッケージ`xlsxdiff`)のビルド・変更された`.xlsx`ファイルごとの差分計算・Markdownコメントの投稿(または既存コメントの更新)までを、composite actionの`steps`としてカプセル化する。
 - 呼び出し元のワークフローファイルが個々のステップを重複して書く必要をなくす——本リポジトリ自身の`.github/workflows/xlsx-diff.yml`も、この`action.yml`を`uses: ./`で呼び出すことでセルフドッグフーディングする(下記「テスト方針」参照)。
-- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)と、それを呼び出す[`cli/`](cli.md)の責務)、事前ビルド済みバイナリの配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)の検討事項、P2)、変更セル数の合計を返すoutput・コミット単位での差分表示(いずれも[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み。下記「未決事項」参照)。
+- `visual: true`の場合、変更のあったシートごとに[`grid.rs`のExcelライクなグリッドHTML](grid.md)をPlaywright(ヘッドレスChromium)でスクリーンショットし、専用のorphanブランチ(`xlsx-diff-images`)へコミット・pushして、そのraw URLをテキスト差分の下にMarkdown画像として埋め込む(下記「ビジュアルモード」参照)。実際にスクリーンショットを撮影・公開する処理そのものは[`grid.rs`の責務には含まれていない](grid.md)ため、この配線は本actionが担う。
+- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形・グリッドHTML生成そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)/[`grid_sections_from_paths`](grid.md)と、それを呼び出す[`cli/`](cli.md)の責務)、事前ビルド済みバイナリの配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)の検討事項、P2)、変更セル数の合計を返すoutput・コミット単位での差分表示(いずれも[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み。下記「未決事項」参照)。
 
 ## inputs / outputs([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))
 
@@ -22,6 +23,7 @@
 | `job-summary` | bool文字列, `'false'` | `$GITHUB_STEP_SUMMARY`へも書き出すか。`comment`と独立に指定可能——forkからのPR等`pull-requests: write`権限を付与できない環境では`comment: false`・`job-summary: true`にすることで、権限エラーを起こさずJob Summary上で差分を確認できる |
 | `max-rows-per-sheet` | 数値文字列, `'30'` | [`MarkdownOptions::max_rows_per_sheet`](markdown.md)へ渡す(`cli/`の`--max-rows-per-sheet`フラグ経由) |
 | `diff-mode` | string enum `auto`\|`coordinate`, `'auto'` | [`MarkdownOptions::diff_mode`](markdown.md)へ渡す(`cli/`の`--diff-mode`フラグ経由)。`auto`は現行の`diff_workbooks_best_effort`(座標一致/行アライメント/列アライメント自動選択)、`coordinate`はアライメント検出をスキップした単純座標比較 |
+| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのスクリーンショットを生成し、テキスト差分の下に埋め込むか。`permissions: contents: write`が別途必要(下記「呼び出し元に要求する前提」)で、Node.js・Playwright・Chromiumダウンロードが追加されジョブの実行時間に無視できない影響があるため既定はオフ |
 
 | output | 型 | 内容 |
 |---|---|---|
@@ -34,7 +36,7 @@
 
 composite actionは通常のワークフローjobと異なり、以下の2つを自分自身では宣言・実行できない——そのため呼び出し元のワークフロー側で用意してもらうことを前提とする(`action.yml`冒頭のコメントに同内容を明記):
 
-- **`permissions:`ブロック**: composite actionの`action.yml`には`permissions:`キーが存在しない(ワークフロー/job単位のみで宣言可能)。`comment`入力が既定の`true`のままの場合、呼び出し元が`permissions: pull-requests: write`を設定していないと、後述のコメント投稿ステップはトークンの権限不足で失敗する(`comment: false`・`job-summary: true`にすればこの権限は不要——上記「inputs / outputs」参照)。
+- **`permissions:`ブロック**: composite actionの`action.yml`には`permissions:`キーが存在しない(ワークフロー/job単位のみで宣言可能)。`comment`入力が既定の`true`のままの場合、呼び出し元が`permissions: pull-requests: write`を設定していないと、後述のコメント投稿ステップはトークンの権限不足で失敗する(`comment: false`・`job-summary: true`にすればこの権限は不要——上記「inputs / outputs」参照)。`visual: true`を使う場合はさらに`permissions: contents: write`も必要——スクリーンショットPNGを`xlsx-diff-images`ブランチへpushするため(下記「ビジュアルモード」参照)。
 - **チェックアウト**: composite actionは呼び出し元リポジトリを自動でcheckoutしない。差分計算ステップは`git show <sha>:<path>`でPRのbase/head双方のリビジョンを参照するため、呼び出し元が`actions/checkout@v4`を`fetch-depth: 0`付きで事前に実行している必要がある(shallow checkoutだとマージコミット以外のリビジョンが存在しない)。
 
 いずれも本actionが`pull_request`イベント専用(差分計算ステップが`github.event.pull_request.base.sha`/`head.sha`を参照する)であることの帰結でもある——`workflow_dispatch`等の他イベントから呼び出しても意味のある結果は得られない。
@@ -50,6 +52,7 @@ inputs:
   job-summary:            # 既定値 'false'
   max-rows-per-sheet:      # 既定値 '30'
   diff-mode:                # 既定値 'auto'
+  visual:                    # 既定値 'false'
 outputs:
   has-changes:            # steps.diff.outputs.has-changes
   changed-files-count:   # steps.diff.outputs.changed-files-count
@@ -59,8 +62,12 @@ runs:
     - dtolnay/rust-toolchain@stable
     - Swatinem/rust-cache@v2         # workspaces: 本action自身のパス起点
     - cargo build --release -p xlsxdiff --manifest-path ...
+    - if: inputs.visual      # actions/setup-node@v4
+    - if: inputs.visual      # action-scripts/ を npm install + playwright install --with-deps chromium
     - id: diff              # 変更ファイルごとにgit show + xlsxdiffを実行しMarkdownを組み立て、
-                              # has-changes/changed-files-countを$GITHUB_OUTPUTへ書き出す
+                              # has-changes/changed-files-countを$GITHUB_OUTPUTへ書き出す。
+                              # visual: trueならシートごとにスクリーンショット→
+                              # xlsx-diff-imagesブランチへpush→raw URLをMarkdownへ追記
     - if: inputs.job-summary # $GITHUB_STEP_SUMMARYへ書き出す
     - if: inputs.comment
       uses: peter-evans/find-comment@v3
@@ -90,14 +97,26 @@ runs:
 
 この経緯は、単一ファイルのみ変更されたPR(実運用で最も頻度が高いケース)に対して本actionが機能しなくなるリスクだった、という点で重要——複数ファイルの差分でのテストだけでは検出できなかった([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)のセルフドッグフーディング時は複数ファイル変更や偶然2ファイル以上のケースが多く、単一ファイル変更のケースを明示的に検証していなかった)。
 
+## ビジュアルモード(`visual: true`)の設計
+
+GitHubのPRコメントはHTML内の`style=`属性をサニタイズするため、[`grid.rs`](grid.md)が生成する色付き・罫線付きのグリッドHTMLをそのままコメント本文へ貼ることはできない。採用した配信経路は次の通り(検討の経緯は[Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)参照):
+
+1. **スクリーンショット生成**: `xlsxdiff --grid-html-dir <dir>`で書き出したシートごとのHTML(`exceldiff::wrap_grid_page`でラップ済み)を、`action-scripts/screenshot.mjs`(Playwright)でPNG化する。要素スクリーンショット(`page.locator(".page-content").screenshot()`)を使う——`page.screenshot({ fullPage: true })`は既定の1280pxビューポート幅までしか幅を縮められず、シートの実際の幅(可変)より余白が大きく残ってしまうため、`wrap_grid_page`側で`.page-content`に`display: inline-block`を与えて内容にぴったり合わせている。
+2. **専用orphanブランチへのpush**: 生成したPNGを、コード本体の履歴とは無関係な独立ブランチ`xlsx-diff-images`(パラレルな`git worktree`——呼び出し元の作業ツリーには一切触れない)へコミットしてpushする。パス規則は`pr-{PR番号}/{headのSHA先頭7桁}/{sanitize(ファイルパス)}/sheet-{sanitize(シート名)}.png`(`sanitize`は英数字`._-`以外を`_`へ潰す)。GitHub Pagesは使わない——単にファイルをpushするだけで、Pages自体の有効化・デプロイ設定が一切不要なため。
+3. **画像の埋め込み**: pushされた実コミットSHA(ブランチの最新tipではなく、そのpush自体が生んだSHA——後続のpushでtipが動いても壊れない固定URLにするため)を使い、`https://raw.githubusercontent.com/{owner}/{repo}/{commit_sha}/{path}`をMarkdown画像として、そのファイルのテキスト差分の直後に追記する。
+
+**pushの競合への対応**: 複数PRが同時に`.xlsx`を変更していると、同じ`xlsx-diff-images`ブランチへ複数のjobが同時にpushしようとしうる。`push_image`関数は`git push`が失敗したら`git fetch` + `git rebase`をはさんで最大5回リトライする(指数関数的ではなく単純な`sleep $attempt`の線形バックオフ)。
+
+**1シート単位でのベストエフォート**: スクリーンショット・push いずれかが失敗しても、そのシートの画像埋め込みだけを諦めてstderrへ警告を出し、処理を続行する([`cli/`のエラー処理方針](cli.md)と同じ「1件の失敗が全体を止めない」方針)。
+
 ## 依存関係
 
-- 依存先: [`cli/`](cli.md)(`cargo build -p xlsxdiff`でビルドし、`xlsxdiff`バイナリを1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない)
+- 依存先: [`cli/`](cli.md)(`cargo build -p xlsxdiff`でビルドし、`xlsxdiff`バイナリを1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。`visual: true`時は`--grid-html-dir`も渡す。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない)、`action-scripts/`(`visual: true`時のみ。`package.json`でPlaywrightを依存に持つ、公開クレートには含まれない独立したNodeパッケージ。`screenshot.mjs`が唯一のスクリプト)
 - 依存元: [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)(本リポジトリ自身が`uses: ./`で参照する唯一の呼び出し元。将来、外部リポジトリが`uses: MinamiyamaKotaro/exceldiff@<tag>`で参照することも想定するが、現時点でそのような外部呼び出し元は存在しない)
 
 ## エラー処理方針
 
-`cli/`側([`main`のエラー処理方針](cli.md)参照)と同じく、1ファイルのパースエラーが全体のコメント投稿を止めないことを前提にした設計を踏襲する——本action自体はビルド失敗以外で明示的に失敗させる箇所を持たない。フォークからのPRではGitHub Actionsの仕様により`GITHUB_TOKEN`が読み取り専用に強制されるため、コメント投稿ステップは黙って失敗する(`action.yml`内のコメントに明記。何かに依存されるステップではないため、job全体の失敗にはつながる可能性がある——`peter-evans/*`アクション自体が非ゼロ終了する場合、後続ステップがない本jobではそのまま失敗として報告される。これは移植元の`xlsx-diff.yml`から変わらない既存の挙動)。
+`cli/`側([`main`のエラー処理方針](cli.md)参照)と同じく、1ファイルのパースエラーが全体のコメント投稿を止めないことを前提にした設計を踏襲する——本action自体はビルド失敗以外で明示的に失敗させる箇所を持たない。フォークからのPRではGitHub Actionsの仕様により`GITHUB_TOKEN`が読み取り専用に強制されるため、コメント投稿ステップは黙って失敗する(`action.yml`内のコメントに明記。何かに依存されるステップではないため、job全体の失敗にはつながる可能性がある——`peter-evans/*`アクション自体が非ゼロ終了する場合、後続ステップがない本jobではそのまま失敗として報告される。これは移植元の`xlsx-diff.yml`から変わらない既存の挙動)。`visual: true`時、フォークからのPRは同じ理由で`contents: write`も得られないため、スクリーンショットのpushだけが失敗し(stderrへ警告、上記「ビジュアルモード」参照)、テキスト差分のみのコメントとして処理が続く。
 
 ## テスト方針
 
@@ -106,13 +125,16 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 1. **静的検証**: `action.yml`はYAMLとして構文検証する(`actionlint`は`.github/workflows/`配下のワークフローファイルのみを対象とし`action.yml`形式のcomposite actionメタデータには非対応のため、Python `yaml.safe_load`等で構文のみ検証)。呼び出し元ワークフロー側(`.github/workflows/xlsx-diff.yml`)は`actionlint`でも検証可能。
 2. **シェルロジックの単体検証**: 「変更ファイルごとに`git show`でbase/headを取り出し`xlsxdiff`を起動してMarkdownへ連結し、`has-changes`/`changed-files-count`を`$GITHUB_OUTPUT`へ書く」というシェルスクリプト部分は`${{ github.action_path }}`・`${{ runner.temp }}`・`$GITHUB_OUTPUT`をローカルパスに置き換えれば`bash`だけでそのまま実行できる。実際に、ローカルの使い捨てgitリポジトリへA(追加)・M(変更)・D(削除)の3ステータスが混在する差分を作りこのスクリプトを実行して意図通りのMarkdownが生成されること、および変更あり/なし双方のケースで`has-changes`/`changed-files-count`が正しい値になることを確認済み。`--max-rows-per-sheet`/`--diff-mode`フラグが実際に`MarkdownOptions`へ届くことは、`cli/`側の統合テスト([`cli/tests/cli.rs`](../../cli/tests/cli.rs))で検証している(下記「依存関係」)——`action.yml`のシェルスクリプト部分としては、フラグの値をそのまま`"$BIN"`へ渡しているだけなので、フラグ自体の意味までは再検証しない。
 3. **実際のGitHub Actions上での結合検証**: `.github/workflows/xlsx-diff.yml`自体を`uses: ./`で本actionを呼び出す形に書き換えた(下記「依存関係」参照)。これにより、`.xlsx`ファイルを変更する今後の任意のPRが本action全体(Rustツールチェーンのセットアップ・`github.action_path`起点でのビルド・`rust-cache`のワークスペース指定・コメント投稿)の実行結果を検証する回帰テストとして機能する——外部のテスト用リポジトリを別途用意しなくても、本リポジトリ自身がdogfoodingの場になる。**この結合検証だけが発見できた不具合が実際にあった**(上記「事後発見」参照)——単一ファイルのみ変更というケースは、ローカルのシェルスクリプト単体検証(複数ステータス混在の差分で検証していた)や静的検証では再現せず、GitHub Actions実機での複数回の試行によってのみ再現・特定できた。composite actionの検証において実機結合テストを省略できない理由の実例。
+4. **`visual`モード固有の検証**: `screenshot.mjs`はローカルで実際にPlaywrightを実行し、生成したHTML→PNGの見た目を目視確認済み(Added/Modified双方、値変更・行列追加・結合・スタイル変更を含む)。`xlsx-diff-images`ブランチへのpush機構(`setup_images_worktree`/`push_image`)は、ローカルの使い捨てbareリポジトリを実際の`origin`に見立て、(a)ブランチが存在しない初回のorphan作成、(b)ブランチが既存の場合の`git worktree add`、両方の経路で実際に`git push`まで実行し、pushされたコミットのファイルツリーを検証済み。GitHub Actions実機上での動作(Playwrightのインストール・実際のraw URLが画像として表示されること)は本設計時点ではまだ確認できていない——下記「未決事項」参照。
 
 ## 未決事項 / オープンクエスチョン
 
 1. **`cli`クレートの`crates.io`公開**: 本actionは`cli/`をソースからビルドする方式を採用しており、`cli/Cargo.toml`の`publish = false`は変更していない。公開する実利(例: 呼び出し元でのビルド時間短縮のため事前ビルド済みバイナリを配布する、[Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28))が生じるまでは現状維持とする。
-2. **inputs/outputsの汎用化(続き)**: `files`/`comment`/`job-summary`/`max-rows-per-sheet`/`diff-mode`inputsと`has-changes`/`changed-files-count`outputsは実装済み([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))。以下は後続タスクとして残っている:
+2. **inputs/outputsの汎用化(続き)**: `files`/`comment`/`job-summary`/`max-rows-per-sheet`/`diff-mode`/`visual`inputsと`has-changes`/`changed-files-count`outputsは実装済み([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))。以下は後続タスクとして残っている:
    - `changed-cells-count`output: 現状`xlsxdiff`はMarkdown文字列をstdoutへ書くのみで、追加/変更/削除セル数を機械可読な形で外に出していない。`cli/`側に集計出力(例: stderrへの`added=N modified=M deleted=D`行)を追加した上で、`action.yml`側でファイルごとに合算する必要がある。
    - `diff-scope`(コミット単位の差分表示): 現状は常にPRの`base.sha`⇔`head.sha`の累積差分のみ(新規追加されたファイルへのPR内修正は常に`Added`として扱われる——[Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)参照)。`push`(直前pushの`before`/`after`)や`commit`(PR内の各コミットを隣接ペアごとに差分)単位への切り替えは、コメント出力自体が「1PRにつき1セクション」から「複数セクション」へ構造が変わるため優先度を下げ、P2として別途着手する。
    - コメント文言・マーカー(`<!-- xlsx-diff-comment -->`)自体のカスタマイズは、具体的な要望が出るまでスコープ外のままとする。
    - `files`inputはgitパススペックとして実装した(シェルグロブではない)。GitHub Actionsの`paths:`トリガーフィルタ構文とは別物である点に注意——本actionはワークフローのトリガー自体を制御しない。
 3. **外部リポジトリからの実地検証**: 本設計時点ではセルフドッグフーディング(`uses: ./`)のみで検証しており、実際に別リポジトリから`uses: MinamiyamaKotaro/exceldiff@<tag>`で参照した動作確認はまだ行っていない。タグ付けされたリリースを用意した上で実施する。
+4. **`xlsx-diff-images`ブランチの肥大化**: 生成したPNGを削除する仕組みは無く、ブランチは無期限に増え続ける。古いPRのものから定期的に(例: 定期実行のワークフローでN日以上前のディレクトリを削除するコミットをpushする)刈り込む仕組みは、実際に問題になった時点で別途検討する——v1のスコープ外として意図的に据え置いた。
+5. **`visual`モードのGitHub Actions実機検証**: ローカルでのシェルロジック検証・Playwrightでのスクリーンショット目視確認は完了しているが(上記「テスト方針」)、実際のGitHub Actions runner上でPlaywright/Chromiumのインストールが問題なく行われ、pushしたraw URLの画像が実際にPRコメント上で表示されることは本設計時点ではまだ確認できていない——次のステップとして実施する。

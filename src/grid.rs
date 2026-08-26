@@ -34,7 +34,11 @@
 //! of rows/columns and a dense unwindowed render of one would be both
 //! enormous and useless.
 
-use crate::diff::{DiffStatus, SheetDiff};
+use crate::diff::{
+    diff_workbooks, diff_workbooks_best_effort, ColumnAlignmentLimits, DiffStatus,
+    RowAlignmentLimits, SheetDiff,
+};
+use crate::markdown::DiffMode;
 use crate::model::{
     Borders, Cell, CellRef, CellValue, ColorRef, ResolvedStyle, Rgb, Sheet, ThemePalette, Workbook,
 };
@@ -665,6 +669,238 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Wraps one or more [`render_sheet_split`]/[`GridSection::html`]
+/// fragments in a standalone HTML page — the `<style>` block, legend, and
+/// `<title>` [`render_sheet_split`] deliberately leaves out (see that
+/// function's own doc comment), so any caller that wants a page it can
+/// open in a browser or hand to a screenshot tool doesn't have to
+/// reinvent this stylesheet. Shared by `examples/xlsx_diff_grid.rs` and
+/// `cli/`'s `--grid-html-dir` flag.
+pub fn wrap_grid_page(sections: &str) -> String {
+    format!(
+        r#"<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>xlsx diff (split grid)</title>
+<style>
+  body {{
+    font-family: Calibri, Aptos, "Segoe UI", "Yu Gothic UI", sans-serif;
+    background: #f3f2f1;
+    margin: 0;
+    padding: 2rem;
+    color: #1a1a1a;
+  }}
+  h2 {{ font-size: 1rem; font-weight: 600; margin: 0 0 0.8rem; }}
+  h2 .counts {{ font-weight: 400; color: #555; font-size: 0.85rem; }}
+  .sheet {{ margin-bottom: 2.5rem; }}
+  .split {{ display: flex; gap: 1.25rem; align-items: flex-start; }}
+  .pane {{ flex: 1; min-width: 0; }}
+  .pane-label {{
+    font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; margin-bottom: 0.4rem; padding: 0.15rem 0.5rem;
+    display: inline-block; border-radius: 3px;
+  }}
+  .pane-before .pane-label {{ color: #9C0006; background: #FFC7CE; }}
+  .pane-after .pane-label {{ color: #006100; background: #C6EFCE; }}
+  .grid-scroll {{ overflow-x: auto; }}
+  table.grid {{
+    border-collapse: collapse;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+    table-layout: fixed;
+  }}
+  table.grid th, table.grid td {{
+    border: 1px solid #d4d4d4;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.78rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: clip;
+    box-sizing: border-box;
+    vertical-align: top;
+  }}
+  th.corner, th.col-head, th.row-head {{
+    background: #f3f2f1;
+    color: #444;
+    font-weight: 600;
+    text-align: center;
+  }}
+  /* 36px must match ROW_HEAD_WIDTH_PX above. */
+  th.row-head {{ text-align: right; padding-right: 0.5rem; width: 36px; }}
+  td.cell {{ text-align: left; }}
+  td.cell .num {{ display: block; text-align: right; font-variant-numeric: tabular-nums; }}
+  td.cell.empty {{ background: #ffffff; }}
+  td.cell.not-present {{
+    background: repeating-linear-gradient(
+      135deg, #ececec, #ececec 6px, #e2e2e2 6px, #e2e2e2 12px
+    );
+  }}
+  td.cell.border-added, td.cell.border-deleted,
+  td.cell.border-value, td.cell.border-style {{
+    border-color: transparent;
+  }}
+  td.cell.border-added {{ box-shadow: inset 0 0 0 1px #1a7f37; }}
+  td.cell.border-deleted {{ box-shadow: inset 0 0 0 1px #c0392b; }}
+  td.cell.border-value {{ box-shadow: inset 0 0 0 1px #b7791f; }}
+  td.cell.border-style {{ box-shadow: inset 0 0 0 1px #6639ba; }}
+  tr.gap-row th.gap-head {{ background: transparent; border: none; color: #aaa; }}
+  tr.gap-row td.gap {{
+    background: #f3f2f1;
+    border-left: none; border-right: none;
+    border-top: 1px dashed #c7c2b3; border-bottom: 1px dashed #c7c2b3;
+    text-align: center; color: #8a8371;
+    font-size: 0.72rem; letter-spacing: 0.02em;
+    padding: 0.25rem 0;
+  }}
+  th.col-head.gap-head, td.cell.gap-col {{
+    background: #f3f2f1;
+    border-top: none; border-bottom: none;
+    border-left: 1px dashed #c7c2b3; border-right: 1px dashed #c7c2b3;
+    color: #8a8371;
+    font-size: 0.72rem;
+    text-align: center;
+  }}
+  .err {{ font-family: ui-monospace, monospace; }}
+  .empty {{ color: #666; }}
+
+  .legend {{
+    display: flex; flex-wrap: wrap; gap: 1rem;
+    margin: 0 0 1.5rem; font-size: 0.8rem; color: #444;
+  }}
+  .legend span {{ display: inline-flex; align-items: center; gap: 0.35rem; }}
+  .legend i {{ width: 0.8rem; height: 0.8rem; display: inline-block; border-radius: 2px; }}
+  .legend .added {{ box-shadow: inset 0 0 0 2px #1a7f37; }}
+  .legend .deleted {{ box-shadow: inset 0 0 0 2px #c0392b; }}
+  .legend .value {{ box-shadow: inset 0 0 0 2px #b7791f; }}
+  .legend .style {{ box-shadow: inset 0 0 0 2px #6639ba; }}
+  .legend .not-present {{
+    background: repeating-linear-gradient(
+      135deg, #ececec, #ececec 4px, #e2e2e2 4px, #e2e2e2 8px
+    );
+  }}
+  /* `body` itself stays a normal block element (full-viewport
+     background, for a page opened directly in a browser window) — this
+     wrapper is what actually needs to hug its content tightly, so a
+     screenshot tool can crop to `.page-content` via an element
+     screenshot (which crops to the target's own box) instead of trying
+     to measure/resize the viewport to match unknown, per-sheet content
+     dimensions. Its own `padding` (not `body`'s, which sits *outside*
+     this element's box and so isn't part of the crop at all) is what
+     keeps that screenshot from looking cropped edge-to-edge with no
+     breathing room. */
+  .page-content {{ display: inline-block; padding: 1.5rem; }}
+</style>
+</head>
+<body>
+<div class="page-content">
+<div class="legend">
+  <span><i class="added"></i>Added</span>
+  <span><i class="deleted"></i>Deleted</span>
+  <span><i class="value"></i>Value changed</span>
+  <span><i class="style"></i>Style only</span>
+  <span><i class="not-present"></i>None</span>
+</div>
+{sections}</div>
+</body>
+</html>
+"#
+    )
+}
+
+/// One sheet's rendered grid, from [`grid_sections_from_paths`].
+pub struct GridSection {
+    pub sheet_name: String,
+    pub html: String,
+}
+
+/// High-level, path-based entry point mirroring
+/// [`crate::markdown::diff_file_section_from_paths`]'s own shape (Issue
+/// #32) — but deliberately a separate function rather than a shared one,
+/// since this module stays independent of `markdown.rs` by design (see
+/// this file's own doc comment). Given a git status letter and the same
+/// base/head file paths a caller has already resolved (e.g. via `git
+/// show`), parses, diffs, and renders one [`GridSection`] per sheet that
+/// has anything to report — empty for a parse error, an unrecognized
+/// status, or a diff with nothing changed (`WorkbookDiff::sheets` is
+/// already empty in that last case), so a caller can treat "nothing
+/// returned" as "render text only, skip the grid" uniformly.
+///
+/// `A`/`D` are rendered against an empty stand-in workbook on the
+/// missing side — `diff_workbooks(&Workbook::new(vec![], None), &head)`
+/// (or the mirror for `D`) already gives every cell/merge on the real
+/// side a `DiffStatus::Added`/`Deleted` tag, exactly what
+/// [`render_sheet_split`] expects, with no separate rendering path
+/// needed. `M` reuses whichever diffing strategy `diff_mode` selects, so
+/// the grid always agrees with the text diff on what actually changed.
+pub fn grid_sections_from_paths(
+    git_status: &str,
+    base_path: Option<&str>,
+    head_path: Option<&str>,
+    diff_mode: DiffMode,
+) -> Vec<GridSection> {
+    let render = |diff_sheets: &[SheetDiff], base: &Workbook, head: &Workbook| {
+        diff_sheets
+            .iter()
+            .map(|sheet_diff| {
+                let base_sheet = base.sheets().iter().find(|s| s.name == sheet_diff.name);
+                let head_sheet = head.sheets().iter().find(|s| s.name == sheet_diff.name);
+                GridSection {
+                    sheet_name: sheet_diff.name.clone(),
+                    html: render_sheet_split(sheet_diff, base, head, base_sheet, head_sheet),
+                }
+            })
+            .collect()
+    };
+
+    match git_status {
+        "A" => {
+            let Some(head_path) = head_path else {
+                return Vec::new();
+            };
+            let Ok(head) = crate::parse_workbook(head_path) else {
+                return Vec::new();
+            };
+            let empty = Workbook::new(Vec::new(), None);
+            let diff = diff_workbooks(&empty, &head);
+            render(&diff.sheets, &empty, &head)
+        }
+        "D" => {
+            let Some(base_path) = base_path else {
+                return Vec::new();
+            };
+            let Ok(base) = crate::parse_workbook(base_path) else {
+                return Vec::new();
+            };
+            let empty = Workbook::new(Vec::new(), None);
+            let diff = diff_workbooks(&base, &empty);
+            render(&diff.sheets, &base, &empty)
+        }
+        "M" => {
+            let (Some(base_path), Some(head_path)) = (base_path, head_path) else {
+                return Vec::new();
+            };
+            let Ok(base) = crate::parse_workbook(base_path) else {
+                return Vec::new();
+            };
+            let Ok(head) = crate::parse_workbook(head_path) else {
+                return Vec::new();
+            };
+            let diff = match diff_mode {
+                DiffMode::Auto => diff_workbooks_best_effort(
+                    &base,
+                    &head,
+                    RowAlignmentLimits::default(),
+                    ColumnAlignmentLimits::default(),
+                ),
+                DiffMode::Coordinate => diff_workbooks(&base, &head),
+            };
+            render(&diff.sheets, &base, &head)
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1229,5 +1465,172 @@ mod tests {
             Some(&sheet),
             CellRef { row: 1, col: 1 }
         ));
+    }
+
+    // --- grid_sections_from_paths ---
+    //
+    // Path-based, so it can't be tested with in-memory struct literals
+    // alone (same reasoning as `markdown.rs`'s own
+    // `diff_file_section_from_paths` tests) — each test builds a minimal
+    // `.xlsx` as bytes and writes it to a uniquely-named temp file.
+
+    use std::io::Write as _;
+
+    fn minimal_xlsx_zip(cell_value: &str) -> Vec<u8> {
+        const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+        const RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#;
+        const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0"?>
+<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#;
+        const STYLES_XML: &[u8] =
+            br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
+
+        let worksheet_xml = format!(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>{cell_value}</v></c></row></sheetData></worksheet>"#
+        );
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, data) in [
+                ("_rels/.rels", ROOT_RELS_XML),
+                ("xl/_rels/workbook.xml.rels", RELS_XML),
+                ("xl/workbook.xml", WORKBOOK_XML),
+                ("xl/styles.xml", STYLES_XML),
+                ("xl/worksheets/sheet1.xml", worksheet_xml.as_bytes()),
+            ] {
+                writer.start_file(name, options).unwrap();
+                writer.write_all(data).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    struct TempFile(std::path::PathBuf);
+
+    impl TempFile {
+        fn new(test_name: &str, bytes: &[u8]) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "exceldiff-grid-test-{}-{test_name}.xlsx",
+                std::process::id()
+            ));
+            std::fs::write(&path, bytes).unwrap();
+            Self(path)
+        }
+
+        fn path_str(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn grid_sections_from_paths_added_renders_one_section() {
+        let head = TempFile::new("grid_added", &minimal_xlsx_zip("42"));
+        let sections = grid_sections_from_paths("A", None, Some(head.path_str()), DiffMode::Auto);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].sheet_name, "Sheet1");
+        assert!(sections[0].html.contains("class=\"sheet\""));
+    }
+
+    #[test]
+    fn grid_sections_from_paths_deleted_renders_one_section() {
+        let base = TempFile::new("grid_deleted", &minimal_xlsx_zip("42"));
+        let sections = grid_sections_from_paths("D", Some(base.path_str()), None, DiffMode::Auto);
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].sheet_name, "Sheet1");
+    }
+
+    #[test]
+    fn grid_sections_from_paths_modified_renders_one_section() {
+        let base = TempFile::new("grid_modified_base", &minimal_xlsx_zip("42"));
+        let head = TempFile::new("grid_modified_head", &minimal_xlsx_zip("100"));
+        let sections = grid_sections_from_paths(
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            DiffMode::Auto,
+        );
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].sheet_name, "Sheet1");
+    }
+
+    #[test]
+    fn grid_sections_from_paths_modified_with_no_changes_is_empty() {
+        let base = TempFile::new("grid_unchanged_base", &minimal_xlsx_zip("42"));
+        let head = TempFile::new("grid_unchanged_head", &minimal_xlsx_zip("42"));
+        let sections = grid_sections_from_paths(
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            DiffMode::Auto,
+        );
+        assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn grid_sections_from_paths_missing_paths_is_empty() {
+        assert!(grid_sections_from_paths("A", None, None, DiffMode::Auto).is_empty());
+        assert!(grid_sections_from_paths("D", None, None, DiffMode::Auto).is_empty());
+        assert!(grid_sections_from_paths("M", None, None, DiffMode::Auto).is_empty());
+        assert!(grid_sections_from_paths("R", None, None, DiffMode::Auto).is_empty());
+    }
+
+    #[test]
+    fn grid_sections_from_paths_parse_error_is_empty() {
+        let head = TempFile::new("grid_parse_error", b"not a zip file");
+        assert!(
+            grid_sections_from_paths("A", None, Some(head.path_str()), DiffMode::Auto).is_empty()
+        );
+    }
+
+    #[test]
+    fn grid_sections_from_paths_deleted_parse_error_is_empty() {
+        let base = TempFile::new("grid_deleted_parse_error", b"not a zip file");
+        assert!(
+            grid_sections_from_paths("D", Some(base.path_str()), None, DiffMode::Auto).is_empty()
+        );
+    }
+
+    #[test]
+    fn grid_sections_from_paths_modified_base_parse_error_is_empty() {
+        let base = TempFile::new("grid_modified_base_error", b"not a zip file");
+        let head = TempFile::new("grid_modified_base_error_head", &minimal_xlsx_zip("42"));
+        assert!(grid_sections_from_paths(
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            DiffMode::Auto
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn grid_sections_from_paths_modified_head_parse_error_is_empty() {
+        let base = TempFile::new("grid_modified_head_error_base", &minimal_xlsx_zip("42"));
+        let head = TempFile::new("grid_modified_head_error", b"not a zip file");
+        assert!(grid_sections_from_paths(
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            DiffMode::Auto
+        )
+        .is_empty());
     }
 }

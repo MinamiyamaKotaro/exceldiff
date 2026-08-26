@@ -18,12 +18,15 @@
 - `wrapText`が有効なセルは折り返し表示、無効なセルは実際のExcelの挙動(セル境界で切り詰め、隣接セルが空なら自然にはみ出す)を再現する(`next_cell_is_empty`)
 - 列幅を文字単位からpx単位へExcelの実際の変換式で換算し(`excel_width_to_px`)、`<table>`自体に総px幅を明示指定してブラウザが内容に合わせて列を広げるのを防ぐ(`table-layout: fixed`だけでは不十分——詳細は`render_table`のドキュメントコメント参照)
 - 変更のあった行/列の前後2行/2列だけを残し、それ以外の連続した未変更の行/列を`⋯ N row(s)/column(s) omitted ⋯`という1行/1列に畳み込む(`build_line_plan`)。行・列どちらの軸にも同じロジックを適用する
-- **含まない責務**: 生成したHTMLの配信・公開(スクリーンショット撮影、GitHub Pagesへのデプロイ、CI成果物としてのアップロード——いずれも別issueの検討事項)、ページ全体のHTML/CSS/JSの提供(呼び出し側の責務。`examples/xlsx_diff_grid.rs`がその一例)
+- `grid_sections_from_paths`(Issue #23の後続、[`action.yml`の`visual`input](action.md))は`markdown.rs::diff_file_section_from_paths`と同じ「パス→パース→diff→整形」の高水準APIを、本モジュール独自に提供する——A/Dステータスは空の`Workbook`を片側に見立てた`diff_workbooks`呼び出しだけで(専用の差分計算ロジックを新設せずに)表現できる。返り値`Vec<GridSection>`はシート単位のHTMLフラグメントの集合で、パースエラー・変更なしの場合は空になる
+- `wrap_grid_page`は`render_sheet_split`/`GridSection::html`が返すフラグメント(群)を、スタイルシート・凡例付きの単体HTMLページへ包む——`examples/xlsx_diff_grid.rs`と`cli/`の`--grid-html-dir`(スクリーンショット用)の双方が共有する
+- **含まない責務**: 生成したHTML/PNGの配信・公開そのもの(実際にスクリーンショットを撮影してリポジトリへコミットする処理は[`cli/`](cli.md)と[`action.yml`](action.md)の責務——下記「未決事項」参照)
 
 ## 主要な型・関数（案）
 
 ```rust
 use crate::diff::{DiffStatus, SheetDiff};
+use crate::markdown::DiffMode;
 use crate::model::{Sheet, Workbook};
 
 pub fn render_sheet_split(
@@ -33,14 +36,29 @@ pub fn render_sheet_split(
     base_sheet: Option<&Sheet>,
     head_sheet: Option<&Sheet>,
 ) -> String;
+
+pub fn wrap_grid_page(sections: &str) -> String;
+
+pub struct GridSection {
+    pub sheet_name: String,
+    pub html: String,
+}
+
+pub fn grid_sections_from_paths(
+    git_status: &str,
+    base_path: Option<&str>,
+    head_path: Option<&str>,
+    diff_mode: DiffMode,
+) -> Vec<GridSection>;
 ```
 
-公開関数はこの1つのみ。内部の`LineSlot`/`CellChange`/`Side`列挙型、`render_table`/`render_cell`/`resolve_visual_style`/`border_sides_css`/`excel_width_to_px`/`column_pixel_width`等のヘルパーはすべて非公開。実装本体は[`src/grid.rs`](../../src/grid.rs)を参照。
+内部の`LineSlot`/`CellChange`/`Side`列挙型、`render_table`/`render_cell`/`resolve_visual_style`/`border_sides_css`/`excel_width_to_px`/`column_pixel_width`等のヘルパーはすべて非公開。実装本体は[`src/grid.rs`](../../src/grid.rs)を参照。
 
 ## 依存関係
 
 - 依存先: [`diff/model.rs`](diff/model.md)（`DiffStatus`, `SheetDiff`）、[`model/`](model/)（`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`）、[`resolve/color.rs`](resolve/color.md)（`resolve_color`——`ColorRef`を実際のRGB値へ解決する。テーマカラー・インデックスカラーを含む）、[`json.rs`](json.md)（`format_date_time`——`DateTime`セルの値を、`DateTimeValue`の導出`Debug`表現ではなく`json.rs`と同じタイムゾーンなしISO 8601形式で表示する）
-- 依存元: [`lib.rs`](lib.md)（`render_sheet_split`を公開APIとして再エクスポート）、`examples/xlsx_diff_grid.rs`（`parse_workbook`/`diff_workbooks`の呼び出しと、返されたHTMLフラグメントをページ全体へ組み立てるラッパー）
+- 依存先(`grid_sections_from_paths`のみ): [`markdown.rs`](markdown.md)（`DiffMode`——`M`ステータスの差分計算アルゴリズムを選択するためだけに参照し、`markdown.rs`側の型・関数は一切呼ばない。本モジュールの独立性は保たれる)、[`lib.rs`](lib.md)（`parse_workbook`）
+- 依存元: [`lib.rs`](lib.md)（`render_sheet_split`/`wrap_grid_page`/`GridSection`/`grid_sections_from_paths`を公開APIとして再エクスポート）、`examples/xlsx_diff_grid.rs`（`parse_workbook`/`diff_workbooks`の呼び出しと`wrap_grid_page`によるページ組み立て）、[`cli/`](cli.md)の`--grid-html-dir`フラグ（`grid_sections_from_paths`+`wrap_grid_page`でシートごとのHTMLファイルを書き出す）
 
 ## 設計判断: なぜ`markdown.rs`と統合せず別モジュールにしたか
 
@@ -61,9 +79,10 @@ pub fn render_sheet_split(
 - `column_letters`が複数文字の列(Z列の次のAA列等)を正しく変換することの確認
 - `html_escape`が`&`/`<`/`>`を正しくエスケープすることの確認
 - スタイル付きセルの太字フラグ(`font.bold`)がインラインCSSの`font-weight:700;`として反映されることの確認
+- `grid_sections_from_paths`(パスベース、`markdown.rs`の`diff_file_section_from_paths`テストと同じくin-memory `.xlsx`を組み立てて検証): A/M/Dそれぞれが期待通りの件数の`GridSection`を返すこと、パースエラー・変更なし・未対応ステータス・パス欠落の場合に空`Vec`を返すこと
 
 ## 未決事項 / オープンクエスチョン
 
-1. **生成したHTMLの配信経路**: 本モジュールが生成するHTMLをどうPRの文脈で閲覧可能にするか(スクリーンショット画像化してPRコメントへ埋め込む、GitHub Pagesへの静的ホスティング、CI成果物としてのダウンロード等)は、[Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)の後続issueとして別途検討する。実装候補としては、CI側でヘッドレスブラウザ(Playwright等)によるレンダリング＋スクリーンショット取得、`actions/upload-pages-artifact`/`actions/deploy-pages`によるGitHub Pagesへのデプロイが挙がっている。
-2. **本モジュールを`markdown.rs`と同様に確定した公開APIとして扱ってよいか**: 現状`render_sheet_split`は`lib.rs`から再エクスポートされる公開関数だが、実際にこれを消費する本番のワークフロー(上記1が指す配信経路)がまだ存在しない。実運用が始まった際に、引数の形(`base`/`head`の`Workbook`全体を要求する現在のシグネチャが使いやすいか)を再検討する余地がある。
+1. ~~**生成したHTMLの配信経路**~~ **解決済み**: [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)の後続として実装した。CI上でPlaywright(ヘッドレスChromium)によりスクリーンショットPNGを生成し、専用のorphanブランチ(`xlsx-diff-images`)へコミット・pushして`raw.githubusercontent.com`のURL経由でPRコメントへMarkdown画像として埋め込む方式を採用(GitHub Pagesは使わない——`action.yml`の`visual`input、詳細は[action.md](action.md)参照)。
+2. **本モジュールを`markdown.rs`と同様に確定した公開APIとして扱ってよいか**: `grid_sections_from_paths`/`wrap_grid_page`の追加により本番のワークフロー(`action.yml`の`visual`モード)から実際に消費されるようになったため、`render_sheet_split`のシグネチャ(`base`/`head`の`Workbook`全体を要求する形)は実運用を経て妥当と確認できた。今後大きく変更する予定はない。
 3. **列方向の省略と結合セルの相互作用**: `render_table`のドキュメントコメントに記載の通り、結合セルの起点が省略された行/列の中に位置する場合、`covered`の追跡が正しく機能しない既知の制約がある。方眼紙Excelの典型的な使い方(結合セルは通常、変更が集中する見出し・ラベル周辺にあり、それ自体が「変更に近い行/列」としてコンテキストに含まれやすい)では実際上問題になりにくいと考えているが、確証はない。

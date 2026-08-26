@@ -34,3 +34,8 @@ tests/fixtures/other
 
 # scripts/generate_real_fixtures.py's own bytecode cache.
 scripts/__pycache__/
+
+# action-scripts/'s npm dependencies (Playwright) — action.yml's `visual`
+# mode installs these fresh in CI via `npm install`; package-lock.json is
+# committed for reproducibility, but the installed tree itself isn't.
+action-scripts/node_modules/

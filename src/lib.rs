@@ -43,7 +43,7 @@ pub use diff::{
     RowAlignmentLimits, SheetDiff, WorkbookDiff,
 };
 pub use error::{Error, Result};
-pub use grid::render_sheet_split;
+pub use grid::{grid_sections_from_paths, render_sheet_split, wrap_grid_page, GridSection};
 pub use json::{
     to_json_string, to_json_writer, JsonBorders, JsonCellValue, JsonColorRef, JsonFont, JsonStyle,
 };

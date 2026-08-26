@@ -18,12 +18,15 @@ Its primary target is "grid-paper Excel" (a fine, uniform cell grid with merged 
 - A cell with `wrapText` on wraps; one without reproduces Excel's actual default behavior instead (clip at the cell boundary, or spill naturally into an empty neighbor — `next_cell_is_empty`)
 - Converts column width from Excel's character-based unit to pixels using Excel's own real formula (`excel_width_to_px`), and pins the `<table>`'s own total width explicitly so the browser can't widen columns to fit content (`table-layout: fixed` alone isn't enough — see `render_table`'s doc comment for why)
 - Keeps only 2 rows/columns of context on either side of an actual change, collapsing any longer run of unchanged rows/columns into a single `⋯ N row(s)/column(s) omitted ⋯` line (`build_line_plan`) — the same logic applied independently to both the row and column axis
-- **Explicitly out of scope**: publishing or distributing the generated HTML (taking a screenshot, deploying to GitHub Pages, uploading as a CI artifact — all separate, still-open design questions), and full page HTML/CSS/JS (the caller's responsibility — `examples/xlsx_diff_grid.rs` is one example of that)
+- `grid_sections_from_paths` ([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23) follow-up, [`action.yml`'s `visual` input](action.en.md)) provides its own path-based, "parse → diff → render" high-level entry point mirroring `markdown.rs::diff_file_section_from_paths`'s shape — the `A`/`D` statuses are expressed with no separate diffing logic at all, just a `diff_workbooks` call against an empty stand-in `Workbook` on the missing side. It returns `Vec<GridSection>`, one HTML fragment per sheet — empty on a parse error or when nothing changed
+- `wrap_grid_page` wraps `render_sheet_split`/`GridSection::html`'s fragment(s) into a standalone HTML page with a stylesheet and legend — shared by both `examples/xlsx_diff_grid.rs` and `cli/`'s `--grid-html-dir` flag (for screenshotting)
+- **Explicitly out of scope**: actually publishing/distributing the generated HTML/PNG (taking the screenshot and committing it to the repository is [`cli/`](cli.en.md)'s and [`action.yml`](action.en.md)'s responsibility — see "Open questions" below)
 
 ## Key types / functions (draft)
 
 ```rust
 use crate::diff::{DiffStatus, SheetDiff};
+use crate::markdown::DiffMode;
 use crate::model::{Sheet, Workbook};
 
 pub fn render_sheet_split(
@@ -33,14 +36,29 @@ pub fn render_sheet_split(
     base_sheet: Option<&Sheet>,
     head_sheet: Option<&Sheet>,
 ) -> String;
+
+pub fn wrap_grid_page(sections: &str) -> String;
+
+pub struct GridSection {
+    pub sheet_name: String,
+    pub html: String,
+}
+
+pub fn grid_sections_from_paths(
+    git_status: &str,
+    base_path: Option<&str>,
+    head_path: Option<&str>,
+    diff_mode: DiffMode,
+) -> Vec<GridSection>;
 ```
 
-This is the only public function. The internal `LineSlot`/`CellChange`/`Side` enums and helpers (`render_table`, `render_cell`, `resolve_visual_style`, `border_sides_css`, `excel_width_to_px`, `column_pixel_width`, …) are all private. See [`src/grid.rs`](../../src/grid.rs) for the actual implementation.
+The internal `LineSlot`/`CellChange`/`Side` enums and helpers (`render_table`, `render_cell`, `resolve_visual_style`, `border_sides_css`, `excel_width_to_px`, `column_pixel_width`, …) are all private. See [`src/grid.rs`](../../src/grid.rs) for the actual implementation.
 
 ## Dependencies
 
 - Depends on: [`diff/model.rs`](diff/model.en.md) (`DiffStatus`, `SheetDiff`), [`model/`](model/) (`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`), [`resolve/color.rs`](resolve/color.en.md) (`resolve_color` — resolves a `ColorRef` to a real RGB value, including theme and indexed colors), [`json.rs`](json.en.md) (`format_date_time` — renders a `DateTime` cell's value the same ISO-8601-without-timezone way `json.rs` does, instead of `DateTimeValue`'s derived `Debug` form)
-- Depended on by: [`lib.rs`](lib.en.md) (re-exports `render_sheet_split` as public API), `examples/xlsx_diff_grid.rs` (calls `parse_workbook`/`diff_workbooks` and assembles the returned HTML fragment into a full page)
+- Depends on (`grid_sections_from_paths` only): [`markdown.rs`](markdown.en.md) (`DiffMode` — referenced only to pick `M`'s diffing algorithm; no other `markdown.rs` type or function is ever called, keeping this module's independence intact), [`lib.rs`](lib.en.md) (`parse_workbook`)
+- Depended on by: [`lib.rs`](lib.en.md) (re-exports `render_sheet_split`/`wrap_grid_page`/`GridSection`/`grid_sections_from_paths` as public API), `examples/xlsx_diff_grid.rs` (calls `parse_workbook`/`diff_workbooks` and assembles the page via `wrap_grid_page`), [`cli/`](cli.en.md)'s `--grid-html-dir` flag (uses `grid_sections_from_paths` + `wrap_grid_page` to write one HTML file per sheet)
 
 ## Design decision: why a separate module instead of folding into `markdown.rs`
 
@@ -61,9 +79,10 @@ Builds synthetic `Sheet`/`Workbook` instances directly via `Sheet::new`/`insert_
 - `column_letters` correctly converts a multi-letter column (e.g. the column right after Z, AA)
 - `html_escape` correctly escapes `&`/`<`/`>`
 - A styled cell's bold flag (`font.bold`) is reflected as `font-weight:700;` in the inline CSS
+- `grid_sections_from_paths` (path-based, built from in-memory `.xlsx` bytes the same way `markdown.rs`'s `diff_file_section_from_paths` tests are): each of A/M/D returns the expected number of `GridSection`s; a parse error, no changes, an unrecognized status, or a missing path all return an empty `Vec`
 
 ## Open questions
 
-1. **Delivery path for the generated HTML**: how to make this module's HTML viewable in a PR's context (screenshotting it and embedding the image in the PR comment, static-hosting it on GitHub Pages, a downloadable CI artifact, …) is left for a follow-up issue on [Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22). Candidate implementations discussed so far: headless-browser rendering (e.g. Playwright) plus a screenshot step in CI, and deploying to GitHub Pages via `actions/upload-pages-artifact`/`actions/deploy-pages`.
-2. **Whether this module should be treated as settled public API the way `markdown.rs` is**: `render_sheet_split` is currently re-exported as public from `lib.rs`, but no production workflow actually consumes it yet (the delivery path in question 1 doesn't exist). Once real usage exists, the signature (whether requiring the full `base`/`head` `Workbook` is the right ergonomic shape) may be worth revisiting.
+1. ~~**Delivery path for the generated HTML**~~ **Resolved**: implemented as a follow-up to [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24). CI renders a screenshot PNG via Playwright (headless Chromium), commits and pushes it to a dedicated orphan branch (`xlsx-diff-images`), and embeds it in the PR comment as a Markdown image via its `raw.githubusercontent.com` URL — no GitHub Pages involved (`action.yml`'s `visual` input; see [action.md](action.en.md) for the full design).
+2. **Whether this module should be treated as settled public API the way `markdown.rs` is**: now that `grid_sections_from_paths`/`wrap_grid_page` are actually consumed by a production workflow (`action.yml`'s `visual` mode), `render_sheet_split`'s signature (requiring the full `base`/`head` `Workbook`) has been validated through real use and isn't expected to change significantly going forward.
 3. **Interaction between column collapsing and merged cells**: as noted in `render_table`'s doc comment, there's a known limitation when a merge's origin falls inside a collapsed row/column range — `covered` tracking doesn't account for that case correctly. This seems unlikely to matter in grid-paper Excel's typical usage (a merged cell is usually near a heading/label where changes cluster, which tends to already fall within the kept context), but this hasn't been confirmed.

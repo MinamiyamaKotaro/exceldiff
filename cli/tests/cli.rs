@@ -169,6 +169,31 @@ impl Drop for TempFile {
     }
 }
 
+/// A uniquely-named, not-yet-created directory path for `--grid-html-dir`
+/// tests (the CLI itself creates it via `create_dir_all`) — removed
+/// recursively on drop so a failing assertion can't leak it behind.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(test_name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "xlsxdiff-cli-test-grid-{}-{test_name}",
+            std::process::id()
+        ));
+        Self(path)
+    }
+
+    fn path_str(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn usage_error_when_too_few_args() {
     let out = run(&["path/a.xlsx"]);
@@ -336,4 +361,73 @@ fn diff_mode_coordinate_sees_a_row_shift_that_auto_mode_explains_away() {
     assert!(stdout.contains("@@ A1 @@"), "unexpected stdout: {stdout}");
     assert!(stdout.contains("@@ A2 @@"), "unexpected stdout: {stdout}");
     assert!(stdout.contains("@@ A3 @@"), "unexpected stdout: {stdout}");
+}
+
+// --- `--grid-html-dir` (Issue #24 "visual" follow-up) ---
+
+#[test]
+fn grid_html_dir_writes_a_page_and_manifest_for_an_added_file() {
+    let head = TempFile::new("grid_added", &minimal_xlsx_zip("42"));
+    let dir = TempDir::new("added");
+    let out = run(&[
+        "--grid-html-dir",
+        dir.path_str(),
+        "path/a.xlsx",
+        "A",
+        "",
+        head.path_str(),
+    ]);
+    assert!(out.status.success());
+    // Markdown output on stdout is unaffected by --grid-html-dir.
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("### 🆕 Added · `path/a.xlsx`\n"));
+
+    let manifest = std::fs::read_to_string(format!("{}/manifest.tsv", dir.path_str())).unwrap();
+    assert_eq!(
+        manifest,
+        format!("Sheet1\t{}/sheet-0.html\n", dir.path_str())
+    );
+    let html = std::fs::read_to_string(format!("{}/sheet-0.html", dir.path_str())).unwrap();
+    assert!(html.contains("<!doctype html>"));
+    assert!(html.contains("class=\"sheet\""));
+}
+
+#[test]
+fn grid_html_dir_writes_nothing_when_there_are_no_visual_changes() {
+    let base = TempFile::new("grid_unchanged_base", &minimal_xlsx_zip("42"));
+    let head = TempFile::new("grid_unchanged_head", &minimal_xlsx_zip("42"));
+    let dir = TempDir::new("unchanged");
+    let out = run(&[
+        "--grid-html-dir",
+        dir.path_str(),
+        "path/m.xlsx",
+        "M",
+        base.path_str(),
+        head.path_str(),
+    ]);
+    assert!(out.status.success());
+    let manifest = std::fs::read_to_string(format!("{}/manifest.tsv", dir.path_str())).unwrap();
+    assert_eq!(manifest, "");
+}
+
+#[test]
+fn grid_html_dir_failure_only_warns_and_still_exits_successfully() {
+    // A path nested *inside* a plain file can never be created as a
+    // directory (`create_dir_all` fails partway through) — this is
+    // enough to exercise write_grid_sections's error path without
+    // needing to fabricate a permissions failure.
+    let not_a_dir = TempFile::new("grid_html_dir_blocker", b"not a directory");
+    let unreachable_dir = format!("{}/subdir", not_a_dir.path_str());
+
+    let head = TempFile::new("grid_html_dir_failure_head", &minimal_xlsx_zip("42"));
+    let out = run(&[
+        "--grid-html-dir",
+        &unreachable_dir,
+        "path/a.xlsx",
+        "A",
+        "",
+        head.path_str(),
+    ]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("### 🆕 Added · `path/a.xlsx`\n"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("warning: could not write grid HTML"));
 }
