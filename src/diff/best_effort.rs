@@ -49,15 +49,11 @@
 use crate::diff::col_alignment::align_sheet_columns;
 use crate::diff::engine::diff_sheet;
 use crate::diff::model::{SheetDiff, WorkbookDiff};
+use crate::diff::row_alignment::align_sheet_rows;
 use crate::diff::{ColumnAlignmentLimits, RowAlignmentLimits};
+use crate::error::Error;
 use crate::model::Workbook;
 use std::collections::BTreeSet;
-
-// row_alignment::align_sheet_rows is used via its full path below (not a
-// `use`) only to keep the row/column halves of the per-sheet match arm
-// visually parallel with their sibling module's already-imported
-// `align_sheet_columns` — a style call, not a necessity.
-use crate::diff::row_alignment::align_sheet_rows;
 
 /// Diffs two [`Workbook`]s, choosing per sheet whichever of
 /// coordinate-based, row-aligned, or column-aligned diffing reports the
@@ -115,7 +111,18 @@ pub fn diff_workbooks_best_effort(
                     best_sheet = Some(row_sheet);
                 }
             }
-            Err(_) => {} // cost cap exceeded — fall back to what we have
+            Err(Error::RowAlignmentCostTooHigh { .. }) => {} // fall back to what we have
+            Err(other) => {
+                // align_sheet_rows's own doc comment promises this is the
+                // only error it returns — surface a violation loudly in
+                // debug/test builds rather than silently falling back to
+                // coordinate-based diffing the same way a real cost-cap
+                // does, which could otherwise mask a real bug.
+                debug_assert!(
+                    false,
+                    "align_sheet_rows returned an unexpected error: {other:?}"
+                );
+            }
         }
 
         if min_changes > 0 {
@@ -126,7 +133,13 @@ pub fn diff_workbooks_best_effort(
                         best_sheet = Some(col_sheet);
                     }
                 }
-                Err(_) => {}
+                Err(Error::ColumnAlignmentCostTooHigh { .. }) => {}
+                Err(other) => {
+                    debug_assert!(
+                        false,
+                        "align_sheet_columns returned an unexpected error: {other:?}"
+                    );
+                }
             }
         }
 
@@ -203,11 +216,8 @@ mod tests {
 
         assert_eq!(best.sheets.len(), 1);
         let best_total = sheet_total_changes(&best.sheets[0]);
-        assert!(
-            best_total < sheet_total_changes(&coord),
-            "best-effort ({best_total}) should beat coordinate-based ({})",
-            sheet_total_changes(&coord)
-        );
+        let coord_total = sheet_total_changes(&coord);
+        assert!(best_total < coord_total);
         assert_eq!(best_total, 5); // just the new row's own 5 cells
     }
 
@@ -300,6 +310,52 @@ mod tests {
             sheet_total_changes(&coord) > 1,
             "sanity: coordinate diff should see the cascade"
         );
+
+        let best = diff_workbooks_best_effort(
+            &base,
+            &target,
+            RowAlignmentLimits::default(),
+            ColumnAlignmentLimits::default(),
+        );
+        assert!(
+            best.sheets.is_empty(),
+            "expected the sheet to be fully explained away, got {:?}",
+            best.sheets
+        );
+    }
+
+    #[test]
+    fn blank_column_insertion_reaches_the_ok_none_floor_via_columns() {
+        // The column-alignment counterpart of
+        // `blank_row_insertion_reaches_the_ok_none_floor`: a blank column
+        // insertion shifts every subsequent column's index, which changes
+        // every row's *row*-alignment hash signature (it hashes (col,
+        // value) pairs) — so row alignment does NOT reach 0 here, and this
+        // specifically exercises the `Ok(None)` branch on the *column*
+        // side (`best_sheet = None` without also zeroing `min_changes`,
+        // since nothing tries column alignment again afterward).
+        let base = workbook(vec![sheet_with_values("S", &grid(20, 10))]);
+        let mut target_cells: Vec<(u32, u32, CellValue)> = Vec::new();
+        for r in 1..=20u32 {
+            for c in 1..=5u32 {
+                target_cells.push((r, c, num((r * 1000 + c) as f64)));
+            }
+            for c in 6..=10u32 {
+                target_cells.push((r, c + 1, num((r * 1000 + c) as f64)));
+            }
+        }
+        let target = workbook(vec![sheet_with_values("S", &target_cells)]);
+
+        // Sanity: row alignment alone does not reach the floor here, so
+        // diff_workbooks_best_effort really does exercise the column-side
+        // Ok(None) branch rather than short-circuiting past it.
+        let row_only = align_sheet_rows(
+            "S",
+            &base.sheets()[0],
+            &target.sheets()[0],
+            RowAlignmentLimits::default(),
+        );
+        assert!(!matches!(row_only, Ok(None)));
 
         let best = diff_workbooks_best_effort(
             &base,
