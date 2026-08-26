@@ -1,0 +1,130 @@
+name: '.xlsx diff preview'
+description: >-
+  Builds and posts (or updates) a single pull-request comment summarizing
+  what changed in every .xlsx file the PR touches.
+author: 'MinamiyamaKotaro'
+
+# Preconditions this composite action assumes the caller's own workflow
+# already set up (it cannot set these itself — see docs/design/action.md
+# "呼び出し元に要求する前提" for why):
+#   - `actions/checkout@v4` with `fetch-depth: 0` (this action's diff step
+#     needs both the PR's base and head commits present locally to run
+#     `git show <sha>:<path>`; a shallow checkout only has the merge
+#     commit).
+#   - `permissions: pull-requests: write` (composite actions cannot
+#     declare their own `permissions:` block — that's workflow/job-level
+#     only).
+#   - trigger `on: pull_request: paths: ["**/*.xlsx"]` (this action does
+#     nothing useful outside a pull_request event: the diff step reads
+#     `github.event.pull_request.base.sha`/`head.sha`).
+
+inputs:
+  github-token:
+    description: >-
+      GITHUB_TOKEN or a PAT used to find/create/update the PR comment.
+      Defaults to the calling workflow's own GITHUB_TOKEN.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    # `workspaces` must point at this action's own checkout
+    # (`github.action_path`), not the default `.` (the caller's
+    # checkout) — see docs/design/action.md point 2.
+    - name: Cache cargo build
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: "${{ github.action_path }} -> target"
+
+    # `--manifest-path` makes Cargo resolve its target dir relative to
+    # this action's own workspace root (`github.action_path`), not the
+    # caller's `$PWD` — see docs/design/action.md point 1. The build
+    # step below reads the binary back out of that same location.
+    - name: Build xlsx diff CLI
+      shell: bash
+      run: |
+        cargo build --release -p xlsxdiff \
+          --manifest-path "${{ github.action_path }}/Cargo.toml"
+
+    - name: Compute diffs for changed .xlsx files
+      shell: bash
+      env:
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        BIN: ${{ github.action_path }}/target/release/xlsxdiff
+        OUT: ${{ runner.temp }}/xlsx-diff-comment.md
+      run: |
+        set -euo pipefail
+
+        {
+          echo "<!-- xlsx-diff-comment -->"
+          echo "## 📊 .xlsx diff preview"
+          echo
+        } > "$OUT"
+
+        # --no-renames: a rename shows up as a plain Delete + Add pair
+        # instead of an "R###" status line, which keeps the status
+        # parsing below to exactly A/M/D.
+        changed=$(git diff --no-renames --name-status "$BASE_SHA" "$HEAD_SHA" -- '*.xlsx' || true)
+
+        if [ -z "$changed" ]; then
+          echo "_No .xlsx changes detected._" >> "$OUT"
+        else
+          while IFS=$'\t' read -r file_status path; do
+            [ -z "$path" ] && continue
+
+            base_file=""
+            head_file=""
+            case "$file_status" in
+              A)
+                head_file=$(mktemp)
+                git show "$HEAD_SHA:$path" > "$head_file"
+                ;;
+              D)
+                base_file=$(mktemp)
+                git show "$BASE_SHA:$path" > "$base_file"
+                ;;
+              M)
+                base_file=$(mktemp)
+                head_file=$(mktemp)
+                git show "$BASE_SHA:$path" > "$base_file"
+                git show "$HEAD_SHA:$path" > "$head_file"
+                ;;
+              *)
+                continue
+                ;;
+            esac
+
+            "$BIN" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
+
+            [ -n "$base_file" ] && rm -f "$base_file"
+            [ -n "$head_file" ] && rm -f "$head_file"
+          done <<< "$changed"
+        fi
+
+    # A comment marker (<!-- xlsx-diff-comment -->, written above) lets
+    # this find-then-update pair edit the same comment across pushes to
+    # the PR instead of piling up a new one each time.
+    - uses: peter-evans/find-comment@v3
+      id: find_comment
+      with:
+        token: ${{ inputs.github-token }}
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: "github-actions[bot]"
+        body-includes: "<!-- xlsx-diff-comment -->"
+
+    # NOTE: for a PR opened from a fork, GitHub Actions forces the
+    # GITHUB_TOKEN to read-only regardless of the caller's `permissions:`
+    # block — this step then fails to post, harmlessly (nothing else in
+    # this job depends on it). Same-repo-branch PRs are unaffected.
+    - uses: peter-evans/create-or-update-comment@v4
+      with:
+        token: ${{ inputs.github-token }}
+        comment-id: ${{ steps.find_comment.outputs.comment-id }}
+        issue-number: ${{ github.event.pull_request.number }}
+        body-path: ${{ runner.temp }}/xlsx-diff-comment.md
+        edit-mode: replace

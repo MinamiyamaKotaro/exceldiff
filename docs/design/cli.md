@@ -30,13 +30,13 @@ CLIをどこに置くかについては3案が検討された(Issue #32のPRレ�
 2. **`src/bin/xlsxdiff.rs`へ昇格**([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)が当初想定していた案): Cargoの`autobins`既定動作により、`exceldiff`ライブラリクレート自体の`cargo install`/素の`cargo build`/`cargo package`の対象に自動的に含まれてしまう — ライブラリの公開バイナリ面を意図せず広げる
 3. **独立したワークスペースメンバー`cli/`**(採用案): `exceldiff`を`path`依存として参照するだけの別パッケージなので、`exceldiff`単体に対する`cargo build`/`cargo install`/`cargo package`には一切現れない。同時に、独自の`Cargo.toml`・`tests/`ディレクトリを持てるため、`main.rs`自体のargv処理を実プロセス起動で検証する統合テスト(下記「テスト方針」)が書ける
 
-3を採用したことで、ライブラリの公開面を汚さずに済む1の利点と、実プロセスを使った統合テストが書ける(1にはできなかった)利点を両立している。将来`cargo install xlsxdiff`や`action.yml`によるcomposite action化([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23))を行う場合も、このクレートを起点にすればよい(`cli/Cargo.toml`の`publish = false`を外し、必要なら`crates.io`へ公開する)。
+3を採用したことで、ライブラリの公開面を汚さずに済む1の利点と、実プロセスを使った統合テストが書ける(1にはできなかった)利点を両立している。[Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)でのcomposite action化([`action.yml`設計書](action.md)参照)もこのクレートを起点にソースからビルドする方式を採用しており、`cli/Cargo.toml`の`publish = false`は変更していない。
 
 ## 依存関係
 
 - 依存先(通常): [`exceldiff`](lib.md)(`path`依存。`diff_file_section_from_paths`・`MarkdownOptions`のみを使用)
 - 依存先(devのみ): `zip`(`cli/tests/cli.rs`が制御されたテスト用`.xlsx`ペアをin-memoryで組み立てるためだけに使用。下記「テスト方針」参照。バイナリ本体には含まれない)
-- 依存元: `.github/workflows/xlsx-diff.yml`(`cargo build --release -p xlsxdiff`でビルドし、`target/release/xlsxdiff`をPRごとに変更された`.xlsx`ファイル1件につき1回起動して、その出力をコメント本文へ連結する)
+- 依存元: [`action.yml`](action.md)(`cargo build --release -p xlsxdiff`でビルドし、`target/release/xlsxdiff`をPRごとに変更された`.xlsx`ファイル1件につき1回起動して、その出力をコメント本文へ連結する)。[`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)は`action.yml`を`uses: ./`で呼び出す薄いワークフローになっており、本クレートを直接ビルドしない
 
 ## エラー処理方針
 
@@ -54,5 +54,5 @@ CLIをどこに置くかについては3案が検討された(Issue #32のPRレ�
 
 ## 未決事項 / オープンクエスチョン
 
-1. **`cargo install`可能な形での配布・composite action化**: [Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)が検討していたテーマ。本クレートを`crates.io`へ公開する(`publish = false`を外す)か、`action.yml`からこのリポジトリを直接ビルドして使うかは未決。
+1. **`cargo install`可能な形での配布・composite action化**: [Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)が検討していたテーマ。composite action化そのものは[`action.yml`](action.md)として実装済み(このリポジトリをソースから直接ビルドする方式)。本クレートを`crates.io`へ公開するか(`publish = false`を外すか)は、事前ビルド済みバイナリ配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28))が必要になるまで未決のまま。
 2. **バージョニング方針**: `cli/Cargo.toml`のバージョンは`exceldiff`本体とは独立に`0.1.0`から開始した。両者のバージョンを連動させる必要が生じた場合(例: `cli`が`exceldiff`の特定バージョン以降の公開APIに依存し始めた場合)は再検討する。

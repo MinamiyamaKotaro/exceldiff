@@ -30,13 +30,13 @@ Three options were considered for where the CLI should live (see Issue #32's PR 
 2. **Promote to `src/bin/xlsxdiff.rs`** (what [Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23) originally assumed): Cargo's `autobins` default behavior would automatically fold it into the `exceldiff` library crate's own `cargo install`/plain `cargo build`/`cargo package` surface — unintentionally widening the library's published binary surface
 3. **A separate workspace member, `cli/`** (the option taken): a separate package that only references `exceldiff` via a `path` dependency, so it never appears in `cargo build`/`cargo install`/`cargo package` run against `exceldiff` alone. It also gets its own `Cargo.toml` and `tests/` directory, making it possible to write real-process integration tests of `main.rs`'s own argv handling (see "Test plan" below)
 
-Option 3 keeps option 1's benefit (the library's published surface stays untouched) while also gaining what option 1 couldn't offer: real-process integration tests. It also leaves a natural home to build on later if `cargo install xlsxdiff` or an `action.yml`-based composite action ([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)) happens — just drop `cli/Cargo.toml`'s `publish = false` and publish to crates.io if/when needed.
+Option 3 keeps option 1's benefit (the library's published surface stays untouched) while also gaining what option 1 couldn't offer: real-process integration tests. The composite action from [Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23) (see the [`action.yml` design document](action.en.md)) also builds on this crate directly, from source — `cli/Cargo.toml`'s `publish = false` is unchanged.
 
 ## Dependencies
 
 - Depends on (normal): [`exceldiff`](lib.en.md) (a `path` dependency; uses only `diff_file_section_from_paths` and `MarkdownOptions`)
 - Depends on (dev only): `zip` (used only by `cli/tests/cli.rs` to build a controlled test `.xlsx` pair in-memory — see "Test plan" below; never part of the shipped binary)
-- Depended on by: `.github/workflows/xlsx-diff.yml` (builds it with `cargo build --release -p xlsxdiff`, then runs `target/release/xlsxdiff` once per `.xlsx` file changed in the PR, concatenating each invocation's output into the comment body)
+- Depended on by: [`action.yml`](action.en.md) (builds it with `cargo build --release -p xlsxdiff`, then runs `target/release/xlsxdiff` once per `.xlsx` file changed in the PR, concatenating each invocation's output into the comment body). [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml) itself is now a thin workflow that calls `action.yml` via `uses: ./` and no longer builds this crate directly
 
 ## Error handling policy
 
@@ -54,5 +54,5 @@ Option 3 keeps option 1's benefit (the library's published surface stays untouch
 
 ## Open questions
 
-1. **Distributing this as an installable binary / a composite action**: the theme [Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23) was exploring. Whether this crate gets published to crates.io (dropping `publish = false`) or an `action.yml` just builds this repo directly is still open.
+1. **Distributing this as an installable binary / a composite action**: the theme [Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23) was exploring. The composite action itself is now implemented ([`action.yml`](action.en.md), building this repo directly from source). Whether this crate also gets published to crates.io (dropping `publish = false`) stays open until pre-built binary distribution ([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)/[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)) actually needs it.
 2. **Versioning policy**: `cli/Cargo.toml`'s version starts independently at `0.1.0`, unlinked to `exceldiff`'s own version. Revisit if the two ever need to move in lockstep (e.g. once `cli` starts depending on specific public-API guarantees tied to an `exceldiff` version).
