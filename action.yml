@@ -104,7 +104,7 @@ runs:
         MAX_ROWS_PER_SHEET: ${{ inputs.max-rows-per-sheet }}
         DIFF_MODE: ${{ inputs.diff-mode }}
       run: |
-        set -euxo pipefail
+        set -euo pipefail
 
         {
           echo "<!-- xlsx-diff-comment -->"
