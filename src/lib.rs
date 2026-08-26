@@ -49,7 +49,7 @@ pub use json::{
 };
 pub use markdown::{
     diff_file_section_from_paths, format_file_section, format_workbook_diff, AddedSummary,
-    FileStatus, MarkdownOptions, RevisionSide,
+    DiffMode, FileStatus, MarkdownOptions, RevisionSide,
 };
 pub use model::{
     Alignment, AnchorMarker, Borders, Cell, CellRef, CellValue, ColWidthRange, ColorRef,

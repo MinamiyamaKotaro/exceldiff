@@ -8,19 +8,21 @@ It originally lived as `examples/xlsx_diff_cli.rs`. Even after the Markdown-form
 
 ## Responsibilities / Scope
 
-- Parses argv (`<display_path> <A|M|D> [base_file] [head_file]`), maps it onto [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s arguments, calls it, and writes the returned Markdown string to stdout (`main.rs`)
+- Parses argv (`[--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] <display_path> <A|M|D> [base_file] [head_file]`), maps it onto [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s arguments (`display_path`/`status`/`base_path`/`head_path`/`MarkdownOptions`), calls it, and writes the returned Markdown string to stdout (`main.rs`)
+- Feeds the leading `--max-rows-per-sheet <N>`/`--diff-mode <auto|coordinate>` flags (both optional, recognized only as `--flag value` pairs consumed from the front, not in arbitrary order) into `MarkdownOptions::max_rows_per_sheet`/`diff_mode` — the bridge for [`action.yml`'s inputs of the same names](action.en.md) ([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)). An invalid value (a non-numeric `--max-rows-per-sheet`, a `--diff-mode` that's neither `auto` nor `coordinate`, a flag with no value following it) prints the usage message to stderr and exits non-zero — no argument-parsing crate like `clap` was added for this (see "Relationship to the `exceldiff` crate" below); a hand-written loop (`parse_options`) is enough
 - Treats the workflow's own convention for "this revision has no file" — an empty-string argument — as `None` when calling `diff_file_section_from_paths` (`.filter(|s| !s.is_empty())`). `.github/workflows/xlsx-diff.yml` initializes `base_file`/`head_file` to the empty string and simply never runs `git show` for whichever side doesn't apply (e.g. `base_file` for status `A`, `head_file` for status `D`), passing that empty string straight through to `xlsxdiff` — this isn't a fallback for a failed `git show`
-- Prints a usage message to stderr and exits non-zero when fewer than 3 arguments are given (program name + `display_path` + `status`)
-- **Explicitly out of scope**: parsing `.xlsx`, computing the diff, or Markdown formatting itself (all of it [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s responsibility), the GitHub Actions workflow itself (`.github/workflows/xlsx-diff.yml`), and distributing this as an installable binary or composite action (a separate, still-open question — see "Relationship to the `exceldiff` crate" below)
+- Prints a usage message to stderr and exits non-zero when fewer than 2 positional arguments remain after flag parsing (`display_path` + `status`)
+- **Explicitly out of scope**: parsing `.xlsx`, computing the diff, or Markdown formatting itself (all of it [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s responsibility), the GitHub Actions workflow itself (`.github/workflows/xlsx-diff.yml`, [`action.yml`](action.en.md)), and distributing this as an installable binary (see "Relationship to the `exceldiff` crate" below)
 
 ## Key types / functions
 
 ```rust
 // cli/src/main.rs
+fn parse_options(args: &[String]) -> Option<(MarkdownOptions, &[String])>;
 fn main() -> std::process::ExitCode;
 ```
 
-A thin binary crate with a single `main` function. See [`cli/src/main.rs`](../../cli/src/main.rs) for the actual implementation.
+Two functions: `parse_options` consumes `--max-rows-per-sheet`/`--diff-mode` and returns a `MarkdownOptions` plus the remaining positional arguments (`None` on an invalid value), and `main` uses that to call `diff_file_section_from_paths`. See [`cli/src/main.rs`](../../cli/src/main.rs) for the actual implementation.
 
 ## Relationship to the `exceldiff` crate: why a separate crate instead of `examples/` or `src/bin/`
 
@@ -49,6 +51,7 @@ Option 3 keeps option 1's benefit (the library's published surface stays untouch
   - fewer than 3 arguments prints a usage message to stderr and exits non-zero
   - an empty-string `base_file`/`head_file` argument is treated the same as the argument being omitted (verifying the workflow's own convention of passing an empty string straight through for whichever side doesn't apply — see "Responsibilities / Scope" above)
   - each git status (`A`/`D`/`M`, and an unrecognized letter) produces output with the matching heading badge — the fine-grained formatting itself is already [verified on the `markdown.rs` side](markdown.en.md), so this only confirms the right arguments actually reach it
+  - `--max-rows-per-sheet`/`--diff-mode` actually reach `MarkdownOptions` and change the output, and an invalid value (non-numeric, an unrecognized mode name) produces the usage error — what the flags themselves *mean* (the hunk cap, the diffing algorithm each `DiffMode` picks) is already [unit-tested on the `markdown.rs` side](markdown.en.md), so this only confirms argv wiring is correct
 - Tests that just need *some* real `.xlsx` (confirming a real file parses/errors as expected) use the existing fixtures under `tests/fixtures/` (`normal/basic_types.xlsx`, `error/corrupted_xml.xlsx`), referenced by a path relative to this crate's own `CARGO_MANIFEST_DIR` — matching the existing convention of crate-level integration tests using `tests/fixtures/` directly (e.g. [`tests/error.rs`](../../tests/error.rs))
 - The test confirming "a changed cell renders as an `@@` hunk," though, builds a minimal `.xlsx` pair in-memory inside `cli/tests/cli.rs` itself (differing in exactly one cell's value, via the `zip` crate as a dev-dependency) rather than picking two unrelated files under `tests/fixtures/`. Which specific cells differ between two unrelated real files isn't something a test controls or guarantees — this one initially did use two unrelated fixtures, passed locally, then failed in CI with zero hunks once dependency resolution came out differently (this library crate doesn't commit `Cargo.lock`). Building the pair in the test is the same fix [`tests/fixtures/diff.rs`'s `cell_modified()`](../../tests/fixtures/diff.rs) and [`src/markdown.rs`'s own unit tests](markdown.en.md) already apply, for the same reason
 

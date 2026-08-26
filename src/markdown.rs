@@ -24,12 +24,33 @@
 //! visually distinct from a cell-value hunk.
 
 use crate::diff::{
-    diff_workbooks_best_effort, CellDiff, CellPos, ColumnAlignmentLimits, DiffStatus, MergeDiff,
-    RowAlignmentLimits, SheetDiff, WorkbookDiff,
+    diff_workbooks, diff_workbooks_best_effort, CellDiff, CellPos, ColumnAlignmentLimits,
+    DiffStatus, MergeDiff, RowAlignmentLimits, SheetDiff, WorkbookDiff,
 };
 use crate::json::JsonCellValue;
 use crate::model::CellRef;
 use crate::parse_workbook;
+
+/// Which diffing strategy [`diff_file_section_from_paths`] uses for a
+/// modified file (Issue #24, an `action.yml` `diff-mode` input). See
+/// [`diff_workbooks_best_effort`]'s and [`diff_workbooks`]'s own doc
+/// comments for what each algorithm actually does — this only selects
+/// between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffMode {
+    /// Per sheet, picks whichever of coordinate-based, row-aligned, or
+    /// column-aligned diffing reports the fewest changes
+    /// ([`diff_workbooks_best_effort`], Issue #25). The default — matches
+    /// every caller's behavior from before this field existed.
+    #[default]
+    Auto,
+    /// Plain coordinate-based diffing ([`diff_workbooks`]), skipping
+    /// row/column alignment detection entirely. Cheaper, and avoids
+    /// alignment's own false-positive risk, at the cost of the cascading
+    /// diff noise a shifted row/column produces (see
+    /// [`diff_workbooks_best_effort`]'s doc comment for that cascade).
+    Coordinate,
+}
 
 /// Tunables for [`format_file_section`]. `max_rows_per_sheet` was a
 /// hardcoded `MAX_ROWS_PER_SHEET` constant in the CLI; pulling it out as
@@ -41,12 +62,15 @@ pub struct MarkdownOptions {
     /// fixture rewrite can't blow up the rendered output size. Never caps
     /// merge hunks — see [`format_sheet_diff`]'s doc comment for why.
     pub max_rows_per_sheet: usize,
+    /// Which diffing strategy to use for a modified file. See [`DiffMode`].
+    pub diff_mode: DiffMode,
 }
 
 impl Default for MarkdownOptions {
     fn default() -> Self {
         Self {
             max_rows_per_sheet: 30,
+            diff_mode: DiffMode::default(),
         }
     }
 }
@@ -432,12 +456,15 @@ pub fn diff_file_section_from_paths(
                     );
                 }
             };
-            let diff = diff_workbooks_best_effort(
-                &base,
-                &head,
-                RowAlignmentLimits::default(),
-                ColumnAlignmentLimits::default(),
-            );
+            let diff = match options.diff_mode {
+                DiffMode::Auto => diff_workbooks_best_effort(
+                    &base,
+                    &head,
+                    RowAlignmentLimits::default(),
+                    ColumnAlignmentLimits::default(),
+                ),
+                DiffMode::Coordinate => diff_workbooks(&base, &head),
+            };
             format_file_section(display_path, &FileStatus::Modified(&diff), options)
         }
         other => format_file_section(display_path, &FileStatus::Unrecognized(other), options),
@@ -507,6 +534,7 @@ mod tests {
             .collect();
         let options = MarkdownOptions {
             max_rows_per_sheet: 2,
+            ..MarkdownOptions::default()
         };
         let md = format_workbook_diff(&diff, &options);
         assert_eq!(md.matches("@@ ").count(), 2);
@@ -834,27 +862,22 @@ mod tests {
 
     use std::io::Write as _;
 
-    fn minimal_xlsx_zip(cell_value: &str) -> Vec<u8> {
-        const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>"#;
-        const RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+    const RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>"#;
-        const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0"?>
+    const WORKBOOK_XML: &[u8] = br#"<?xml version="1.0"?>
 <workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
   <sheets>
     <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
   </sheets>
 </workbook>"#;
-        const STYLES_XML: &[u8] =
-            br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
+    const STYLES_XML: &[u8] = br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
 
-        let worksheet_xml = format!(
-            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>{cell_value}</v></c></row></sheetData></worksheet>"#
-        );
-
+    fn xlsx_zip_from_worksheet(worksheet_xml: &str) -> Vec<u8> {
         let mut buf = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
@@ -873,6 +896,36 @@ mod tests {
             writer.finish().unwrap();
         }
         buf
+    }
+
+    fn minimal_xlsx_zip(cell_value: &str) -> Vec<u8> {
+        let worksheet_xml = format!(
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>{cell_value}</v></c></row></sheetData></worksheet>"#
+        );
+        xlsx_zip_from_worksheet(&worksheet_xml)
+    }
+
+    /// Builds a worksheet with one row per entry of `values`, each holding
+    /// a single numeric cell in column A — `None` renders as a row with no
+    /// `<c>` element at all (a blank row), not a cell with an empty
+    /// value. Used to build the "blank row inserted" pair the
+    /// `diff_mode_*` tests below need: row alignment ([`DiffMode::Auto`])
+    /// should explain the whole shift away, while coordinate-based diffing
+    /// ([`DiffMode::Coordinate`]) sees every shifted cell as its own
+    /// change (see `diff_workbooks_best_effort`'s own doc comment for why).
+    fn xlsx_zip_column_a(values: &[Option<i64>]) -> Vec<u8> {
+        let mut rows = String::new();
+        for (i, value) in values.iter().enumerate() {
+            let row = i + 1;
+            match value {
+                Some(v) => rows.push_str(&format!(
+                    r#"<row r="{row}"><c r="A{row}"><v>{v}</v></c></row>"#
+                )),
+                None => rows.push_str(&format!(r#"<row r="{row}"/>"#)),
+            }
+        }
+        let worksheet_xml = format!(r#"<worksheet><sheetData>{rows}</sheetData></worksheet>"#);
+        xlsx_zip_from_worksheet(&worksheet_xml)
     }
 
     /// Writes `bytes` to a uniquely-named file under `std::env::temp_dir()`
@@ -1046,5 +1099,67 @@ mod tests {
                 &MarkdownOptions::default()
             )
         );
+    }
+
+    // --- diff_mode (Issue #24) ---
+    //
+    // A blank row inserted at the top of a 2-value column is the same
+    // scenario `diff_workbooks_best_effort`'s own
+    // `blank_row_insertion_reaches_the_ok_none_floor` test uses (just a
+    // 2-row version, not 20): a pure, monotonic shift with no new content,
+    // which row alignment explains away entirely.
+
+    #[test]
+    fn diff_mode_auto_collapses_a_blank_row_insertion() {
+        let base = TempFile::new(
+            "diff_mode_auto_base",
+            &xlsx_zip_column_a(&[Some(1), Some(2)]),
+        );
+        let head = TempFile::new(
+            "diff_mode_auto_head",
+            &xlsx_zip_column_a(&[None, Some(1), Some(2)]),
+        );
+        let md = diff_file_section_from_paths(
+            "path/m.xlsx",
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            &MarkdownOptions::default(), // diff_mode: Auto
+        );
+        assert!(
+            md.contains("_No differences detected._"),
+            "unexpected stdout: {md}"
+        );
+    }
+
+    #[test]
+    fn diff_mode_coordinate_sees_the_row_shift_cascade() {
+        let base = TempFile::new(
+            "diff_mode_coordinate_base",
+            &xlsx_zip_column_a(&[Some(1), Some(2)]),
+        );
+        let head = TempFile::new(
+            "diff_mode_coordinate_head",
+            &xlsx_zip_column_a(&[None, Some(1), Some(2)]),
+        );
+        let options = MarkdownOptions {
+            diff_mode: DiffMode::Coordinate,
+            ..MarkdownOptions::default()
+        };
+        let md = diff_file_section_from_paths(
+            "path/m.xlsx",
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            &options,
+        );
+        // Every shifted cell shows up as its own change: A1 deleted, A2
+        // modified (2 -> 1), A3 added (2) — the cascade Auto mode avoids.
+        assert!(md.contains("@@ A1 @@\n- 1\n"), "unexpected stdout: {md}");
+        assert!(
+            md.contains("@@ A2 @@\n- 2\n+ 1\n"),
+            "unexpected stdout: {md}"
+        );
+        assert!(md.contains("@@ A3 @@\n+ 2\n"), "unexpected stdout: {md}");
     }
 }
