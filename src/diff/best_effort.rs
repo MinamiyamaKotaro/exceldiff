@@ -225,8 +225,20 @@ mod tests {
         // The exact scenario that defeats a whole-workbook mode choice
         // (https://github.com/MinamiyamaKotaro/exceldiff/issues/25#issuecomment-5419091215):
         // one sheet needs row alignment, another needs column alignment.
-        let mut row_shift_target: Vec<(u32, u32, CellValue)> = grid(10, 3);
-        row_shift_target.extend((1..=3).map(|c| (11, c, num(9000.0 + c as f64))));
+        //
+        // RowShift's insertion must land *inside* the sheet (row 5 of 10),
+        // not appended past the last row — appending never cascades under
+        // coordinate diffing in the first place (there's nothing after it
+        // to misalign), so a mid-sheet insertion is what actually
+        // exercises row alignment's per-sheet selection here.
+        let mut row_shift_target: Vec<(u32, u32, CellValue)> = Vec::new();
+        for r in 1..=4u32 {
+            row_shift_target.extend((1..=3u32).map(|c| (r, c, num((r * 1000 + c) as f64))));
+        }
+        row_shift_target.extend((1..=3u32).map(|c| (5, c, num(9000.0 + c as f64))));
+        for r in 5..=10u32 {
+            row_shift_target.extend((1..=3u32).map(|c| (r + 1, c, num((r * 1000 + c) as f64))));
+        }
         // (kept small: this test only checks that BOTH sheets improve,
         // not exact cascade sizes — those are covered by the two
         // single-sheet tests above/below)
@@ -247,6 +259,25 @@ mod tests {
             sheet_with_values("RowShift", &row_shift_target),
             sheet_with_values("ColShift", &col_shift_target),
         ]);
+
+        // Sanity: both sheets must actually cascade under coordinate
+        // diffing (more than just the truly new content), or this test
+        // couldn't distinguish "per-sheet selection fixed it" from
+        // "there was nothing to fix" in the first place.
+        let row_shift_coord = diff_sheet(
+            "RowShift",
+            Some(&base.sheets()[0]),
+            Some(&target.sheets()[0]),
+        )
+        .unwrap();
+        assert!(sheet_total_changes(&row_shift_coord) > 3);
+        let col_shift_coord = diff_sheet(
+            "ColShift",
+            Some(&base.sheets()[1]),
+            Some(&target.sheets()[1]),
+        )
+        .unwrap();
+        assert!(sheet_total_changes(&col_shift_coord) > 10);
 
         let best = diff_workbooks_best_effort(
             &base,
