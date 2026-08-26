@@ -86,7 +86,7 @@ GitHub Copilotの自動PRレビューが7ラウンドにわたり計21件の重�
 ## 依存関係
 
 - 依存先: [`diff/engine.rs`](engine.md)（`diff_sheet`/`diff_merges`/`visibility_diff`を`pub(crate)`化して再利用——片側のみのシート・結合セル・可視性の扱いを座標一致エンジンと完全に一致させるため、独自に再実装しない）、[`diff/model.rs`](model.md)（`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus`。同じ`CellDiff`型を再利用し`old_col`のみ実際に populate する）、[`error.rs`](../error.md)（`Error::ColumnAlignmentCostTooHigh`）、[`json.rs`](../json.md)（`cell_value_to_json`/`style_to_json`）、[`model/sheet.rs`](../model/sheet.md)（`Sheet::iter_cells`、`max_row`/`max_col`）
-- 依存元: [`diff/mod.rs`](mod.md)（`diff_workbooks_aligned_columns`/`ColumnAlignmentLimits`を再エクスポート）
+- 依存元: [`diff/mod.rs`](mod.md)（`diff_workbooks_aligned_columns`/`ColumnAlignmentLimits`を再エクスポート）、[`diff/best_effort.rs`](best_effort.md)（`align_sheet_columns`をシート単位で直接呼び出す。[Issue #25](https://github.com/MinamiyamaKotaro/exceldiff/issues/25)向けに`pub(crate)`化——理由は`align_sheet_columns`自身のdocコメント参照）
 
 ## エラー処理方針
 

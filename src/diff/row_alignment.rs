@@ -964,7 +964,14 @@ fn align_rows(
 /// Diffs one sheet known to exist on both sides, aligning rows by content
 /// before diffing cells. Returns `Ok(None)` when nothing changed (same
 /// "nothing to report" convention `diff::engine::diff_sheet` uses).
-fn align_sheet_rows(
+///
+/// `pub(crate)` (rather than private) for the same reason `diff_sheet`
+/// itself is (see that function's doc comment): `diff::best_effort`
+/// (Issue #25) calls this directly, per sheet, alongside `diff_sheet` and
+/// `diff::col_alignment::align_sheet_columns`, to pick whichever strategy
+/// reports the fewest changes for that one sheet — a whole-workbook
+/// `diff_workbooks_aligned_rows` call isn't fine-grained enough for that.
+pub(crate) fn align_sheet_rows(
     name: &str,
     base: &Sheet,
     target: &Sheet,
