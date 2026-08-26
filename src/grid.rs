@@ -1599,4 +1599,38 @@ mod tests {
             grid_sections_from_paths("A", None, Some(head.path_str()), DiffMode::Auto).is_empty()
         );
     }
+
+    #[test]
+    fn grid_sections_from_paths_deleted_parse_error_is_empty() {
+        let base = TempFile::new("grid_deleted_parse_error", b"not a zip file");
+        assert!(
+            grid_sections_from_paths("D", Some(base.path_str()), None, DiffMode::Auto).is_empty()
+        );
+    }
+
+    #[test]
+    fn grid_sections_from_paths_modified_base_parse_error_is_empty() {
+        let base = TempFile::new("grid_modified_base_error", b"not a zip file");
+        let head = TempFile::new("grid_modified_base_error_head", &minimal_xlsx_zip("42"));
+        assert!(grid_sections_from_paths(
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            DiffMode::Auto
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn grid_sections_from_paths_modified_head_parse_error_is_empty() {
+        let base = TempFile::new("grid_modified_head_error_base", &minimal_xlsx_zip("42"));
+        let head = TempFile::new("grid_modified_head_error", b"not a zip file");
+        assert!(grid_sections_from_paths(
+            "M",
+            Some(base.path_str()),
+            Some(head.path_str()),
+            DiffMode::Auto
+        )
+        .is_empty());
+    }
 }

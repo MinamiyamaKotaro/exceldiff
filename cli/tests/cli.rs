@@ -408,3 +408,26 @@ fn grid_html_dir_writes_nothing_when_there_are_no_visual_changes() {
     let manifest = std::fs::read_to_string(format!("{}/manifest.tsv", dir.path_str())).unwrap();
     assert_eq!(manifest, "");
 }
+
+#[test]
+fn grid_html_dir_failure_only_warns_and_still_exits_successfully() {
+    // A path nested *inside* a plain file can never be created as a
+    // directory (`create_dir_all` fails partway through) — this is
+    // enough to exercise write_grid_sections's error path without
+    // needing to fabricate a permissions failure.
+    let not_a_dir = TempFile::new("grid_html_dir_blocker", b"not a directory");
+    let unreachable_dir = format!("{}/subdir", not_a_dir.path_str());
+
+    let head = TempFile::new("grid_html_dir_failure_head", &minimal_xlsx_zip("42"));
+    let out = run(&[
+        "--grid-html-dir",
+        &unreachable_dir,
+        "path/a.xlsx",
+        "A",
+        "",
+        head.path_str(),
+    ]);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).starts_with("### 🆕 Added · `path/a.xlsx`\n"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("warning: could not write grid HTML"));
+}
