@@ -55,3 +55,5 @@ jobs:
         run: |
           echo "has-changes=${{ steps.xlsx_diff.outputs.has-changes }}"
           echo "changed-files-count=${{ steps.xlsx_diff.outputs.changed-files-count }}"
+          echo "--- rendered diff body (job-summary source), to confirm max-rows-per-sheet/diff-mode ---"
+          cat "${{ runner.temp }}/xlsx-diff-comment.md"
