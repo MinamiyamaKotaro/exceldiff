@@ -82,6 +82,14 @@ runs:
 - 一時的なコメント本文ファイルは、呼び出し元の作業ツリーを汚さないよう`${{ runner.temp }}`(ランナーがjobごとに用意する一時ディレクトリ)配下に書き出す。
 - コメント投稿に使うトークンは`github-token`入力として公開し、既定値は`${{ github.token }}`(呼び出し元workflowのGITHUB_TOKENをそのまま使う)とする。呼び出し元がカスタムPATを使いたい場合はこの入力を上書きできる。`peter-evans/find-comment`・`peter-evans/create-or-update-comment`双方とも同名の`token`入力(既定値`${{ github.token }}`)を持つため、そこへそのまま渡す。
 
+### 事後発見: `while read ... done <<< "$var"`をスクリプト末尾に置くと`set -e`下で意図せず失敗しうる
+
+[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)実装(PR #38)のライブ検証中に発見・修正した問題。「差分計算」ステップの末尾は`if [ -z "$changed" ]; ... else; while IFS=$'\t' read -r file_status path; do ...; done <<< "$changed"; fi`という構造で、変更ファイルが**1件だけ**の場合にステップが`Process completed with exit code 1`として失敗することがあった(GitHub Actions実機上でのみ、複数回連続で再現。ローカルの`bash`では再現せず)——`while`ループがスクリプト内の最後の文であり、ループ終端(herestringを読み切った`read`の非ゼロ終了)がそのままスクリプト自体の終了コードとして扱われてしまう経路があったとみられる。ループの内容自体は正しく実行され、`$OUT`への書き込みも完了していたにもかかわらず、ステップ全体が失敗として報告されていた。
+
+対処として、`if`/`fi`ブロックの直後に副作用のない`:`(no-op、常に終了コード0)を明示的なスクリプト末尾として追加した——ループの終端コードにスクリプト全体の終了コードが依存しないようにする、という一般的なシェルスクリプトの防御策。ローカルの`bash 3.2`では元々このパターンでも問題が再現しなかった(POSIX的にはループの終了コードはループ**本体**の最後のコマンドのものであり、ループ条件のread自体の失敗ではないはず)ため、GitHub Actionsランナー側の`bash`(Ubuntu、5系)固有の挙動である可能性が高いが、根本原因を完全には特定できていない——`:`追加によりCI上で3回連続の成功を確認済みで、実用上はこれで十分と判断した。
+
+この経緯は、単一ファイルのみ変更されたPR(実運用で最も頻度が高いケース)に対して本actionが機能しなくなるリスクだった、という点で重要——複数ファイルの差分でのテストだけでは検出できなかった([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)のセルフドッグフーディング時は複数ファイル変更や偶然2ファイル以上のケースが多く、単一ファイル変更のケースを明示的に検証していなかった)。
+
 ## 依存関係
 
 - 依存先: [`cli/`](cli.md)(`cargo build -p xlsxdiff`でビルドし、`xlsxdiff`バイナリを1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない)
@@ -97,7 +105,7 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 
 1. **静的検証**: `action.yml`はYAMLとして構文検証する(`actionlint`は`.github/workflows/`配下のワークフローファイルのみを対象とし`action.yml`形式のcomposite actionメタデータには非対応のため、Python `yaml.safe_load`等で構文のみ検証)。呼び出し元ワークフロー側(`.github/workflows/xlsx-diff.yml`)は`actionlint`でも検証可能。
 2. **シェルロジックの単体検証**: 「変更ファイルごとに`git show`でbase/headを取り出し`xlsxdiff`を起動してMarkdownへ連結し、`has-changes`/`changed-files-count`を`$GITHUB_OUTPUT`へ書く」というシェルスクリプト部分は`${{ github.action_path }}`・`${{ runner.temp }}`・`$GITHUB_OUTPUT`をローカルパスに置き換えれば`bash`だけでそのまま実行できる。実際に、ローカルの使い捨てgitリポジトリへA(追加)・M(変更)・D(削除)の3ステータスが混在する差分を作りこのスクリプトを実行して意図通りのMarkdownが生成されること、および変更あり/なし双方のケースで`has-changes`/`changed-files-count`が正しい値になることを確認済み。`--max-rows-per-sheet`/`--diff-mode`フラグが実際に`MarkdownOptions`へ届くことは、`cli/`側の統合テスト([`cli/tests/cli.rs`](../../cli/tests/cli.rs))で検証している(下記「依存関係」)——`action.yml`のシェルスクリプト部分としては、フラグの値をそのまま`"$BIN"`へ渡しているだけなので、フラグ自体の意味までは再検証しない。
-3. **実際のGitHub Actions上での結合検証**: `.github/workflows/xlsx-diff.yml`自体を`uses: ./`で本actionを呼び出す形に書き換えた(下記「依存関係」参照)。これにより、`.xlsx`ファイルを変更する今後の任意のPRが本action全体(Rustツールチェーンのセットアップ・`github.action_path`起点でのビルド・`rust-cache`のワークスペース指定・コメント投稿)の実行結果を検証する回帰テストとして機能する——外部のテスト用リポジトリを別途用意しなくても、本リポジトリ自身がdogfoodingの場になる。
+3. **実際のGitHub Actions上での結合検証**: `.github/workflows/xlsx-diff.yml`自体を`uses: ./`で本actionを呼び出す形に書き換えた(下記「依存関係」参照)。これにより、`.xlsx`ファイルを変更する今後の任意のPRが本action全体(Rustツールチェーンのセットアップ・`github.action_path`起点でのビルド・`rust-cache`のワークスペース指定・コメント投稿)の実行結果を検証する回帰テストとして機能する——外部のテスト用リポジトリを別途用意しなくても、本リポジトリ自身がdogfoodingの場になる。**この結合検証だけが発見できた不具合が実際にあった**(上記「事後発見」参照)——単一ファイルのみ変更というケースは、ローカルのシェルスクリプト単体検証(複数ステータス混在の差分で検証していた)や静的検証では再現せず、GitHub Actions実機での複数回の試行によってのみ再現・特定できた。composite actionの検証において実機結合テストを省略できない理由の実例。
 
 ## 未決事項 / オープンクエスチョン
 
