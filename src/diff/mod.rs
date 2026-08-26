@@ -19,10 +19,15 @@
 //!   capped, opt-in alternative that matches rows by content first, so an
 //!   inserted/deleted row doesn't cascade into spurious diffs for every
 //!   row after it (see `row_alignment`'s doc comment for the full design).
+//! - `best_effort`: `diff_workbooks_best_effort` (Issue #25) — picks
+//!   whichever of coordinate/row-aligned/column-aligned diffing reports
+//!   the fewest changes, per sheet, so a caller doesn't have to choose a
+//!   mode up front (see `best_effort`'s doc comment for the full design).
 //! - `storage` (Cargo feature `diff-storage`): `DiffStore` — persists
 //!   revisions and diffs to SQLite, and serves a revision's full JSON back
 //!   out verbatim when it's flagged HEAD.
 
+pub mod best_effort;
 pub mod col_alignment;
 pub mod engine;
 pub mod model;
@@ -30,6 +35,7 @@ pub mod row_alignment;
 #[cfg(feature = "diff-storage")]
 pub mod storage;
 
+pub use best_effort::diff_workbooks_best_effort;
 pub use col_alignment::{diff_workbooks_aligned_columns, ColumnAlignmentLimits};
 pub use engine::{diff_paths, diff_workbooks};
 pub use model::{CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff};

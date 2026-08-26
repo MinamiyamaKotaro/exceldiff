@@ -332,7 +332,15 @@ struct ColumnContent<'a> {
 /// Diffs one sheet known to exist on both sides, aligning columns by
 /// content before diffing cells. Returns `Ok(None)` when nothing changed
 /// (same "nothing to report" convention `diff::engine::diff_sheet` uses).
-fn align_sheet_columns(
+///
+/// `pub(crate)` (rather than private) for the same reason `diff_sheet`
+/// itself is (see that function's doc comment): `diff::best_effort`
+/// (Issue #25) calls this directly, per sheet, alongside `diff_sheet` and
+/// `diff::row_alignment::align_sheet_rows`, to pick whichever strategy
+/// reports the fewest changes for that one sheet — a whole-workbook
+/// `diff_workbooks_aligned_columns` call isn't fine-grained enough for
+/// that.
+pub(crate) fn align_sheet_columns(
     name: &str,
     base: &Sheet,
     target: &Sheet,

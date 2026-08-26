@@ -24,7 +24,8 @@
 //! visually distinct from a cell-value hunk.
 
 use crate::diff::{
-    diff_workbooks, CellDiff, CellPos, DiffStatus, MergeDiff, SheetDiff, WorkbookDiff,
+    diff_workbooks_best_effort, CellDiff, CellPos, ColumnAlignmentLimits, DiffStatus, MergeDiff,
+    RowAlignmentLimits, SheetDiff, WorkbookDiff,
 };
 use crate::json::JsonCellValue;
 use crate::model::CellRef;
@@ -364,11 +365,12 @@ fn longest_backtick_run(text: &str) -> usize {
 /// already resolved (e.g. `.github/workflows/xlsx-diff.yml`, extracting
 /// the base/head git revisions via `git show` into temp files before
 /// invoking the `cli/` crate's `xlsxdiff` binary), does the
-/// parsing (`parse_workbook`), diffing (`diff_workbooks`), and Markdown
-/// rendering (`format_file_section`) in one call. This is the one place
-/// that orchestration lives now — the CLI itself only turns argv into
-/// these five arguments and writes the returned `String` to stdout, no
-/// process spawn needed to exercise it (see `tests` below).
+/// parsing (`parse_workbook`), diffing (`diff_workbooks_best_effort`,
+/// Issue #25), and Markdown rendering (`format_file_section`) in one
+/// call. This is the one place that orchestration lives now — the CLI
+/// itself only turns argv into these five arguments and writes the
+/// returned `String` to stdout, no process spawn needed to exercise it
+/// (see `tests` below).
 pub fn diff_file_section_from_paths(
     display_path: &str,
     git_status: &str,
@@ -430,7 +432,12 @@ pub fn diff_file_section_from_paths(
                     );
                 }
             };
-            let diff = diff_workbooks(&base, &head);
+            let diff = diff_workbooks_best_effort(
+                &base,
+                &head,
+                RowAlignmentLimits::default(),
+                ColumnAlignmentLimits::default(),
+            );
             format_file_section(display_path, &FileStatus::Modified(&diff), options)
         }
         other => format_file_section(display_path, &FileStatus::Unrecognized(other), options),

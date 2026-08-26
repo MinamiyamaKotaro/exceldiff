@@ -13,7 +13,7 @@
 - 結合セルの変更（[`diff::MergeDiff`](diff/model.md)、Issue #8）を、セルのハンクと同じ ```` ```diff ```` フェンス内に `@@ <始点>:<終点> (merge) @@` ハンクとして整形する(`format_merge_hunk`)。集計行(`{added} added, {modified} modified, {deleted} deleted`)では、結合セルの追加/解除/リサイズをすべて「modified」に算入する — 結合の変更は特定の1セルの追加・削除ではなく「既存セルのグルーピングが変わった」ことなので、どちらから見ても一種の変更と捉える方が座りが良いため
 - `MarkdownOptions::max_rows_per_sheet` で1シートあたりのセルハンク表示件数上限を呼び出し側から指定可能にする（[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)のinput化と接続。結合セルハンクは上限の対象外 — 理由は下記コード中のドキュメントコメント参照）
 - ファイルの見出し(`` ### <バッジ> · `path` ``)に、追加/変更/削除を一目で判別できる絵文字バッジ(🆕/✏️/🗑️/❓)を付与する(`file_status_badge`) — パスだけでは複数ファイルが変更されたPRで状態を見分けにくいため
-- **含まない責務**: `.xlsx` のパース・差分計算そのもの（[`parse_workbook`](lib.md)・[`diff::diff_workbooks`](diff/engine.md)。呼び出し側の責務）、GitHub Actionsワークフロー自体の実装（`.github/workflows/xlsx-diff.yml`）、方眼紙Excelを実際のExcelグリッドのような見た目でHTML表示する機能（別issueの検討事項。GitHubのPRコメントは投稿されたHTML内の `style=` 属性をサニタイズして無効化するため、色付きの罫線・塗りつぶしをコメント本文へ直接埋め込むことはできない — この制約により、そうした視覚的なグリッド表示は別の出力先（例: スクリーンショット画像＋GitHub Pagesのリンク）を要する設計上の判断であり、本モジュールのスコープ外）
+- **含まない責務**: `.xlsx` のパース・差分計算そのもの（[`parse_workbook`](lib.md)・[`diff::diff_workbooks_best_effort`](diff/best_effort.md)、Issue #25。呼び出し側の責務）、GitHub Actionsワークフロー自体の実装（`.github/workflows/xlsx-diff.yml`）、方眼紙Excelを実際のExcelグリッドのような見た目でHTML表示する機能（別issueの検討事項。GitHubのPRコメントは投稿されたHTML内の `style=` 属性をサニタイズして無効化するため、色付きの罫線・塗りつぶしをコメント本文へ直接埋め込むことはできない — この制約により、そうした視覚的なグリッド表示は別の出力先（例: スクリーンショット画像＋GitHub Pagesのリンク）を要する設計上の判断であり、本モジュールのスコープ外）
 
 ## 主要な型・関数（案）
 
@@ -80,7 +80,7 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 
 本モジュールの関数はすべて `Result` を返さない。`format_file_section`/`format_workbook_diff`は、入力として受け取る `WorkbookDiff`/`FileStatus` が既に呼び出し側で解決済みの正常なデータであることを前提に、失敗しうる操作（ファイルパース・差分計算）を一切行わない——パース失敗そのものは `FileStatus::AddedParseError`/`ModifiedParseError` という**データとして**表現し、呼び出し側がその情報を渡せば、これらの関数はエラーメッセージをそのままMarkdown文字列へ整形するだけである（[`CellDiff::old_value`/`new_value`](diff/model.md)が「結果を列挙子で保持する」慣習と同じ設計）。
 
-一方`diff_file_section_from_paths`(Issue #32)は、`parse_workbook`/`diff_workbooks`という失敗しうる操作を自ら呼び出すオーケストレーション関数である。ただしその失敗も`Result`ではなく同じ「データとして表現する」慣習に従う——`parse_workbook`が`Err`を返した場合、それを呼び出し元へ伝播させるのではなく、その場で`FileStatus::AddedParseError`/`ModifiedParseError`を構築して`format_file_section`へ渡し、正常に整形されたMarkdown文字列(エラーメッセージを本文に含む)を返す。そのため本関数も`Result`を返さず、常に`String`を返す。
+一方`diff_file_section_from_paths`(Issue #32)は、失敗しうる`parse_workbook`を自ら呼び出すオーケストレーション関数である。その失敗も`Result`ではなく同じ「データとして表現する」慣習に従う——`parse_workbook`が`Err`を返した場合、それを呼び出し元へ伝播させるのではなく、その場で`FileStatus::AddedParseError`/`ModifiedParseError`を構築して`format_file_section`へ渡し、正常に整形されたMarkdown文字列(エラーメッセージを本文に含む)を返す。そのため本関数も`Result`を返さず、常に`String`を返す。続く差分計算に使う`diff_workbooks_best_effort`(Issue #25、[best_effort.md](diff/best_effort.md))自体は`Result`を返さない——行/列アライメントのコスト超過という内部的な失敗は、この関数自身がシート単位でフォールバックして吸収するため、`diff_file_section_from_paths`側は失敗ケースを一切気にする必要がない。
 
 ## テスト方針
 

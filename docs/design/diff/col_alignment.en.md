@@ -86,7 +86,7 @@ Seven rounds of GitHub Copilot's automated PR review flagged twenty-one real iss
 ## Dependencies
 
 - Depends on: [`diff/engine.rs`](engine.en.md) (`diff_sheet`/`diff_merges`/`visibility_diff`, widened to `pub(crate)` for reuse — so a one-sided sheet, merges, and visibility are handled *identically* to the coordinate-based engine rather than reimplemented), [`diff/model.rs`](model.en.md) (`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus` — reuses the same `CellDiff` type, populating only `old_col`), [`error.rs`](../error.en.md) (`Error::ColumnAlignmentCostTooHigh`), [`json.rs`](../json.en.md) (`cell_value_to_json`/`style_to_json`), [`model/sheet.rs`](../model/sheet.en.md) (`Sheet::iter_cells`, `max_row`/`max_col`)
-- Depended on by: [`diff/mod.rs`](mod.en.md) (re-exports `diff_workbooks_aligned_columns`/`ColumnAlignmentLimits`)
+- Depended on by: [`diff/mod.rs`](mod.en.md) (re-exports `diff_workbooks_aligned_columns`/`ColumnAlignmentLimits`), [`diff/best_effort.rs`](best_effort.en.md) (calls `align_sheet_columns` directly, per sheet — widened to `pub(crate)` for [Issue #25](https://github.com/MinamiyamaKotaro/exceldiff/issues/25), see `align_sheet_columns`'s own doc comment for why)
 
 ## Error Handling Policy
 

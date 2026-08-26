@@ -39,8 +39,8 @@ pub use container::sanitize::SizeLimits;
 pub use diff::DiffStore;
 pub use diff::{
     diff_paths, diff_workbooks, diff_workbooks_aligned_columns, diff_workbooks_aligned_rows,
-    CellDiff, CellPos, ColumnAlignmentLimits, DiffStatus, MergeDiff, RowAlignmentLimits, SheetDiff,
-    WorkbookDiff,
+    diff_workbooks_best_effort, CellDiff, CellPos, ColumnAlignmentLimits, DiffStatus, MergeDiff,
+    RowAlignmentLimits, SheetDiff, WorkbookDiff,
 };
 pub use error::{Error, Result};
 pub use grid::render_sheet_split;

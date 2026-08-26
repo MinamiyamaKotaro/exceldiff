@@ -66,7 +66,7 @@ pub fn diff_workbooks_aligned_rows(
 ## 依存関係
 
 - 依存先: [`diff/engine.rs`](engine.md)（`diff_sheet`/`diff_merges`/`visibility_diff`を`pub(crate)`化して再利用）、[`diff/model.rs`](model.md)（`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus`。`diff::col_alignment`と同じ`CellDiff`型を再利用し`old_row`のみ実際に populate する）、[`error.rs`](../error.md)（`Error::RowAlignmentCostTooHigh`）、[`json.rs`](../json.md)（`cell_value_to_json`/`style_to_json`）、[`model/sheet.rs`](../model/sheet.md)（`Sheet::iter_cells`）
-- 依存元: [`diff/mod.rs`](mod.md)（`diff_workbooks_aligned_rows`/`RowAlignmentLimits`を再エクスポート）
+- 依存元: [`diff/mod.rs`](mod.md)（`diff_workbooks_aligned_rows`/`RowAlignmentLimits`を再エクスポート）、[`diff/best_effort.rs`](best_effort.md)（`align_sheet_rows`をシート単位で直接呼び出す。[Issue #25](https://github.com/MinamiyamaKotaro/exceldiff/issues/25)向けに`pub(crate)`化——理由は`align_sheet_rows`自身のdocコメント参照）
 
 ## エラー処理方針
 

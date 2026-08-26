@@ -66,7 +66,7 @@ Algorithm (per sheet present on both sides):
 ## Dependencies
 
 - Depends on: [`diff/engine.rs`](engine.en.md) (reuses `diff_sheet`/`diff_merges`/`visibility_diff`, made `pub(crate)`), [`diff/model.rs`](model.en.md) (`CellDiff`/`SheetDiff`/`WorkbookDiff`/`DiffStatus` — reuses the same `CellDiff` type `diff::col_alignment` does, populating only `old_row`), [`error.rs`](../error.en.md) (`Error::RowAlignmentCostTooHigh`), [`json.rs`](../json.en.md) (`cell_value_to_json`/`style_to_json`), [`model/sheet.rs`](../model/sheet.en.md) (`Sheet::iter_cells`)
-- Depended on by: [`diff/mod.rs`](mod.en.md) (re-exports `diff_workbooks_aligned_rows`/`RowAlignmentLimits`)
+- Depended on by: [`diff/mod.rs`](mod.en.md) (re-exports `diff_workbooks_aligned_rows`/`RowAlignmentLimits`), [`diff/best_effort.rs`](best_effort.en.md) (calls `align_sheet_rows` directly, per sheet — widened to `pub(crate)` for [Issue #25](https://github.com/MinamiyamaKotaro/exceldiff/issues/25), see `align_sheet_rows`'s own doc comment for why)
 
 ## Error Handling Policy
 
