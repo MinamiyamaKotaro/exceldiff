@@ -785,8 +785,11 @@ pub fn wrap_grid_page(sections: &str) -> String {
      screenshot tool can crop to `.page-content` via an element
      screenshot (which crops to the target's own box) instead of trying
      to measure/resize the viewport to match unknown, per-sheet content
-     dimensions. */
-  .page-content {{ display: inline-block; }}
+     dimensions. Its own `padding` (not `body`'s, which sits *outside*
+     this element's box and so isn't part of the crop at all) is what
+     keeps that screenshot from looking cropped edge-to-edge with no
+     breathing room. */
+  .page-content {{ display: inline-block; padding: 1.5rem; }}
 </style>
 </head>
 <body>
