@@ -294,6 +294,15 @@ fn diff_mode_flag_rejects_an_unknown_value() {
 }
 
 #[test]
+fn a_recognized_flag_with_no_value_following_it_is_a_usage_error() {
+    // "--diff-mode" is the only argument — nothing left for
+    // parse_options to consume as its value.
+    let out = run(&["--diff-mode"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: xlsxdiff "));
+}
+
+#[test]
 fn diff_mode_coordinate_sees_a_row_shift_that_auto_mode_explains_away() {
     // Same "blank row inserted" scenario as
     // `src/markdown.rs`'s `diff_mode_*` unit tests — verified again here
