@@ -41,19 +41,3 @@ jobs:
           fetch-depth: 0
 
       - uses: ./
-        id: xlsx_diff
-        with:
-          comment: 'false'
-          job-summary: 'true'
-          max-rows-per-sheet: '1'
-          diff-mode: 'coordinate'
-
-      # TEMPORARY validation step for PR #38 (Issue #24 inputs/outputs) —
-      # confirms the new outputs actually reach a later step. Removed once
-      # this live run is confirmed.
-      - name: Print action outputs (temporary, PR #38 validation)
-        run: |
-          echo "has-changes=${{ steps.xlsx_diff.outputs.has-changes }}"
-          echo "changed-files-count=${{ steps.xlsx_diff.outputs.changed-files-count }}"
-          echo "--- rendered diff body (job-summary source), to confirm max-rows-per-sheet/diff-mode ---"
-          cat "${{ runner.temp }}/xlsx-diff-comment.md"
