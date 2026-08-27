@@ -1,9 +1,0 @@
-{
-  "name": "xlsx-diff-screenshot",
-  "private": true,
-  "type": "module",
-  "description": "Renders one HTML file (a grid.rs split-diff page) to a PNG screenshot, for action.yml's `visual` mode. Not part of the published exceldiff crate — see docs/design/action.md.",
-  "dependencies": {
-    "playwright": "^1.48.0"
-  }
-}

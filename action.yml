@@ -6,7 +6,7 @@ author: 'MinamiyamaKotaro'
 
 # Feather v4.28.0 icon set (GitHub Marketplace branding requirement) —
 # `grid` mirrors this action's own `visual: true` mode, which renders an
-# actual Excel-like grid screenshot of each changed sheet (grid.rs).
+# actual Excel-like grid view of each changed sheet (grid.rs).
 # `color: green` per explicit product decision (Issue #27).
 branding:
   icon: 'grid'
@@ -33,17 +33,17 @@ branding:
 #     declare their own `permissions:` block — that's workflow/job-level
 #     only; only needed when `comment: true`, the default).
 #   - `visual: true` needs no extra `permissions:` beyond the plain
-#     `contents: read` above: rendered grid screenshots are uploaded as a
-#     workflow artifact (`actions/upload-artifact@v4`), not committed
-#     anywhere, and artifact upload authorizes via the runner's own
-#     `ACTIONS_RUNTIME_TOKEN` rather than the `GITHUB_TOKEN` permissions
-#     model. See docs/design/grid.md for why an image is needed at all
-#     (GitHub sanitizes `style=` out of PR comment HTML, so the grid
-#     itself can't be pasted into the comment directly) and Issue #47 for
-#     why the artifact route replaced an earlier
+#     `contents: read` above: the rendered grid HTML pages are uploaded
+#     as a workflow artifact (`actions/upload-artifact@v4`), not
+#     committed anywhere, and artifact upload authorizes via the runner's
+#     own `ACTIONS_RUNTIME_TOKEN` rather than the `GITHUB_TOKEN`
+#     permissions model. See docs/design/grid.md for why a downloadable
+#     page is needed at all (GitHub sanitizes `style=` out of PR comment
+#     HTML, so the grid itself can't be pasted into the comment directly)
+#     and Issue #47 for why the artifact route replaced an earlier
 #     commit-to-orphan-branch-plus-raw.githubusercontent.com-link design:
-#     that scheme left screenshots unviewable on private repos (raw
-#     content on a private repo needs per-viewer auth the browser doesn't
+#     that scheme left the grid unviewable on private repos (raw content
+#     on a private repo needs per-viewer auth the browser doesn't
 #     automatically carry across domains), and a since-abandoned
 #     data-URI/`uploads.github.com`-attachment alternative either got
 #     stripped by GitHub's comment sanitizer or turned out to be
@@ -51,7 +51,12 @@ branding:
 #     slower to view (no inline preview) but is gated by the same
 #     repository-read permission as everything else here — the only
 #     option confirmed to actually enforce "only people with repo access
-#     can see this."
+#     can see this." The artifact ships the standalone HTML page itself
+#     (not a rasterized screenshot, dropped after the same Issue #47
+#     round of user feedback) — a large sheet renders as a huge PNG that
+#     shrinks to illegible in most viewers, where the HTML page just
+#     scrolls/zooms like any other page. This also means visual mode no
+#     longer needs Node.js/Playwright/Chromium at all.
 #   - trigger `on: pull_request` (this action does nothing useful outside
 #     a pull_request event: the diff step reads
 #     `github.event.pull_request.base.sha`/`head.sha`).
@@ -99,13 +104,11 @@ inputs:
     default: 'auto'
   visual:
     description: >-
-      Also render an Excel-like Before/After grid screenshot for each
-      changed sheet (via `grid.rs`'s `render_sheet_split`) and attach
-      them to the comment as a downloadable workflow artifact (see
-      "Preconditions" above for why it's a download link rather than an
-      inline image). Installs Node.js + Playwright + a Chromium
-      download, which meaningfully adds to job runtime — off by default
-      for that reason.
+      Also render an Excel-like Before/After grid view for each changed
+      sheet (via `grid.rs`'s `render_sheet_split`) as a standalone HTML
+      page, and attach them to the comment as a downloadable workflow
+      artifact (see "Preconditions" above for why it's a download link
+      rather than something embedded inline).
     required: false
     default: 'false'
 
@@ -141,25 +144,6 @@ runs:
         cargo build --release -p xlsxdiff \
           --manifest-path "${{ github.action_path }}/Cargo.toml"
 
-    # `action-scripts/` (screenshot.mjs + package.json) is this action's
-    # own — installed from `github.action_path`, same reasoning as the
-    # Rust build above. Only installed when `visual: true` is actually
-    # requested, since Playwright's Chromium download is the single
-    # biggest cost this action can add to a job's runtime.
-    - name: Install Node.js
-      if: ${{ inputs.visual == 'true' }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: '22'
-
-    - name: Install screenshot dependencies
-      if: ${{ inputs.visual == 'true' }}
-      shell: bash
-      working-directory: ${{ github.action_path }}/action-scripts
-      run: |
-        npm install
-        npx playwright install --with-deps chromium
-
     - name: Compute diffs for changed files
       id: diff
       shell: bash
@@ -172,7 +156,6 @@ runs:
         MAX_ROWS_PER_SHEET: ${{ inputs.max-rows-per-sheet }}
         DIFF_MODE: ${{ inputs.diff-mode }}
         VISUAL: ${{ inputs.visual }}
-        SCREENSHOT_SCRIPT: ${{ github.action_path }}/action-scripts/screenshot.mjs
         VISUALS_DIR: ${{ runner.temp }}/xlsx-diff-visuals
         VISUALS_LIST: ${{ runner.temp }}/xlsx-diff-visuals-list.tsv
       run: |
@@ -242,35 +225,28 @@ runs:
 
             "$BIN" "${bin_args[@]}" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
 
-            # A screenshot failure for one sheet is reported to stderr
-            # (visible in the job log) and skipped — never fatal to the
-            # rest of the comment, the same "one file's problem doesn't
-            # stop the others" policy the text diff above already follows
-            # for a parse error. Captured PNGs are collected under
-            # $VISUALS_DIR rather than embedded inline — see the
-            # "Preconditions" comment at the top of this file for why —
-            # and shipped in one batch as a single workflow artifact once
-            # every changed file has been processed (below).
+            # Each sheet's standalone HTML page (already self-contained —
+            # inline <style>, no external assets, see grid.rs's
+            # wrap_grid_page) is collected under $VISUALS_DIR rather than
+            # embedded inline — see the "Preconditions" comment at the
+            # top of this file for why — and shipped in one batch as a
+            # single workflow artifact once every changed file has been
+            # processed (below). A copy failure for one sheet is reported
+            # to stderr and skipped — never fatal to the rest of the
+            # comment, the same "one file's problem doesn't stop the
+            # others" policy the text diff above already follows for a
+            # parse error.
             if [ "$VISUAL" = "true" ] && [ -s "$grid_dir/manifest.tsv" ]; then
               while IFS=$'\t' read -r sheet_name html_path; do
                 [ -z "$html_path" ] && continue
-                # A directory + fixed filename, not `mktemp --suffix=.png`
-                # directly — `--suffix` is a GNU-only mktemp extension
-                # (BSD/macOS mktemp, which a caller could hit on a
-                # `macos-latest` runner, rejects it outright).
-                png_dir=$(mktemp -d)
-                png_path="$png_dir/screenshot.png"
-                if ! node "$SCREENSHOT_SCRIPT" "$html_path" "$png_path" 2> /dev/null; then
-                  echo "warning: screenshot failed for $path : $sheet_name" >&2
-                  rm -rf "$png_dir"
-                  continue
-                fi
-                dest_rel="$(sanitize "$path")/sheet-$(sanitize "$sheet_name").png"
+                dest_rel="$(sanitize "$path")/sheet-$(sanitize "$sheet_name").html"
                 dest_abs="$VISUALS_DIR/$dest_rel"
                 mkdir -p "$(dirname "$dest_abs")"
-                cp "$png_path" "$dest_abs"
+                if ! cp "$html_path" "$dest_abs"; then
+                  echo "warning: failed to collect grid HTML for $path : $sheet_name" >&2
+                  continue
+                fi
                 printf '%s\t%s\n' "$path" "$sheet_name" >> "$VISUALS_LIST"
-                rm -rf "$png_dir"
               done < "$grid_dir/manifest.tsv"
             fi
             [ -n "$grid_dir" ] && rm -rf "$grid_dir"
@@ -297,23 +273,23 @@ runs:
           echo "has-visuals=false" >> "$GITHUB_OUTPUT"
         fi
 
-    # Uploaded as one artifact covering every screenshot from this run
-    # (all changed files/sheets), not one artifact per image — see the
+    # Uploaded as one artifact covering every sheet from this run (all
+    # changed files/sheets), not one artifact per page — see the
     # "Preconditions" comment at the top of this file for why this
     # replaced an inline raw.githubusercontent.com image link.
-    - name: Upload grid screenshots
+    - name: Upload grid views
       if: ${{ inputs.visual == 'true' && steps.diff.outputs.has-visuals == 'true' }}
       id: upload_visuals
       uses: actions/upload-artifact@v4
       with:
-        name: xlsx-diff-screenshots
+        name: xlsx-diff-grids
         path: ${{ runner.temp }}/xlsx-diff-visuals
 
     # Runs after the upload above specifically because `artifact-url` is
     # only known once the artifact actually exists — the comment body
     # ($OUT) was already written by the diff step, so this appends to it
     # rather than folding the link into that step's own output.
-    - name: Append screenshot artifact link to comment
+    - name: Append grid artifact link to comment
       if: ${{ inputs.visual == 'true' && steps.diff.outputs.has-visuals == 'true' }}
       shell: bash
       env:
@@ -324,9 +300,9 @@ runs:
         set -euo pipefail
         {
           echo
-          echo "### 🖼 Grid screenshots"
+          echo "### 🖼 Grid diff views"
           echo
-          echo "Screenshots of the changed sheets are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
+          echo "Excel-like grid views (HTML, one page per changed sheet — download and open in a browser) are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
           echo
           while IFS=$'\t' read -r path sheet_name; do
             echo "- ${path} — ${sheet_name}"

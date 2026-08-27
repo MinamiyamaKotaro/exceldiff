@@ -50,7 +50,7 @@ Option 3 keeps option 1's benefit (the library's published surface stays untouch
 
 - Depends on (normal): [`exceldiff`](lib.en.md) (a `path` dependency; uses `diff_file_section_from_paths`, `MarkdownOptions`, [`grid_sections_from_paths`/`wrap_grid_page`](grid.en.md), and `DiffMode`)
 - Depends on (dev only): `zip` (used only by `cli/tests/cli.rs` to build a controlled test `.xlsx` pair in-memory — see "Test plan" below; never part of the shipped binary)
-- Depended on by: [`action.yml`](action.en.md) (builds it with `cargo build --release -p xlsxdiff`, then runs `target/release/xlsxdiff` once per `.xlsx` file changed in the PR, concatenating each invocation's output into the comment body; also passes `--grid-html-dir` when `visual: true`, screenshotting the HTML it writes there with Playwright). [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml) itself is now a thin workflow that calls `action.yml` via `uses: ./` and no longer builds this crate directly
+- Depended on by: [`action.yml`](action.en.md) (builds it with `cargo build --release -p xlsxdiff`, then runs `target/release/xlsxdiff` once per `.xlsx` file changed in the PR, concatenating each invocation's output into the comment body; also passes `--grid-html-dir` when `visual: true`, attaching the HTML it writes there directly to a workflow artifact). [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml) itself is now a thin workflow that calls `action.yml` via `uses: ./` and no longer builds this crate directly
 
 ## Error handling policy
 

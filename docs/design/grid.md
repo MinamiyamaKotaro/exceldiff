@@ -6,7 +6,7 @@
 
 ## 背景・目的
 
-[markdown.mdの「設計判断」節](markdown.md)で述べた通り、GitHubはPRコメントに投稿されたHTML内の`style=`属性をサニタイズして無効化するため、`markdown.rs`が生成する```` ```diff ````フェンスは色付き表示ができる一方、実際のExcelのグリッド(列幅・結合セル・塗りつぶし色・罫線)をそのままの見た目で表示することはできない。本モジュールはその制約を受けない別の出力先(スクリーンショット画像、GitHub Pagesへの静的ホスティング、CIの成果物としてのダウンロード等——いずれも本モジュール自体のスコープ外)向けに、実際のExcelのグリッドに忠実なHTMLを生成する。
+[markdown.mdの「設計判断」節](markdown.md)で述べた通り、GitHubはPRコメントに投稿されたHTML内の`style=`属性をサニタイズして無効化するため、`markdown.rs`が生成する```` ```diff ````フェンスは色付き表示ができる一方、実際のExcelのグリッド(列幅・結合セル・塗りつぶし色・罫線)をそのままの見た目で表示することはできない。本モジュールはその制約を受けない別の出力先(workflow artifactとしてダウンロード可能な単体HTMLページ——実際の配信は本モジュール自体のスコープ外、[`action.md`](action.md)参照)向けに、実際のExcelのグリッドに忠実なHTMLを生成する。
 
 「方眼紙Excel」(細かく均一なセルグリッドに結合セルで見出し・枠を表現する、日本のビジネス文書に多いスタイル。[`lib.rs`](lib.md)自身がクレートの主眼としている対象)を主眼に置いており、その特性——数千行/数千列に及ぶことがある——を踏まえ、変更のない行/列が離れて存在する場合は`git diff`のコンテキスト行と同じ考え方で間を省略する。
 
@@ -19,8 +19,8 @@
 - 列幅を文字単位からpx単位へExcelの実際の変換式で換算し(`excel_width_to_px`)、`<table>`自体に総px幅を明示指定してブラウザが内容に合わせて列を広げるのを防ぐ(`table-layout: fixed`だけでは不十分——詳細は`render_table`のドキュメントコメント参照)
 - 変更のあった行/列の前後2行/2列だけを残し、それ以外の連続した未変更の行/列を`⋯ N row(s)/column(s) omitted ⋯`という1行/1列に畳み込む(`build_line_plan`)。行・列どちらの軸にも同じロジックを適用する
 - `grid_sections_from_paths`(Issue #23の後続、[`action.yml`の`visual`input](action.md))は`markdown.rs::diff_file_section_from_paths`と同じ「パス→パース→diff→整形」の高水準APIを、本モジュール独自に提供する——A/Dステータスは空の`Workbook`を片側に見立てた`diff_workbooks`呼び出しだけで(専用の差分計算ロジックを新設せずに)表現できる。返り値`Vec<GridSection>`はシート単位のHTMLフラグメントの集合で、パースエラー・変更なしの場合は空になる
-- `wrap_grid_page`は`render_sheet_split`/`GridSection::html`が返すフラグメント(群)を、スタイルシート・凡例付きの単体HTMLページへ包む——`examples/xlsx_diff_grid.rs`と`cli/`の`--grid-html-dir`(スクリーンショット用)の双方が共有する
-- **含まない責務**: 生成したHTML/PNGの配信・公開そのもの(実際にスクリーンショットを撮影してリポジトリへコミットする処理は[`cli/`](cli.md)と[`action.yml`](action.md)の責務——下記「未決事項」参照)
+- `wrap_grid_page`は`render_sheet_split`/`GridSection::html`が返すフラグメント(群)を、スタイルシート・凡例付きの単体HTMLページへ包む——`examples/xlsx_diff_grid.rs`と`cli/`の`--grid-html-dir`(workflow artifactへの添付用)の双方が共有する
+- **含まない責務**: 生成したHTMLの配信・公開そのもの(実際にworkflow artifactへ添付する処理は[`cli/`](cli.md)と[`action.yml`](action.md)の責務——下記「未決事項」参照)
 
 ## 主要な型・関数（案）
 
@@ -83,6 +83,6 @@ pub fn grid_sections_from_paths(
 
 ## 未決事項 / オープンクエスチョン
 
-1. ~~**生成したHTMLの配信経路**~~ **解決済み**: [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)の後続として実装した。CI上でPlaywright(ヘッドレスChromium)によりスクリーンショットPNGを生成する。当初は専用のorphanブランチ(`xlsx-diff-images`)へコミット・pushして`raw.githubusercontent.com`のURL経由でPRコメントへMarkdown画像として埋め込む方式だったが、プライベートリポジトリで画像が見えない欠陥が判明したため、`actions/upload-artifact@v4`でworkflow artifactとしてアップロードし、コメントにはダウンロードリンクを掲載する方式へ置き換えた([Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)。`action.yml`の`visual`input、詳細は[action.md](action.md)参照)。
+1. ~~**生成したHTMLの配信経路**~~ **解決済み**: [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)の後続として実装した。当初はPlaywright(ヘッドレスChromium)でHTMLをスクリーンショットPNG化し、専用のorphanブランチ(`xlsx-diff-images`)へコミット・pushして`raw.githubusercontent.com`のURL経由でPRコメントへMarkdown画像として埋め込む方式だったが、(a) プライベートリポジトリで画像が見えない欠陥が判明したため`actions/upload-artifact@v4`でworkflow artifactとしてアップロードしダウンロードリンクを掲載する方式へ、続けて(b) 大きなシートのスクリーンショットは縮小されて見た目が判別できないというフィードバックを受け、PNG化自体をやめて`wrap_grid_page`が生成する単体HTMLページをそのままartifactへ添付する方式へ置き換えた——結果としてPlaywright/Node.jsへの依存自体が不要になった([Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)。`action.yml`の`visual`input、詳細は[action.md](action.md)参照)。
 2. **本モジュールを`markdown.rs`と同様に確定した公開APIとして扱ってよいか**: `grid_sections_from_paths`/`wrap_grid_page`の追加により本番のワークフロー(`action.yml`の`visual`モード)から実際に消費されるようになったため、`render_sheet_split`のシグネチャ(`base`/`head`の`Workbook`全体を要求する形)は実運用を経て妥当と確認できた。今後大きく変更する予定はない。
 3. **列方向の省略と結合セルの相互作用**: `render_table`のドキュメントコメントに記載の通り、結合セルの起点が省略された行/列の中に位置する場合、`covered`の追跡が正しく機能しない既知の制約がある。方眼紙Excelの典型的な使い方(結合セルは通常、変更が集中する見出し・ラベル周辺にあり、それ自体が「変更に近い行/列」としてコンテキストに含まれやすい)では実際上問題になりにくいと考えているが、確証はない。

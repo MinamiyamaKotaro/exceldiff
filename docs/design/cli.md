@@ -50,7 +50,7 @@ CLIをどこに置くかについては3案が検討された(Issue #32のPRレ�
 
 - 依存先(通常): [`exceldiff`](lib.md)(`path`依存。`diff_file_section_from_paths`・`MarkdownOptions`・[`grid_sections_from_paths`/`wrap_grid_page`](grid.md)・`DiffMode`を使用)
 - 依存先(devのみ): `zip`(`cli/tests/cli.rs`が制御されたテスト用`.xlsx`ペアをin-memoryで組み立てるためだけに使用。下記「テスト方針」参照。バイナリ本体には含まれない)
-- 依存元: [`action.yml`](action.md)(`cargo build --release -p xlsxdiff`でビルドし、`target/release/xlsxdiff`をPRごとに変更された`.xlsx`ファイル1件につき1回起動して、その出力をコメント本文へ連結する。`visual: true`の場合は`--grid-html-dir`も渡し、書き出されたHTMLをPlaywrightでスクリーンショットする)。[`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)は`action.yml`を`uses: ./`で呼び出す薄いワークフローになっており、本クレートを直接ビルドしない
+- 依存元: [`action.yml`](action.md)(`cargo build --release -p xlsxdiff`でビルドし、`target/release/xlsxdiff`をPRごとに変更された`.xlsx`ファイル1件につき1回起動して、その出力をコメント本文へ連結する。`visual: true`の場合は`--grid-html-dir`も渡し、書き出されたHTMLをそのままworkflow artifactへ添付する)。[`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)は`action.yml`を`uses: ./`で呼び出す薄いワークフローになっており、本クレートを直接ビルドしない
 
 ## エラー処理方針
 

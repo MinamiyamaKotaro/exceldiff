@@ -10,7 +10,7 @@
 
 - Rustツールチェーンのセットアップ・`cli/`(パッケージ`xlsxdiff`)のビルド・変更された`.xlsx`ファイルごとの差分計算・Markdownコメントの投稿(または既存コメントの更新)までを、composite actionの`steps`としてカプセル化する。
 - 呼び出し元のワークフローファイルが個々のステップを重複して書く必要をなくす——本リポジトリ自身の`.github/workflows/xlsx-diff.yml`も、この`action.yml`を`uses: ./`で呼び出すことでセルフドッグフーディングする(下記「テスト方針」参照)。
-- `visual: true`の場合、変更のあったシートごとに[`grid.rs`のExcelライクなグリッドHTML](grid.md)をPlaywright(ヘッドレスChromium)でスクリーンショットし、1回のjob実行分をまとめて1つのGitHub Actions artifact(`actions/upload-artifact@v4`)としてアップロードして、そのダウンロードリンクをテキスト差分の下に追記する(下記「ビジュアルモード」参照)。実際にスクリーンショットを撮影・公開する処理そのものは[`grid.rs`の責務には含まれていない](grid.md)ため、この配線は本actionが担う。
+- `visual: true`の場合、変更のあったシートごとに[`grid.rs`が生成するExcelライクなグリッドHTML](grid.md)ページを収集し、1回のjob実行分をまとめて1つのGitHub Actions artifact(`actions/upload-artifact@v4`)としてアップロードして、そのダウンロードリンクをテキスト差分の下に追記する(下記「ビジュアルモード」参照)。実際にHTMLを収集・公開する処理そのものは[`grid.rs`の責務には含まれていない](grid.md)ため、この配線は本actionが担う。
 - **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形・グリッドHTML生成そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)/[`grid_sections_from_paths`](grid.md)と、それを呼び出す[`cli/`](cli.md)の責務)、事前ビルド済みバイナリの配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)の検討事項、P2)、変更セル数の合計を返すoutput・コミット単位での差分表示(いずれも[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み。下記「未決事項」参照)。
 
 ## inputs / outputs([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))
@@ -23,7 +23,7 @@
 | `job-summary` | bool文字列, `'false'` | `$GITHUB_STEP_SUMMARY`へも書き出すか。`comment`と独立に指定可能——forkからのPR等`pull-requests: write`権限を付与できない環境では`comment: false`・`job-summary: true`にすることで、権限エラーを起こさずJob Summary上で差分を確認できる |
 | `max-rows-per-sheet` | 数値文字列, `'30'` | [`MarkdownOptions::max_rows_per_sheet`](markdown.md)へ渡す(`cli/`の`--max-rows-per-sheet`フラグ経由) |
 | `diff-mode` | string enum `auto`\|`coordinate`, `'auto'` | [`MarkdownOptions::diff_mode`](markdown.md)へ渡す(`cli/`の`--diff-mode`フラグ経由)。`auto`は現行の`diff_workbooks_best_effort`(座標一致/行アライメント/列アライメント自動選択)、`coordinate`はアライメント検出をスキップした単純座標比較 |
-| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのスクリーンショットを生成し、workflow artifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要(下記「呼び出し元に要求する前提」)だが、Node.js・Playwright・Chromiumダウンロードが追加されジョブの実行時間に無視できない影響があるため既定はオフ |
+| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのビューを単体HTMLページとして生成し、workflow artifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要(下記「呼び出し元に要求する前提」) |
 
 | output | 型 | 内容 |
 |---|---|---|
@@ -71,11 +71,9 @@ runs:
     - dtolnay/rust-toolchain@stable
     - Swatinem/rust-cache@v2         # workspaces: 本action自身のパス起点
     - cargo build --release -p xlsxdiff --manifest-path ...
-    - if: inputs.visual      # actions/setup-node@v4
-    - if: inputs.visual      # action-scripts/ を npm install + playwright install --with-deps chromium
     - id: diff              # 変更ファイルごとにgit show + xlsxdiffを実行しMarkdownを組み立て、
                               # has-changes/changed-files-countを$GITHUB_OUTPUTへ書き出す。
-                              # visual: trueならシートごとにスクリーンショットを撮り、
+                              # visual: trueならシートごとの単体HTMLページを
                               # ${{ runner.temp }}/xlsx-diff-visuals/へ集約し、
                               # has-visualsを$GITHUB_OUTPUTへ書き出す
     - if: inputs.visual && steps.diff.outputs.has-visuals == 'true'
@@ -117,12 +115,11 @@ GitHubのPRコメントはHTML内の`style=`属性をサニタイズするため
 
 **現在の配信経路**(検討の経緯は[Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)、後述する旧方式からの置き換えの経緯は[Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)参照):
 
-1. **スクリーンショット生成**: `xlsxdiff --grid-html-dir <dir>`で書き出したシートごとのHTML(`exceldiff::wrap_grid_page`でラップ済み)を、`action-scripts/screenshot.mjs`(Playwright)でPNG化する。要素スクリーンショット(`page.locator(".page-content").screenshot()`)を使う——`page.screenshot({ fullPage: true })`は既定の1280pxビューポート幅までしか幅を縮められず、シートの実際の幅(可変)より余白が大きく残ってしまうため、`wrap_grid_page`側で`.page-content`に`display: inline-block`を与えて内容にぴったり合わせている。
-2. **成果物としてローカルに集約**: 生成したPNGは`git`へは一切コミットせず、`${{ runner.temp }}/xlsx-diff-visuals/{sanitize(ファイルパス)}/sheet-{sanitize(シート名)}.png`(`sanitize`は英数字`._-`以外を`_`へ潰す)へコピーするだけに留める。1件でも集まれば、diffステップの`has-visuals`outputを`true`にする。
-3. **単一artifactとしてアップロード**: 全ファイル・全シート分の処理が終わった後、`has-visuals == 'true'`の場合のみ、`actions/upload-artifact@v4`で`xlsx-diff-visuals/`ディレクトリ全体を1つのartifact(`xlsx-diff-screenshots`)としてまとめてアップロードする——1シートにつき1回ではなく、そのjob実行1回につき1回。
-4. **ダウンロードリンクの追記**: アップロードした`upload-artifact`ステップの`artifact-url`output(形式: `https://github.com/{owner}/{repo}/actions/runs/{run_id}/artifacts/{artifact_id}`)を、diffステップが既に書き終えたコメントMarkdownの末尾へ別ステップで追記する(`artifact-url`はartifactが実在して初めて決まるため、diffステップ自身では書けない)。このURLをダウンロードするには「GitHubにログイン済みであること」が要件——実質的にこのリポジトリへの閲覧権限を持つユーザーしかダウンロードできない([`actions/upload-artifact`のREADME](https://github.com/actions/upload-artifact)に明記)。
+1. **単体HTMLページの収集**: `xlsxdiff --grid-html-dir <dir>`で書き出したシートごとのHTML(`exceldiff::wrap_grid_page`でラップ済み——インライン`<style>`のみで外部アセットに依存しない自己完結ページ)を、加工せずそのまま`${{ runner.temp }}/xlsx-diff-visuals/{sanitize(ファイルパス)}/sheet-{sanitize(シート名)}.html`(`sanitize`は英数字`._-`以外を`_`へ潰す)へコピーする。`git`へは一切コミットしない。1件でも集まれば、diffステップの`has-visuals`outputを`true`にする。
+2. **単一artifactとしてアップロード**: 全ファイル・全シート分の処理が終わった後、`has-visuals == 'true'`の場合のみ、`actions/upload-artifact@v4`で`xlsx-diff-visuals/`ディレクトリ全体を1つのartifact(`xlsx-diff-grids`)としてまとめてアップロードする——1シートにつき1回ではなく、そのjob実行1回につき1回。
+3. **ダウンロードリンクの追記**: アップロードした`upload-artifact`ステップの`artifact-url`output(形式: `https://github.com/{owner}/{repo}/actions/runs/{run_id}/artifacts/{artifact_id}`)を、diffステップが既に書き終えたコメントMarkdownの末尾へ別ステップで追記する(`artifact-url`はartifactが実在して初めて決まるため、diffステップ自身では書けない)。このURLをダウンロードするには「GitHubにログイン済みであること」が要件——実質的にこのリポジトリへの閲覧権限を持つユーザーしかダウンロードできない([`actions/upload-artifact`のREADME](https://github.com/actions/upload-artifact)に明記)。
 
-**1シート単位でのベストエフォート**: スクリーンショットの生成に失敗しても、そのシートの画像だけを諦めてstderrへ警告を出し、処理を続行する([`cli/`のエラー処理方針](cli.md)と同じ「1件の失敗が全体を止めない」方針)。アップロード自体はjob全体で1回だけなので、旧方式にあった「pushの競合」への対処(リトライ・rebase)は不要になった。
+**1シート単位でのベストエフォート**: HTMLのコピーに失敗しても、そのシートだけを諦めてstderrへ警告を出し、処理を続行する([`cli/`のエラー処理方針](cli.md)と同じ「1件の失敗が全体を止めない」方針)。アップロード自体はjob全体で1回だけなので、旧方式にあった「pushの競合」への対処(リトライ・rebase)は不要になった。
 
 ### 変更履歴: pushベースの配信からartifactへ(Issue #47)
 
@@ -135,9 +132,17 @@ GitHubのPRコメントはHTML内の`style=`属性をサニタイズするため
 
 最終的に、GitHubの正規の権限モデル(リポジトリの閲覧権限)にそのまま乗る`actions/upload-artifact@v4` + `artifact-url`の組み合わせを採用した。トレードオフとして、PRのタイムライン上にインライン表示されなくなり、閲覧にダウンロードという一手間が増える——「見えるが実は誰でも見える」よりも「確実に権限のある人だけが見える」ことを優先した判断。旧方式で残っていた「`xlsx-diff-images`ブランチの肥大化」という未決事項(下記参照)自体も、ブランチへのコミットをやめたことで解消した。検証の詳細・生ログは[Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)のコメント参照。
 
+### 変更履歴その2: スクリーンショットPNGから単体HTMLページへ(Issue #47、artifact化の直後)
+
+artifact化そのものは上記の通りPR #48で実装・実機検証(private repoでの認証テスト含む)まで完了したが、そのすぐ後、実際にプライベートリポジトリで大きめのシート(実データの「スキルシート」、1シートで25,517セル)を検証した際、生成されたスクリーンショットPNGが縮小されすぎて見た目を判別できないというフィードバックを受けた。Playwrightの要素スクリーンショット(`page.locator(".page-content").screenshot()`)はシートの実際の幅・高さそのままの解像度でPNG化するため、セル数が多いシートほど画像自体は巨大になる一方、一般的な画像ビューアはウィンドウ幅に収まるよう自動縮小して表示するため、大きなシートほどかえって内容が読めなくなるという逆効果があった。
+
+対処として、スクリーンショット生成のステップ自体を廃止し、`wrap_grid_page`が生成する単体HTMLページ(インライン`<style>`のみで完結し、外部アセットへの依存が無い)をそのまま`xlsx-diff-visuals/`へコピーしてartifactへ含める方式に変更した。ダウンロードしたHTMLをブラウザで開けば、通常のWebページと同じようにスクロール・拡大縮小(ブラウザの標準ズーム)しながら閲覧できるため、シートの大きさに関わらず内容を判読できる。
+
+この変更に伴い、`action-scripts/`(`screenshot.mjs`・`package.json`)ディレクトリ自体と、`action.yml`の`Install Node.js`/`Install screenshot dependencies`ステップ(Node.jsセットアップ・`npm install`・`npx playwright install --with-deps chromium`)を削除した——Playwright/Chromiumのインストールがそもそも不要になったため、`visual: true`時のジョブ実行時間も大きく短縮される副次効果があった。
+
 ## 依存関係
 
-- 依存先: [`cli/`](cli.md)(`cargo build -p xlsxdiff`でビルドし、`xlsxdiff`バイナリを1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。`visual: true`時は`--grid-html-dir`も渡す。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない)、`action-scripts/`(`visual: true`時のみ。`package.json`でPlaywrightを依存に持つ、公開クレートには含まれない独立したNodeパッケージ。`screenshot.mjs`が唯一のスクリプト)
+- 依存先: [`cli/`](cli.md)(`cargo build -p xlsxdiff`でビルドし、`xlsxdiff`バイナリを1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。`visual: true`時は`--grid-html-dir`も渡す。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない)。~~`action-scripts/`~~(Playwright依存のNodeパッケージ)は上記「変更履歴その2」の通り削除済み——`visual: true`もRustツールチェーンのみで完結する。
 - 依存元: [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)(本リポジトリ自身が`uses: ./`で参照する唯一の呼び出し元。将来、外部リポジトリが`uses: MinamiyamaKotaro/exceldiff@<tag>`で参照することも想定するが、現時点でそのような外部呼び出し元は存在しない)
 
 ## エラー処理方針
@@ -151,7 +156,7 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 1. **静的検証**: `action.yml`はYAMLとして構文検証する(`actionlint`は`.github/workflows/`配下のワークフローファイルのみを対象とし`action.yml`形式のcomposite actionメタデータには非対応のため、Python `yaml.safe_load`等で構文のみ検証)。呼び出し元ワークフロー側(`.github/workflows/xlsx-diff.yml`)は`actionlint`でも検証可能。
 2. **シェルロジックの単体検証**: 「変更ファイルごとに`git show`でbase/headを取り出し`xlsxdiff`を起動してMarkdownへ連結し、`has-changes`/`changed-files-count`を`$GITHUB_OUTPUT`へ書く」というシェルスクリプト部分は`${{ github.action_path }}`・`${{ runner.temp }}`・`$GITHUB_OUTPUT`をローカルパスに置き換えれば`bash`だけでそのまま実行できる。実際に、ローカルの使い捨てgitリポジトリへA(追加)・M(変更)・D(削除)の3ステータスが混在する差分を作りこのスクリプトを実行して意図通りのMarkdownが生成されること、および変更あり/なし双方のケースで`has-changes`/`changed-files-count`が正しい値になることを確認済み。`--max-rows-per-sheet`/`--diff-mode`フラグが実際に`MarkdownOptions`へ届くことは、`cli/`側の統合テスト([`cli/tests/cli.rs`](../../cli/tests/cli.rs))で検証している(下記「依存関係」)——`action.yml`のシェルスクリプト部分としては、フラグの値をそのまま`"$BIN"`へ渡しているだけなので、フラグ自体の意味までは再検証しない。
 3. **実際のGitHub Actions上での結合検証**: `.github/workflows/xlsx-diff.yml`自体を`uses: ./`で本actionを呼び出す形に書き換えた(下記「依存関係」参照)。これにより、`.xlsx`ファイルを変更する今後の任意のPRが本action全体(Rustツールチェーンのセットアップ・`github.action_path`起点でのビルド・`rust-cache`のワークスペース指定・コメント投稿)の実行結果を検証する回帰テストとして機能する——外部のテスト用リポジトリを別途用意しなくても、本リポジトリ自身がdogfoodingの場になる。**この結合検証だけが発見できた不具合が実際にあった**(上記「事後発見」参照)——単一ファイルのみ変更というケースは、ローカルのシェルスクリプト単体検証(複数ステータス混在の差分で検証していた)や静的検証では再現せず、GitHub Actions実機での複数回の試行によってのみ再現・特定できた。composite actionの検証において実機結合テストを省略できない理由の実例。
-4. **`visual`モード固有の検証**: `screenshot.mjs`はローカルで実際にPlaywrightを実行し、生成したHTML→PNGの見た目を目視確認済み(Added/Modified双方、値変更・行列追加・結合・スタイル変更を含む)。`actions/upload-artifact@v4`の`artifact-url`が実際にコメント上でクリック可能なダウンロードリンクとして表示されること・私有(プライベート)リポジトリでリンク先が実際にダウンロードできることは、GitHub Actions実機上ではまだ確認できていない——下記「未決事項」参照。旧pushベース方式(`setup_images_worktree`/`push_image`)についてローカルの使い捨てbareリポジトリで検証していた内容は、その方式自体の廃止(上記「変更履歴」参照)に伴い意味を失ったため削除した。
+4. **`visual`モード固有の検証**: 使い捨てのgitリポジトリに対し、diffステップのシェルロジックを`VISUAL=true`で単体実行し、`xlsxdiff --grid-html-dir`が書き出したHTMLがそのまま`xlsx-diff-visuals/`へ収集され(実際に生成された`.html`ファイルの中身も目視確認)、`has-visuals`が正しく`true`になることをローカルで確認済み。`actions/upload-artifact@v4`の`artifact-url`が実際にコメント上でクリック可能なダウンロードリンクとして表示されること、プライベートリポジトリでのアクセス制御(未認証ではHTTP 404、認証済みならダウンロード可能)については、PR #48の時点でGitHub Actions実機・使い捨て外部リポジトリの双方で確認済み(下記「未決事項」参照)——本変更(PNG→HTML)によってartifactの中身が変わっただけで、配信経路自体の権限モデルは変わっていないため、その部分の再検証は不要と判断した。
 
 ## 未決事項 / オープンクエスチョン
 
