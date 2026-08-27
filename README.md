@@ -43,7 +43,7 @@ composite actionは以下の2つを自分自身では宣言・実行できない
 
 - `actions/checkout@v4` を `fetch-depth: 0` 付きで実行しておくこと——差分計算がPRのbase/head双方のリビジョンを `git show` で参照するため、shallowチェックアウトでは動作しません。
 - `permissions: contents: read`——`comment`/`visual`の設定に関わらず常に必要です。`permissions:`ブロックを一つでも書くと、列挙しなかったスコープは(リポジトリの既定値ではなく)`none`になるというGitHub Actionsの仕様があり、`pull-requests: write`だけを書くと`contents`が黙って`none`になって`actions/checkout`自体が「repository not found」という分かりにくいエラーで失敗します(外部リポジトリからの実地検証で実際に踏んだ不具合です)。
-- `permissions: pull-requests: write`——`comment`入力を既定の`true`のままコメント投稿するために必要です(`comment: false`・`job-summary: true`にすればこの権限は不要)。`visual: true`を使う場合は `contents: write`(`read`を含む)も必要です(下記参照)。
+- `permissions: pull-requests: write`——`comment`入力を既定の`true`のままコメント投稿するために必要です(`comment: false`・`job-summary: true`にすればこの権限は不要)。`visual: true`を使う場合も追加の権限は不要です(下記参照)。
 
 ### 使用例
 
@@ -67,12 +67,12 @@ jobs:
       - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-Excelライクなグリッドのスクリーンショットも埋め込みたい場合は `visual: true` を指定し、`permissions: contents: write` も追加します(スクリーンショットPNGを専用ブランチ`xlsx-diff-images`へpushするため):
+Excelライクなグリッドのスクリーンショットも見たい場合は `visual: true` を指定します。追加の`permissions:`は不要です——スクリーンショットはPRコメントへの直接埋め込みではなく、ワークフローのartifactとして添付され、コメントにはダウンロードリンクが載ります(このリポジトリの閲覧権限を持つ人だけがダウンロードできます。プライベートリポジトリで画像を確実に見えるようにするための設計です。詳細は [action.yml](action.yml) 冒頭のコメントと [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) を参照):
 
 ```yaml
 permissions:
+  contents: read
   pull-requests: write
-  contents: write
 
 steps:
   - uses: actions/checkout@v4
@@ -93,7 +93,7 @@ steps:
 | `job-summary` | bool文字列, `'false'` | `$GITHUB_STEP_SUMMARY` へも書き出すか。forkからのPRなど `pull-requests: write` を付与できない環境では、`comment: false`・`job-summary: true` にすると権限エラーを避けつつ差分を確認できます |
 | `max-rows-per-sheet` | 数値文字列, `'30'` | 1シートあたりに表示するセル変更ハンクの上限数 |
 | `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto`(既定)は座標一致/行アライメント/列アライメントのうち最も変更が少なく報告される方式を自動選択。`coordinate`はアライメント検出をスキップした単純な座標比較を強制します |
-| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのBefore/Afterスクリーンショットを生成し、テキスト差分の下に埋め込むか。`permissions: contents: write` が別途必要で、Node.js・Playwright・Chromiumダウンロードが追加されジョブ実行時間が伸びるため既定はオフ |
+| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのBefore/Afterスクリーンショットを生成し、ワークフローのartifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要。Node.js・Playwright・Chromiumダウンロードが追加されジョブ実行時間が伸びるため既定はオフ |
 
 ### outputs
 

@@ -72,7 +72,7 @@ Unlike an ordinary workflow job, a composite action cannot declare or perform tw
 
 - `actions/checkout@v4` with `fetch-depth: 0` — the diff step reads both the PR's base and head revisions via `git show`, so a shallow checkout (which only has the merge commit) won't work.
 - `permissions: contents: read` — always required, regardless of `comment`/`visual`. Writing any `permissions:` block at all sets every scope you don't list to `none` (not the repo's default), so a workflow with only `pull-requests: write` silently loses `contents` access and `actions/checkout` fails with a confusing "repository not found" — a real bug hit while verifying this action from an external repo.
-- `permissions: pull-requests: write` — needed to post a comment while `comment` is left at its default `true` (set `comment: false`/`job-summary: true` to skip needing this permission). `visual: true` needs `contents: write` instead (which includes read) — see below.
+- `permissions: pull-requests: write` — needed to post a comment while `comment` is left at its default `true` (set `comment: false`/`job-summary: true` to skip needing this permission). `visual: true` needs no extra permission — see below.
 
 ### Example usage
 
@@ -96,12 +96,12 @@ jobs:
       - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-To also embed an Excel-like grid screenshot, set `visual: true` and add `permissions: contents: write` (needed to push the screenshot PNGs to a dedicated `xlsx-diff-images` branch):
+To also see an Excel-like grid screenshot, set `visual: true`. No extra `permissions:` are needed — screenshots aren't embedded directly in the comment, they're attached as a workflow artifact, with a download link posted in the comment (only people with read access to this repository can download it; this is deliberate, so screenshots stay reliably viewable on private repos too — see the comment at the top of [action.yml](action.yml) and [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) for why):
 
 ```yaml
 permissions:
+  contents: read
   pull-requests: write
-  contents: write
 
 steps:
   - uses: actions/checkout@v4
@@ -122,7 +122,7 @@ steps:
 | `job-summary` | bool string, `'false'` | also write to `$GITHUB_STEP_SUMMARY`. A caller without `pull-requests: write` (e.g. a fork PR) can set `comment: false`/`job-summary: true` to see the diff without hitting a permission error |
 | `max-rows-per-sheet` | numeric string, `'30'` | caps the number of cell-change hunks rendered per sheet |
 | `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto` (default) auto-picks whichever of coordinate/row-aligned/column-aligned diffing reports the fewest changes per sheet. `coordinate` forces plain coordinate comparison, skipping alignment detection |
-| `visual` | bool string, `'false'` | render an Excel-like Before/After grid screenshot for each changed sheet and embed it under the text diff. Needs `permissions: contents: write` separately, and adds Node.js + Playwright + a Chromium download — meaningfully more job runtime, hence off by default |
+| `visual` | bool string, `'false'` | render an Excel-like Before/After grid screenshot for each changed sheet and attach them to the comment as a downloadable workflow artifact. No extra `permissions:` needed, but adds Node.js + Playwright + a Chromium download — meaningfully more job runtime, hence off by default |
 
 ### Outputs
 

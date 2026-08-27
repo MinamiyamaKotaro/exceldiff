@@ -83,6 +83,6 @@ pub fn grid_sections_from_paths(
 
 ## 未決事項 / オープンクエスチョン
 
-1. ~~**生成したHTMLの配信経路**~~ **解決済み**: [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)の後続として実装した。CI上でPlaywright(ヘッドレスChromium)によりスクリーンショットPNGを生成し、専用のorphanブランチ(`xlsx-diff-images`)へコミット・pushして`raw.githubusercontent.com`のURL経由でPRコメントへMarkdown画像として埋め込む方式を採用(GitHub Pagesは使わない——`action.yml`の`visual`input、詳細は[action.md](action.md)参照)。
+1. ~~**生成したHTMLの配信経路**~~ **解決済み**: [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)の後続として実装した。CI上でPlaywright(ヘッドレスChromium)によりスクリーンショットPNGを生成する。当初は専用のorphanブランチ(`xlsx-diff-images`)へコミット・pushして`raw.githubusercontent.com`のURL経由でPRコメントへMarkdown画像として埋め込む方式だったが、プライベートリポジトリで画像が見えない欠陥が判明したため、`actions/upload-artifact@v4`でworkflow artifactとしてアップロードし、コメントにはダウンロードリンクを掲載する方式へ置き換えた([Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)。`action.yml`の`visual`input、詳細は[action.md](action.md)参照)。
 2. **本モジュールを`markdown.rs`と同様に確定した公開APIとして扱ってよいか**: `grid_sections_from_paths`/`wrap_grid_page`の追加により本番のワークフロー(`action.yml`の`visual`モード)から実際に消費されるようになったため、`render_sheet_split`のシグネチャ(`base`/`head`の`Workbook`全体を要求する形)は実運用を経て妥当と確認できた。今後大きく変更する予定はない。
 3. **列方向の省略と結合セルの相互作用**: `render_table`のドキュメントコメントに記載の通り、結合セルの起点が省略された行/列の中に位置する場合、`covered`の追跡が正しく機能しない既知の制約がある。方眼紙Excelの典型的な使い方(結合セルは通常、変更が集中する見出し・ラベル周辺にあり、それ自体が「変更に近い行/列」としてコンテキストに含まれやすい)では実際上問題になりにくいと考えているが、確証はない。
