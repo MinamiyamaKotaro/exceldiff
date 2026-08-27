@@ -19,16 +19,27 @@ branding:
 #     needs both the PR's base and head commits present locally to run
 #     `git show <sha>:<path>`; a shallow checkout only has the merge
 #     commit).
+#   - `permissions: contents: read` — always required, independent of
+#     `comment`/`visual` below: it's what lets `actions/checkout@v4`
+#     above fetch the repository at all. Declaring any `permissions:`
+#     block at all switches every unlisted scope from the repo's default
+#     to `none` (documented GitHub Actions behavior), so a caller who
+#     writes only `permissions: pull-requests: write` silently loses
+#     `contents` access — `actions/checkout` then fails with a generic
+#     "repository not found" (confirmed by an actual external `uses:`
+#     test against a private repo, Issue #23) rather than a permissions
+#     error, which makes the real cause easy to miss.
 #   - `permissions: pull-requests: write` (composite actions cannot
 #     declare their own `permissions:` block — that's workflow/job-level
 #     only; only needed when `comment: true`, the default).
-#   - `permissions: contents: write` — only needed when `visual: true`:
-#     rendered grid screenshots get committed to a dedicated orphan
-#     branch (`xlsx-diff-images`) in this same repository, which needs
-#     write access. See docs/design/grid.md for why (GitHub sanitizes
-#     `style=` out of PR comment HTML, so the grid itself can't be pasted
-#     into the comment directly — a hosted image is the only way to show
-#     it there).
+#   - `permissions: contents: write` — supersedes the plain `contents:
+#     read` above (implies it) when `visual: true`: rendered grid
+#     screenshots get committed to a dedicated orphan branch
+#     (`xlsx-diff-images`) in this same repository, which needs write
+#     access. See docs/design/grid.md for why (GitHub sanitizes `style=`
+#     out of PR comment HTML, so the grid itself can't be pasted into the
+#     comment directly — a hosted image is the only way to show it
+#     there).
 #   - trigger `on: pull_request` (this action does nothing useful outside
 #     a pull_request event: the diff step reads
 #     `github.event.pull_request.base.sha`/`head.sha`).

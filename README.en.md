@@ -71,7 +71,8 @@ Use it as a GitHub Action (composite action) that automatically posts a per-shee
 Unlike an ordinary workflow job, a composite action cannot declare or perform two things on its own — the caller's own workflow needs to supply them:
 
 - `actions/checkout@v4` with `fetch-depth: 0` — the diff step reads both the PR's base and head revisions via `git show`, so a shallow checkout (which only has the merge commit) won't work.
-- `permissions: pull-requests: write` — needed to post a comment while `comment` is left at its default `true` (set `comment: false`/`job-summary: true` to skip needing this permission). `visual: true` additionally needs `permissions: contents: write` (see below).
+- `permissions: contents: read` — always required, regardless of `comment`/`visual`. Writing any `permissions:` block at all sets every scope you don't list to `none` (not the repo's default), so a workflow with only `pull-requests: write` silently loses `contents` access and `actions/checkout` fails with a confusing "repository not found" — a real bug hit while verifying this action from an external repo.
+- `permissions: pull-requests: write` — needed to post a comment while `comment` is left at its default `true` (set `comment: false`/`job-summary: true` to skip needing this permission). `visual: true` needs `contents: write` instead (which includes read) — see below.
 
 ### Example usage
 
@@ -82,6 +83,7 @@ on:
   pull_request:
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
