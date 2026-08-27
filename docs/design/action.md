@@ -36,7 +36,10 @@
 
 composite actionは通常のワークフローjobと異なり、以下の2つを自分自身では宣言・実行できない——そのため呼び出し元のワークフロー側で用意してもらうことを前提とする(`action.yml`冒頭のコメントに同内容を明記):
 
-- **`permissions:`ブロック**: composite actionの`action.yml`には`permissions:`キーが存在しない(ワークフロー/job単位のみで宣言可能)。`comment`入力が既定の`true`のままの場合、呼び出し元が`permissions: pull-requests: write`を設定していないと、後述のコメント投稿ステップはトークンの権限不足で失敗する(`comment: false`・`job-summary: true`にすればこの権限は不要——上記「inputs / outputs」参照)。`visual: true`を使う場合はさらに`permissions: contents: write`も必要——スクリーンショットPNGを`xlsx-diff-images`ブランチへpushするため(下記「ビジュアルモード」参照)。
+- **`permissions:`ブロック**: composite actionの`action.yml`には`permissions:`キーが存在しない(ワークフロー/job単位のみで宣言可能)。
+  - **`contents: read`は`comment`/`visual`の設定に関わらず常に必要**——`actions/checkout@v4`自体がリポジトリを取得するのに使う権限であり、これが無いとチェックアウト自体が失敗する。GitHub Actionsは`permissions:`ブロックを一つでも書くと、そこに列挙しなかった全スコープを(リポジトリの既定値ではなく)`none`にする仕様のため、呼び出し元が`permissions: pull-requests: write`だけを書くと`contents`が黙って`none`になり、`actions/checkout`が汎用的な「repository not found」エラーで失敗する——実際に外部リポジトリから`uses:`で呼び出す検証([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23))で踏んだ不具合で、原因が権限エラーだと気づきにくい形で顕在化する。
+  - `comment`入力が既定の`true`のままの場合、呼び出し元が`permissions: pull-requests: write`を設定していないと、後述のコメント投稿ステップはトークンの権限不足で失敗する(`comment: false`・`job-summary: true`にすればこの権限は不要——上記「inputs / outputs」参照)。
+  - `visual: true`を使う場合はさらに`permissions: contents: write`も必要(上記の`contents: read`を包含する)——スクリーンショットPNGを`xlsx-diff-images`ブランチへpushするため(下記「ビジュアルモード」参照)。
 - **チェックアウト**: composite actionは呼び出し元リポジトリを自動でcheckoutしない。差分計算ステップは`git show <sha>:<path>`でPRのbase/head双方のリビジョンを参照するため、呼び出し元が`actions/checkout@v4`を`fetch-depth: 0`付きで事前に実行している必要がある(shallow checkoutだとマージコミット以外のリビジョンが存在しない)。
 
 いずれも本actionが`pull_request`イベント専用(差分計算ステップが`github.event.pull_request.base.sha`/`head.sha`を参照する)であることの帰結でもある——`workflow_dispatch`等の他イベントから呼び出しても意味のある結果は得られない。

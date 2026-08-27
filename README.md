@@ -42,7 +42,8 @@ let json = exceldiff::to_json_string(&workbook)?;
 composite actionは以下の2つを自分自身では宣言・実行できないため、呼び出し元のワークフロー側で用意してください:
 
 - `actions/checkout@v4` を `fetch-depth: 0` 付きで実行しておくこと——差分計算がPRのbase/head双方のリビジョンを `git show` で参照するため、shallowチェックアウトでは動作しません。
-- `permissions: pull-requests: write`——`comment`入力を既定の`true`のままコメント投稿するために必要です(`comment: false`・`job-summary: true`にすればこの権限は不要)。`visual: true`を使う場合はさらに`permissions: contents: write`も必要です(下記参照)。
+- `permissions: contents: read`——`comment`/`visual`の設定に関わらず常に必要です。`permissions:`ブロックを一つでも書くと、列挙しなかったスコープは(リポジトリの既定値ではなく)`none`になるというGitHub Actionsの仕様があり、`pull-requests: write`だけを書くと`contents`が黙って`none`になって`actions/checkout`自体が「repository not found」という分かりにくいエラーで失敗します(外部リポジトリからの実地検証で実際に踏んだ不具合です)。
+- `permissions: pull-requests: write`——`comment`入力を既定の`true`のままコメント投稿するために必要です(`comment: false`・`job-summary: true`にすればこの権限は不要)。`visual: true`を使う場合は `contents: write`(`read`を含む)も必要です(下記参照)。
 
 ### 使用例
 
@@ -53,6 +54,7 @@ on:
   pull_request:
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
