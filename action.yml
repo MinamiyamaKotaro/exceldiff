@@ -304,7 +304,7 @@ runs:
           echo
           echo "### 🖼 Grid diff views"
           echo
-          echo "Excel-like grid views (HTML, one page per changed sheet — download and open in a browser) are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
+          echo "Excel-like grid views (HTML, one page per changed file — download and open in a browser) are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
           echo
           while IFS=$'\t' read -r path sheet_names; do
             echo "- ${path} — ${sheet_names}"
