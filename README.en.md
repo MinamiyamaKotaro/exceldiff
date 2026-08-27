@@ -330,7 +330,7 @@ src/
 - `xl/drawings/drawingN.xml` and its own `_rels` (cell-anchored embedded
   images — anchor geometry, the embedded media's resolved path, and the
   image's own hyperlink, including images nested in `<xdr:grpSp>` groups;
-  see [Embedded images](#embedded-images) below)
+  see [Embedded images](#embedded-images) above)
 
 `[Content_Types].xml` is not read at all — the workbook part's actual path
 is resolved via `_rels/.rels`'s `officeDocument` relationship rather than

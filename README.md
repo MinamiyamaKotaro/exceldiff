@@ -224,7 +224,7 @@ src/
 - `xl/theme/theme{N}.xml`(`<clrScheme>` の12色。スタイルが実際にテーマ色を参照している場合のみ読み込みます。前述の[表示色の解決](#表示色の解決)参照)
 - `xl/worksheets/sheetX.xml`(`<sheetData>`——他の全ての日付/時刻セルが使う数値シリアル日付と並んで、`t="d"` のISO 8601日付セルも同じ `"dateTime"` 出力に統一されます——`<mergeCells>`、および生のまま未解決で保持する `<hyperlinks>`(前述の `hyperlink` フィールド参照))
 - `xl/worksheets/_rels/sheetX.xml.rels`(`<hyperlink r:id="...">` を生のTarget文字列に解決します——シートが `r:id` 付きのハイパーリンクを少なくとも1つ宣言している場合のみ読み込みます。`location` のみの内部ハイパーリンクではこの読み込みは発生しません)
-- `xl/drawings/drawingN.xml` とその `_rels`(セルに固定された埋め込み画像——アンカー形状、埋め込みメディアの解決済みパス、画像自身のハイパーリンク。`<xdr:grpSp>` グループにネストした画像を含む。後述の[埋め込み画像](#埋め込み画像)参照)
+- `xl/drawings/drawingN.xml` とその `_rels`(セルに固定された埋め込み画像——アンカー形状、埋め込みメディアの解決済みパス、画像自身のハイパーリンク。`<xdr:grpSp>` グループにネストした画像を含む。前述の[埋め込み画像](#埋め込み画像)参照)
 
 `[Content_Types].xml` は一切読みません——ワークブックパーツの実際のパスは、慣習的な `xl/workbook.xml` と仮定するのではなく `_rels/.rels` の `officeDocument` リレーションシップ経由で解決します(Issue #55)が、この解決はパーツの宣言されたContent-Typeを `[Content_Types].xml` と突き合わせて検証することは一切ありません(この判断の理由と厳密なOPC準拠とのトレードオフについては [pipeline.md 未決事項3](docs/design/pipeline.md) 参照)。
 
