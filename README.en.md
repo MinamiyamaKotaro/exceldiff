@@ -367,6 +367,14 @@ rendering — will be added here once there's a need for them.
 
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). See the [LICENSE](LICENSE) file for details.
 
+### Using it as an Action, and AGPL
+
+Simply invoking this Action unmodified via `uses: MinamiyamaKotaro/exceldiff@<tag>` doesn't place any new AGPL-3.0 obligation on the calling repository or workflow. A composite action just builds and runs this repository's own source on the caller's CI runner — the caller isn't *modifying* the software. AGPL-3.0 §13's network-copyleft clause is an obligation that arises from making a *modified* version available to users over a network; the Action's own Corresponding Source is already available, as this same public repository it's built from.
+
+If you fork and modify this software and then offer *your modified version* as your own Action or service over a network, AGPL-3.0 §13 does require you to make that modified source available to your users — that's AGPL working as intended, not an extra condition specific to this project.
+
+This is a general summary, not legal advice. Consult a lawyer if you need a definitive answer. If you'd rather avoid AGPL-3.0's obligations entirely, see the commercial license below.
+
 ### Commercial Licensing
 
 `exceldiff` is dual-licensed: the AGPL-3.0 terms above apply by default, but if you wish to use this software in a closed-source / proprietary system, or otherwise without the copyleft and network-source-disclosure obligations of the AGPL-3.0, a separate commercial license is available.
