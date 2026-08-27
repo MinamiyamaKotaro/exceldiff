@@ -115,11 +115,11 @@ GitHubのPRコメントはHTML内の`style=`属性をサニタイズするため
 
 **現在の配信経路**(検討の経緯は[Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)、後述する旧方式からの置き換えの経緯は[Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)参照):
 
-1. **単体HTMLページの収集**: `xlsxdiff --grid-html-dir <dir>`で書き出したシートごとのHTML(`exceldiff::wrap_grid_page`でラップ済み——インライン`<style>`のみで外部アセットに依存しない自己完結ページ)を、加工せずそのまま`${{ runner.temp }}/xlsx-diff-visuals/{sanitize(ファイルパス)}/sheet-{sanitize(シート名)}.html`(`sanitize`は英数字`._-`以外を`_`へ潰す)へコピーする。`git`へは一切コミットしない。1件でも集まれば、diffステップの`has-visuals`outputを`true`にする。
-2. **単一artifactとしてアップロード**: 全ファイル・全シート分の処理が終わった後、`has-visuals == 'true'`の場合のみ、`actions/upload-artifact@v4`で`xlsx-diff-visuals/`ディレクトリ全体を1つのartifact(`xlsx-diff-grids`)としてまとめてアップロードする——1シートにつき1回ではなく、そのjob実行1回につき1回。
+1. **結合済みHTMLページの収集**: `xlsxdiff --grid-html-dir <dir>`が変更のあった全シートを1つに結合して書き出したHTML(`<dir>/grid.html`、`exceldiff::wrap_grid_page`でラップ済み——インライン`<style>`のみで外部アセットに依存しない自己完結ページ)を、加工せずそのまま`${{ runner.temp }}/xlsx-diff-visuals/{sanitize(ファイルパス)}.html`(`sanitize`は英数字`._-`以外を`_`へ潰す)へコピーする——変更ファイル1件につき1コピー(シートごとではない)。`git`へは一切コミットしない。`manifest.tsv`から集めたシート名はカンマ区切りで`$VISUALS_LIST`(`path\tsheet1,sheet2,...`)へ記録し、後述のコメント箇条書きに使う。1件でも集まれば、diffステップの`has-visuals`outputを`true`にする。
+2. **単一artifactとしてアップロード**: 全ファイル分の処理が終わった後、`has-visuals == 'true'`の場合のみ、`actions/upload-artifact@v4`で`xlsx-diff-visuals/`ディレクトリ全体を1つのartifact(`xlsx-diff-grids`)としてまとめてアップロードする——変更ファイルごとに1回ではなく、そのjob実行1回につき1回。
 3. **ダウンロードリンクの追記**: アップロードした`upload-artifact`ステップの`artifact-url`output(形式: `https://github.com/{owner}/{repo}/actions/runs/{run_id}/artifacts/{artifact_id}`)を、diffステップが既に書き終えたコメントMarkdownの末尾へ別ステップで追記する(`artifact-url`はartifactが実在して初めて決まるため、diffステップ自身では書けない)。このURLをダウンロードするには「GitHubにログイン済みであること」が要件——実質的にこのリポジトリへの閲覧権限を持つユーザーしかダウンロードできない([`actions/upload-artifact`のREADME](https://github.com/actions/upload-artifact)に明記)。
 
-**1シート単位でのベストエフォート**: HTMLのコピーに失敗しても、そのシートだけを諦めてstderrへ警告を出し、処理を続行する([`cli/`のエラー処理方針](cli.md)と同じ「1件の失敗が全体を止めない」方針)。アップロード自体はjob全体で1回だけなので、旧方式にあった「pushの競合」への対処(リトライ・rebase)は不要になった。
+**変更ファイル単位でのベストエフォート**: HTMLのコピーに失敗しても、その変更ファイル分だけを諦めてstderrへ警告を出し、処理を続行する([`cli/`のエラー処理方針](cli.md)と同じ「1件の失敗が全体を止めない」方針)。アップロード自体はjob全体で1回だけなので、旧方式にあった「pushの競合」への対処(リトライ・rebase)は不要になった。
 
 ### 変更履歴: pushベースの配信からartifactへ(Issue #47)
 
@@ -139,6 +139,16 @@ artifact化そのものは上記の通りPR #48で実装・実機検証(private 
 対処として、スクリーンショット生成のステップ自体を廃止し、`wrap_grid_page`が生成する単体HTMLページ(インライン`<style>`のみで完結し、外部アセットへの依存が無い)をそのまま`xlsx-diff-visuals/`へコピーしてartifactへ含める方式に変更した。ダウンロードしたHTMLをブラウザで開けば、通常のWebページと同じようにスクロール・拡大縮小(ブラウザの標準ズーム)しながら閲覧できるため、シートの大きさに関わらず内容を判読できる。
 
 この変更に伴い、`action-scripts/`(`screenshot.mjs`・`package.json`)ディレクトリ自体と、`action.yml`の`Install Node.js`/`Install screenshot dependencies`ステップ(Node.jsセットアップ・`npm install`・`npx playwright install --with-deps chromium`)を削除した——Playwright/Chromiumのインストールがそもそも不要になったため、`visual: true`時のジョブ実行時間も大きく短縮される副次効果があった。
+
+### 変更履歴その3: シートごとの個別HTMLから、変更ファイル単位の結合HTMLへ(Issue #47)
+
+「変更履歴その2」でPNGをHTMLへ置き換えた直後、今度は「シートごとに別々のHTMLファイルではなく、まとめて1つのHTMLで見たい」というフィードバックを受けた。当時の実装は、`write_grid_sections`(`cli/src/main.rs`)が`grid_sections_from_paths`の返す各シートのフラグメントに対して`wrap_grid_page`をシートごとに個別呼び出しし、`sheet-{i}.html`という別々のファイルへ書き出していた——1つの変更ファイルに複数の変更シートがあると、artifact内に同数のバラバラなHTMLファイルが並ぶ形になっていた。
+
+`wrap_grid_page`は元々「1つ以上のフラグメントをまとめて1ページへラップする」設計(複数シートのフラグメントを連結した文字列を渡せる。`examples/xlsx_diff_grid.rs`が既にこのパターンを使用)だったため、`write_grid_sections`側を「シートごとに`wrap_grid_page`を呼ぶ」から「全シートのフラグメントを連結してから`wrap_grid_page`を1回だけ呼ぶ」方式に変更するだけで実現できた。出力ファイル名も`sheet-{i}.html`から固定名`grid.html`(変更ファイル1件につき1枚)に変わり、`manifest.tsv`は全行が同じ`grid.html`を指すようになった。
+
+`action.yml`側もこれに合わせて更新: 変更ファイルごとの収集ループを「シートごとにコピー」から「`manifest.tsv`の最初の行から`html_path`を1回だけ取り出してコピーし、シート名はカンマ区切りで`$VISUALS_LIST`へまとめて記録する」方式へ変更した(`sanitize(path).html`という固定パスへコピー——`sanitize(path)/sheet-sanitize(name).html`というディレクトリ構造は不要になった)。PRコメントの箇条書きも、シートごとの行(`- path — sheet1`\n`- path — sheet2`)から、ファイルごとに1行へまとまった(`- path — sheet1,sheet2`)。
+
+`cli/tests/cli.rs`に、2シートを変更した`.xlsx`ペア(専用ヘルパー`xlsx_zip_multi_sheet`で構築——[[feedback_test_fixture_determinism]]と同じ理由で、既存の無関係な実フィクスチャ2つを流用するのではなく最小構成をその場で組み立てている)を渡し、`manifest.tsv`の2行がどちらも同じ`grid.html`を指すこと、実際に書き出されるHTMLファイルが1つだけであること、そのファイル内に両シート分の`class="sheet"`セクションが含まれることを確認する専用テスト(`grid_html_dir_combines_every_changed_sheet_into_one_page`)を追加した。
 
 ## 依存関係
 

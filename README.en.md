@@ -96,7 +96,7 @@ jobs:
       - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-To also see an Excel-like grid view, set `visual: true`. No extra `permissions:` are needed — the grid isn't embedded directly in the comment, it's attached as one standalone HTML page per sheet in a workflow artifact, with a download link posted in the comment (only people with read access to this repository can download it; this is deliberate, so the grid stays reliably viewable on private repos too — see the comment at the top of [action.yml](action.yml) and [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) for why). Being HTML rather than a screenshot image means a large sheet doesn't get shrunk into an illegible blur — it scrolls and zooms like any other web page:
+To also see an Excel-like grid view, set `visual: true`. No extra `permissions:` are needed — the grid isn't embedded directly in the comment, it's attached as one standalone HTML page per changed file (every changed sheet combined onto that same page) in a workflow artifact, with a download link posted in the comment (only people with read access to this repository can download it; this is deliberate, so the grid stays reliably viewable on private repos too — see the comment at the top of [action.yml](action.yml) and [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) for why). Being HTML rather than a screenshot image means a large sheet doesn't get shrunk into an illegible blur — it scrolls and zooms like any other web page:
 
 ```yaml
 permissions:
@@ -156,7 +156,7 @@ xlsxdiff [--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] [--grid-html
 - `base_file`/`head_file`: the actual filesystem paths of the before/after revisions. `A` has no `base_file`, `D` has no `head_file` — omit it or pass an empty string.
 - `--max-rows-per-sheet <N>` (default `30`): caps the number of cell-change hunks rendered per sheet.
 - `--diff-mode <auto|coordinate>` (default `auto`): `auto` auto-picks alignment, `coordinate` forces plain coordinate comparison.
-- `--grid-html-dir <dir>`: when given, additionally writes one standalone HTML page per changed sheet (`<dir>/sheet-N.html`) plus a `<dir>/manifest.tsv` listing (`sheet_name\thtml_path`) — `action.yml`'s `visual: true` attaches these pages directly to its workflow artifact.
+- `--grid-html-dir <dir>`: when given, additionally writes every changed sheet combined onto one standalone HTML page (`<dir>/grid.html`) plus a `<dir>/manifest.tsv` listing each sheet's name against that same path (`sheet_name\thtml_path`) — `action.yml`'s `visual: true` attaches this page directly to its workflow artifact.
 
 Example (`M` — both the before and after file exist):
 

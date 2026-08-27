@@ -144,6 +144,75 @@ fn xlsx_column_a(values: &[Option<i64>]) -> Vec<u8> {
     buf
 }
 
+/// Builds a minimal two-sheet `.xlsx`, each sheet holding a single A1
+/// cell from `sheets` (`(name, cell_value)` pairs) — for the
+/// `--grid-html-dir` "combines every sheet into one page" test below.
+/// Same in-memory-pair approach as `minimal_xlsx_zip` above, for the same
+/// reason: an unrelated pair of real fixtures can't guarantee which
+/// sheets actually differ, or in what order, across environments.
+fn xlsx_zip_multi_sheet(sheets: &[(&str, &str)]) -> Vec<u8> {
+    const ROOT_RELS_XML: &[u8] = br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+
+    let mut workbook_sheets = String::new();
+    let mut workbook_rels = String::new();
+    for (i, (name, _)) in sheets.iter().enumerate() {
+        let sheet_id = i + 1;
+        let r_id = format!("rId{sheet_id}");
+        workbook_sheets.push_str(&format!(
+            r#"<sheet name="{name}" sheetId="{sheet_id}" r:id="{r_id}"/>"#
+        ));
+        workbook_rels.push_str(&format!(
+            r#"<Relationship Id="{r_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{sheet_id}.xml"/>"#
+        ));
+    }
+    let styles_r_id = format!("rId{}", sheets.len() + 1);
+    workbook_rels.push_str(&format!(
+        r#"<Relationship Id="{styles_r_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#
+    ));
+
+    let rels_xml = format!(
+        r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{workbook_rels}</Relationships>"#
+    );
+    let workbook_xml = format!(
+        r#"<?xml version="1.0"?>
+<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>{workbook_sheets}</sheets>
+</workbook>"#
+    );
+    const STYLES_XML: &[u8] = br#"<styleSheet><cellXfs><xf numFmtId="0"/></cellXfs></styleSheet>"#;
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("_rels/.rels", options).unwrap();
+        writer.write_all(ROOT_RELS_XML).unwrap();
+        writer
+            .start_file("xl/_rels/workbook.xml.rels", options)
+            .unwrap();
+        writer.write_all(rels_xml.as_bytes()).unwrap();
+        writer.start_file("xl/workbook.xml", options).unwrap();
+        writer.write_all(workbook_xml.as_bytes()).unwrap();
+        writer.start_file("xl/styles.xml", options).unwrap();
+        writer.write_all(STYLES_XML).unwrap();
+        for (i, (_, cell_value)) in sheets.iter().enumerate() {
+            let sheet_id = i + 1;
+            let worksheet_xml = format!(
+                r#"<worksheet><sheetData><row r="1"><c r="A1"><v>{cell_value}</v></c></row></sheetData></worksheet>"#
+            );
+            writer
+                .start_file(format!("xl/worksheets/sheet{sheet_id}.xml"), options)
+                .unwrap();
+            writer.write_all(worksheet_xml.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    buf
+}
+
 /// Writes `bytes` to a uniquely-named file under `std::env::temp_dir()`
 /// and deletes it on drop, so a failing assertion can't leak it behind.
 struct TempFile(PathBuf);
@@ -384,11 +453,60 @@ fn grid_html_dir_writes_a_page_and_manifest_for_an_added_file() {
     let manifest = std::fs::read_to_string(format!("{}/manifest.tsv", dir.path_str())).unwrap();
     assert_eq!(
         manifest,
-        format!("Sheet1\t{}/sheet-0.html\n", dir.path_str())
+        format!("Sheet1\t{}/grid.html\n", dir.path_str())
     );
-    let html = std::fs::read_to_string(format!("{}/sheet-0.html", dir.path_str())).unwrap();
+    let html = std::fs::read_to_string(format!("{}/grid.html", dir.path_str())).unwrap();
     assert!(html.contains("<!doctype html>"));
     assert!(html.contains("class=\"sheet\""));
+}
+
+#[test]
+fn grid_html_dir_combines_every_changed_sheet_into_one_page() {
+    // Two sheets, both changed, in a single `M` diff — this is the case
+    // the combined-page design targets: previously each sheet got its
+    // own separate HTML file, now both should land in one `grid.html`.
+    let base = TempFile::new(
+        "grid_multi_base",
+        &xlsx_zip_multi_sheet(&[("Sheet1", "1"), ("Sheet2", "10")]),
+    );
+    let head = TempFile::new(
+        "grid_multi_head",
+        &xlsx_zip_multi_sheet(&[("Sheet1", "2"), ("Sheet2", "20")]),
+    );
+    let dir = TempDir::new("multi");
+    let out = run(&[
+        "--grid-html-dir",
+        dir.path_str(),
+        "path/multi.xlsx",
+        "M",
+        base.path_str(),
+        head.path_str(),
+    ]);
+    assert!(out.status.success());
+
+    let manifest = std::fs::read_to_string(format!("{}/manifest.tsv", dir.path_str())).unwrap();
+    assert_eq!(
+        manifest,
+        format!(
+            "Sheet1\t{0}/grid.html\nSheet2\t{0}/grid.html\n",
+            dir.path_str()
+        )
+    );
+    // Exactly one HTML file was written for both sheets combined.
+    let html_files: Vec<_> = std::fs::read_dir(dir.path_str())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "html"))
+        .collect();
+    assert_eq!(html_files.len(), 1);
+
+    let html = std::fs::read_to_string(format!("{}/grid.html", dir.path_str())).unwrap();
+    assert!(html.contains("<!doctype html>"));
+    // Both sheets' own <section class="sheet"> fragments are present on
+    // the same page.
+    assert_eq!(html.matches("class=\"sheet\"").count(), 2);
+    assert!(html.contains(">Sheet1<") || html.contains("Sheet1</h2>") || html.contains("Sheet1 "));
+    assert!(html.contains(">Sheet2<") || html.contains("Sheet2</h2>") || html.contains("Sheet2 "));
 }
 
 #[test]

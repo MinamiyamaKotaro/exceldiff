@@ -34,12 +34,16 @@
 //! `exceldiff::diff_file_section_from_paths` — this file only turns argv
 //! into that function's arguments and writes the result to stdout.
 //! `--grid-html-dir`, when given, additionally calls
-//! `exceldiff::grid_sections_from_paths` and writes one standalone HTML
-//! page per changed sheet into that directory (for `action.yml`'s
-//! `visual` mode to screenshot), plus a `manifest.tsv` (`sheet_name\t
-//! html_path` per line, the same TSV convention `git diff --name-status`
-//! already uses in `action.yml`) so the caller knows what was written
-//! without having to list the directory itself.
+//! `exceldiff::grid_sections_from_paths` and writes every changed sheet's
+//! fragment into *one* standalone HTML page (`grid.html`) in that
+//! directory — `wrap_grid_page` accepts concatenated fragments from
+//! multiple sheets, so a file with several changed sheets reads as one
+//! scrollable page rather than several separate downloads (for
+//! `action.yml`'s `visual` mode to attach to its artifact) — plus a
+//! `manifest.tsv` (`sheet_name\thtml_path` per line, the same TSV
+//! convention `git diff --name-status` already uses in `action.yml`;
+//! every line's `html_path` is the same `grid.html`) so the caller knows
+//! which sheet names ended up on that page without having to parse it.
 
 use exceldiff::{
     diff_file_section_from_paths, grid_sections_from_paths, wrap_grid_page, DiffMode,
@@ -140,14 +144,15 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Writes one HTML page per changed sheet (see [`grid_sections_from_paths`])
-/// into `dir`, plus `dir/manifest.tsv` listing them. A grid-rendering
-/// failure is reported to stderr by the caller but never turns into a
-/// non-zero exit — the Markdown output above is already written and is
-/// the primary artifact; `action.yml`'s `visual` mode is a best-effort
-/// addition on top of it (same "one file's failure shouldn't stop the
-/// rest of the comment" policy `diff_file_section_from_paths` already
-/// follows for parse errors).
+/// Writes every changed sheet (see [`grid_sections_from_paths`]) into one
+/// combined HTML page, `dir/grid.html`, plus `dir/manifest.tsv` listing
+/// each sheet's name against that same path. A grid-rendering failure is
+/// reported to stderr by the caller but never turns into a non-zero exit
+/// — the Markdown output above is already written and is the primary
+/// artifact; `action.yml`'s `visual` mode is a best-effort addition on
+/// top of it (same "one file's failure shouldn't stop the rest of the
+/// comment" policy `diff_file_section_from_paths` already follows for
+/// parse errors).
 fn write_grid_sections(
     dir: &str,
     status: &str,
@@ -158,11 +163,17 @@ fn write_grid_sections(
     let sections = grid_sections_from_paths(status, base_path, head_path, diff_mode);
     std::fs::create_dir_all(dir)?;
 
-    let mut manifest = String::new();
-    for (i, section) in sections.iter().enumerate() {
-        let html_path = format!("{dir}/sheet-{i}.html");
-        std::fs::write(&html_path, wrap_grid_page(&section.html))?;
-        manifest.push_str(&format!("{}\t{html_path}\n", section.sheet_name));
+    if sections.is_empty() {
+        return std::fs::write(format!("{dir}/manifest.tsv"), "");
     }
+
+    let html_path = format!("{dir}/grid.html");
+    let combined: String = sections.iter().map(|s| s.html.as_str()).collect();
+    std::fs::write(&html_path, wrap_grid_page(&combined))?;
+
+    let manifest: String = sections
+        .iter()
+        .map(|s| format!("{}\t{html_path}\n", s.sheet_name))
+        .collect();
     std::fs::write(format!("{dir}/manifest.tsv"), manifest)
 }

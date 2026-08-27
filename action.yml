@@ -105,9 +105,10 @@ inputs:
   visual:
     description: >-
       Also render an Excel-like Before/After grid view for each changed
-      sheet (via `grid.rs`'s `render_sheet_split`) as a standalone HTML
-      page, and attach them to the comment as a downloadable workflow
-      artifact (see "Preconditions" above for why it's a download link
+      sheet (via `grid.rs`'s `render_sheet_split`), combined into one
+      standalone HTML page per changed file, and attach them to the
+      comment as a downloadable workflow artifact (see "Preconditions"
+      above for why it's a download link
       rather than something embedded inline).
     required: false
     default: 'false'
@@ -225,29 +226,30 @@ runs:
 
             "$BIN" "${bin_args[@]}" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
 
-            # Each sheet's standalone HTML page (already self-contained —
-            # inline <style>, no external assets, see grid.rs's
-            # wrap_grid_page) is collected under $VISUALS_DIR rather than
-            # embedded inline — see the "Preconditions" comment at the
-            # top of this file for why — and shipped in one batch as a
-            # single workflow artifact once every changed file has been
-            # processed (below). A copy failure for one sheet is reported
-            # to stderr and skipped — never fatal to the rest of the
-            # comment, the same "one file's problem doesn't stop the
-            # others" policy the text diff above already follows for a
-            # parse error.
+            # xlsxdiff --grid-html-dir writes every changed sheet's
+            # fragment into one combined, self-contained page
+            # (grid.html — inline <style>, no external assets, see
+            # grid.rs's wrap_grid_page) plus manifest.tsv listing each
+            # sheet's name against that same path. Collected under
+            # $VISUALS_DIR rather than embedded inline — see the
+            # "Preconditions" comment at the top of this file for why —
+            # and shipped in one batch as a single workflow artifact once
+            # every changed file has been processed (below). A copy
+            # failure is reported to stderr and skipped — never fatal to
+            # the rest of the comment, the same "one file's problem
+            # doesn't stop the others" policy the text diff above already
+            # follows for a parse error.
             if [ "$VISUAL" = "true" ] && [ -s "$grid_dir/manifest.tsv" ]; then
-              while IFS=$'\t' read -r sheet_name html_path; do
-                [ -z "$html_path" ] && continue
-                dest_rel="$(sanitize "$path")/sheet-$(sanitize "$sheet_name").html"
-                dest_abs="$VISUALS_DIR/$dest_rel"
-                mkdir -p "$(dirname "$dest_abs")"
-                if ! cp "$html_path" "$dest_abs"; then
-                  echo "warning: failed to collect grid HTML for $path : $sheet_name" >&2
-                  continue
-                fi
-                printf '%s\t%s\n' "$path" "$sheet_name" >> "$VISUALS_LIST"
-              done < "$grid_dir/manifest.tsv"
+              html_path=$(cut -f2 "$grid_dir/manifest.tsv" | head -n1)
+              dest_rel="$(sanitize "$path").html"
+              dest_abs="$VISUALS_DIR/$dest_rel"
+              mkdir -p "$(dirname "$dest_abs")"
+              if cp "$html_path" "$dest_abs"; then
+                sheet_names=$(cut -f1 "$grid_dir/manifest.tsv" | paste -sd, -)
+                printf '%s\t%s\n' "$path" "$sheet_names" >> "$VISUALS_LIST"
+              else
+                echo "warning: failed to collect grid HTML for $path" >&2
+              fi
             fi
             [ -n "$grid_dir" ] && rm -rf "$grid_dir"
 
@@ -304,8 +306,8 @@ runs:
           echo
           echo "Excel-like grid views (HTML, one page per changed sheet — download and open in a browser) are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
           echo
-          while IFS=$'\t' read -r path sheet_name; do
-            echo "- ${path} — ${sheet_name}"
+          while IFS=$'\t' read -r path sheet_names; do
+            echo "- ${path} — ${sheet_names}"
           done < "$VISUALS_LIST"
         } >> "$OUT"
 

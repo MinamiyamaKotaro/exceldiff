@@ -58,7 +58,7 @@ pub fn grid_sections_from_paths(
 
 - 依存先: [`diff/model.rs`](diff/model.md)（`DiffStatus`, `SheetDiff`）、[`model/`](model/)（`Borders`, `Cell`, `CellRef`, `CellValue`, `ColorRef`, `ResolvedStyle`, `Rgb`, `Sheet`, `ThemePalette`, `Workbook`）、[`resolve/color.rs`](resolve/color.md)（`resolve_color`——`ColorRef`を実際のRGB値へ解決する。テーマカラー・インデックスカラーを含む）、[`json.rs`](json.md)（`format_date_time`——`DateTime`セルの値を、`DateTimeValue`の導出`Debug`表現ではなく`json.rs`と同じタイムゾーンなしISO 8601形式で表示する）
 - 依存先(`grid_sections_from_paths`のみ): [`markdown.rs`](markdown.md)（`DiffMode`——`M`ステータスの差分計算アルゴリズムを選択するためだけに参照し、`markdown.rs`側の型・関数は一切呼ばない。本モジュールの独立性は保たれる)、[`lib.rs`](lib.md)（`parse_workbook`）
-- 依存元: [`lib.rs`](lib.md)（`render_sheet_split`/`wrap_grid_page`/`GridSection`/`grid_sections_from_paths`を公開APIとして再エクスポート）、`examples/xlsx_diff_grid.rs`（`parse_workbook`/`diff_workbooks`の呼び出しと`wrap_grid_page`によるページ組み立て）、[`cli/`](cli.md)の`--grid-html-dir`フラグ（`grid_sections_from_paths`+`wrap_grid_page`でシートごとのHTMLファイルを書き出す）
+- 依存元: [`lib.rs`](lib.md)（`render_sheet_split`/`wrap_grid_page`/`GridSection`/`grid_sections_from_paths`を公開APIとして再エクスポート）、`examples/xlsx_diff_grid.rs`（`parse_workbook`/`diff_workbooks`の呼び出しと`wrap_grid_page`によるページ組み立て）、[`cli/`](cli.md)の`--grid-html-dir`フラグ（`grid_sections_from_paths`で得た全シート分のフラグメントを連結し、`wrap_grid_page`を1回だけ呼んで1つの結合HTMLファイルを書き出す）
 
 ## 設計判断: なぜ`markdown.rs`と統合せず別モジュールにしたか
 

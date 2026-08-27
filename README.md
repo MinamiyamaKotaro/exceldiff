@@ -67,7 +67,7 @@ jobs:
       - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-Excelライクなグリッドのビューも見たい場合は `visual: true` を指定します。追加の`permissions:`は不要です——グリッドはPRコメントへの直接埋め込みではなく、シートごとの単体HTMLページとしてワークフローのartifactへ添付され、コメントにはダウンロードリンクが載ります(このリポジトリの閲覧権限を持つ人だけがダウンロードできます。プライベートリポジトリで確実に見えるようにするための設計です。詳細は [action.yml](action.yml) 冒頭のコメントと [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) を参照)。スクリーンショット画像ではなくHTMLなので、大きなシートでも縮小されて潰れず、ブラウザでスクロール・拡大しながら閲覧できます:
+Excelライクなグリッドのビューも見たい場合は `visual: true` を指定します。追加の`permissions:`は不要です——グリッドはPRコメントへの直接埋め込みではなく、変更ファイルごとに全シートを1つにまとめた単体HTMLページとしてワークフローのartifactへ添付され、コメントにはダウンロードリンクが載ります(このリポジトリの閲覧権限を持つ人だけがダウンロードできます。プライベートリポジトリで確実に見えるようにするための設計です。詳細は [action.yml](action.yml) 冒頭のコメントと [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) を参照)。スクリーンショット画像ではなくHTMLなので、大きなシートでも縮小されて潰れず、ブラウザでスクロール・拡大しながら閲覧できます:
 
 ```yaml
 permissions:
@@ -127,7 +127,7 @@ xlsxdiff [--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] [--grid-html
 - `base_file`/`head_file`: 変更前/変更後の実際のファイルシステムパス。`A`に`base_file`、`D`に`head_file`は無く、その場合は省略するか空文字列を渡します。
 - `--max-rows-per-sheet <N>`(既定 `30`): 1シートあたりに表示するセル変更ハンクの上限数。
 - `--diff-mode <auto|coordinate>`(既定 `auto`): `auto`はアライメント自動選択、`coordinate`は単純な座標比較を強制。
-- `--grid-html-dir <dir>`: 指定すると、変更のあったシートごとに独立したHTMLページ(`<dir>/sheet-N.html`)と一覧 `<dir>/manifest.tsv`(`sheet_name\thtml_path`)を追加で書き出します(`action.yml`の`visual: true`がこのHTMLページをそのままworkflow artifactへ添付します)。
+- `--grid-html-dir <dir>`: 指定すると、変更のあった全シートを1つにまとめた単体HTMLページ(`<dir>/grid.html`)と、シート名の一覧 `<dir>/manifest.tsv`(`sheet_name\thtml_path`、全行が同じ`grid.html`を指す)を追加で書き出します(`action.yml`の`visual: true`がこのHTMLページをそのままworkflow artifactへ添付します)。
 
 例(`M`——変更前後どちらのファイルも存在するケース):
 
