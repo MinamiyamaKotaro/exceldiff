@@ -4,6 +4,8 @@
 
 Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1) での議論を経て確定した `src/` ディレクトリ構成と、各モジュールの責務をまとめたドキュメント。要求仕様書（[requirements.md](../requirement/requirements.md)）が定義する5フェーズ・パイプラインに対応させている。
 
+**本ドキュメントの対象範囲**: ここでカバーするのは、姉妹プロジェクト[`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser)と設計・実装を共有するコアの5フェーズパイプライン(`container/`・`parse/`・`model/`・`resolve/`・`json.rs`)のみ。`exceldiff`固有の、2つの`Workbook`を比較する差分エンジン(`diff/`)・その結果をPRコメント向けMarkdownへ整形する`markdown.rs`・Excelライクなグリッドを描画する`grid.rs`は対象外——それぞれ[diff/mod.md](diff/mod.md)・[markdown.md](markdown.md)・[grid.md](grid.md)を参照。
+
 ## 設計方針
 
 1. **フェーズごとの責務分離**: rels解決 → サニタイズ → ストリームパース → 分析/遅延解決 → JSON生成という一方向パイプラインの各フェーズを、対応するモジュールに一対一で割り当てる。
@@ -53,6 +55,8 @@ src/
   json.rs                   # フェーズ5: row_span/col_span を含むJSONシリアライズ
 ```
 
+`src/`にはこの上に`diff/`(2つの`Workbook`を比較する差分エンジン)・`markdown.rs`(差分結果のPRコメント向けMarkdown整形)・`grid.rs`(Excelライクなグリッド描画)も存在するが、これらは本ドキュメントが対象とする5フェーズパイプラインの一部ではないため上記構成図には含めていない——それぞれ[diff/mod.md](diff/mod.md)・[markdown.md](markdown.md)・[grid.md](grid.md)を参照。
+
 ## モジュール責務の詳細
 
 ### `lib.rs`
@@ -98,7 +102,7 @@ ZIP(OPC)展開のエントリポイント。Zip Bomb・Zip Slip の検知・ブ�
 
 `Cell` / `Sheet` / `Workbook` などの純粋なRustデータ構造を定義する。XMLパースや解決ロジックへの依存を持たない。疎行列（`BTreeMap<(row, col), Cell>`）によりメモリを最適化する。`BTreeMap`を採用している理由（`HashMap`からの変更）は[model/sheet.md](model/sheet.md)参照。
 
-この疎行列という選択は、[README.mdのBenchmarks節](../../README.md#benchmarks)で密な`Vec`を使う読み取りライブラリ(`calamine`)と直接比較・計測されている——対象は`tests/fixtures/complex/extreme_sparse.xlsx`(Excelの実際の対角にある2セルのみ populated。境界矩形サイズの確保を試みると171億8千万要素になる)。`exceldiff`は正確に2件のマップエントリで済み数ミリ秒で完了するのに対し、密な配列を使う読み取りライブラリは数GBまでメモリを膨張させた末にOSにkillされる。READMEのリソース使用量の時系列プロット(`docs/benchmarks/extreme_sparse_memory.svg`)がこれを理論上の話ではなく具体的に示している。
+この疎行列という選択は、パーサー本体を共有する[`xlsxparser`のREADME「Benchmarks」節](https://github.com/MinamiyamaKotaro/xlsxparser#benchmarks)で密な`Vec`を使う読み取りライブラリ(`calamine`)と直接比較・計測されている——対象は`tests/fixtures/complex/extreme_sparse.xlsx`(Excelの実際の対角にある2セルのみ populated。境界矩形サイズの確保を試みると171億8千万要素になる)。この実装を共有する`exceldiff`も同じ理由で正確に2件のマップエントリで済み数ミリ秒で完了するのに対し、密な配列を使う読み取りライブラリは数GBまでメモリを膨張させた末にOSにkillされる。`xlsxparser`側のリソース使用量の時系列プロット(`docs/benchmarks/extreme_sparse_memory.svg`)がこれを理論上の話ではなく具体的に示している。
 
 - 詳細設計（Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3) で進行中のモジュール別設計書）: [mod.md](model/mod.md) / [cell.md](model/cell.md) / [sheet.md](model/sheet.md) / [workbook.md](model/workbook.md) / [style.md](model/style.md) / [color.md](model/color.md)
 

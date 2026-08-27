@@ -4,6 +4,14 @@ description: >-
   what changed in every .xlsx file the PR touches.
 author: 'MinamiyamaKotaro'
 
+# Feather v4.28.0 icon set (GitHub Marketplace branding requirement) —
+# `grid` mirrors this action's own `visual: true` mode, which renders an
+# actual Excel-like grid screenshot of each changed sheet (grid.rs).
+# `color: green` per explicit product decision (Issue #27).
+branding:
+  icon: 'grid'
+  color: 'green'
+
 # Preconditions this composite action assumes the caller's own workflow
 # already set up (it cannot set these itself — see docs/design/action.md
 # "呼び出し元に要求する前提" for why):

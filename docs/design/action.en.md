@@ -41,6 +41,12 @@ Unlike an ordinary workflow job, a composite action cannot declare or perform tw
 
 Both follow from this action being `pull_request`-event-only in the first place (the diff step reads `github.event.pull_request.base.sha`/`head.sha`) — calling it from, say, `workflow_dispatch` produces no meaningful result.
 
+## Branding / Marketplace category ([Issue #27](https://github.com/MinamiyamaKotaro/exceldiff/issues/27))
+
+`action.yml`'s `branding` is `icon: grid` (from Feather v4.28.0 — matches this action's own `visual: true` mode, which renders an actual Excel-like "grid" screenshot of each changed sheet, see [`grid.rs`](grid.en.md)) and `color: green` (a product decision).
+
+The Marketplace listing category has no corresponding field in this repo (it's picked in the listing UI at publish time), so it's recorded here as a decision instead: primary category **Code review** (posting a diff-preview comment on a PR is this action's main function), secondary category **Utilities**.
+
 ## Key structure
 
 ```yaml

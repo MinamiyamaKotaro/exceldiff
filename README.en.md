@@ -8,17 +8,33 @@
 [![codecov](https://codecov.io/gh/MinamiyamaKotaro/exceldiff/branch/master/graph/badge.svg)](https://codecov.io/gh/MinamiyamaKotaro/exceldiff)
 [![License](https://img.shields.io/github/license/MinamiyamaKotaro/exceldiff)](LICENSE)
 
-A lightweight, high-performance `.xlsx` (OOXML) parser library written in Rust.
+A lightweight, high-performance `.xlsx` (OOXML) parser library written in Rust. It's also usable as a [GitHub Action](#using-it-as-a-github-action) that posts an automatic diff-preview comment for any `.xlsx` file changed in a pull request.
 
 ## Motivation
 
-`exceldiff` aims to be a fast, low-memory `.xlsx` parser, purpose-built for
-the kind of files common in Japanese business systems: sheets with an
-extreme number of rows/columns ("方眼紙Excel") and heavy use of merged
-cells. The
-goal is to parse and analyze such files without loading a full in-memory
-grid, and to expose the result as JSON that's easy to consume from a
-frontend or another system.
+`.xlsx` files are routinely tracked in git and reviewed in pull requests at
+Japanese business systems, but `git diff` tells you nothing useful about
+them — a `.xlsx` is a ZIP archive of XML parts, so even a single changed
+cell can shuffle the shared-string table or the ZIP's compressed bytes
+wholesale, leaving nothing but an opaque binary diff.
+
+`exceldiff` closes that gap. A diff engine parses the before/after `.xlsx`
+into two `Workbook`s and compares them cell by cell, and a CLI plus GitHub
+Action summarize the result as a PR comment — Markdown text, or an
+Excel-like grid screenshot. The files this targets are the kind common in
+Japanese business systems: sheets with an extreme number of rows/columns
+("方眼紙Excel", "grid-paper Excel") and heavy use of merged cells. That the
+underlying parser handles both without ever building a full in-memory 2D
+grid isn't just about the parser's own footprint — it's what keeps the
+diff itself fast and accurate, including row/column alignment detection so
+that inserting a single row or column doesn't get misreported as a wall of
+`Modified` cells.
+
+The underlying parser is based on the same design and implementation as a
+sibling project, [`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser).
+The detailed parsing architecture, OOXML coverage, and parsing-performance
+benchmarks (vs. `calamine`, etc.) live in `xlsxparser`'s own README — see
+that instead.
 
 ## Status
 
@@ -46,236 +62,107 @@ let json = exceldiff::to_json_string(&workbook)?;
   detail settled differently than planned, a bug found while writing
   tests, etc.), the doc was updated in place to record what changed and why.
 
-## Usage
+## Using it as a GitHub Action
 
-### Installation
+Use it as a GitHub Action (composite action) that automatically posts a per-sheet summary of what changed in any `.xlsx` file a pull request touches.
 
-Add it to your `Cargo.toml`:
+### Preconditions
 
-```toml
-[dependencies]
-exceldiff = "0.13"
+Unlike an ordinary workflow job, a composite action cannot declare or perform two things on its own — the caller's own workflow needs to supply them:
+
+- `actions/checkout@v4` with `fetch-depth: 0` — the diff step reads both the PR's base and head revisions via `git show`, so a shallow checkout (which only has the merge commit) won't work.
+- `permissions: pull-requests: write` — needed to post a comment while `comment` is left at its default `true` (set `comment: false`/`job-summary: true` to skip needing this permission). `visual: true` additionally needs `permissions: contents: write` (see below).
+
+### Example usage
+
+```yaml
+name: xlsx diff preview
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  xlsx-diff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-or via the command line:
+To also embed an Excel-like grid screenshot, set `visual: true` and add `permissions: contents: write` (needed to push the screenshot PNGs to a dedicated `xlsx-diff-images` branch):
+
+```yaml
+permissions:
+  pull-requests: write
+  contents: write
+
+steps:
+  - uses: actions/checkout@v4
+    with:
+      fetch-depth: 0
+  - uses: MinamiyamaKotaro/exceldiff@v1
+    with:
+      visual: 'true'
+```
+
+### Inputs
+
+| input | type/default | what it does |
+|---|---|---|
+| `github-token` | string, `${{ github.token }}` | token used to post the comment |
+| `files` | string, `'*.xlsx'` | a **git pathspec** passed straight to `git diff -- <files>` — not a shell glob |
+| `comment` | bool string, `'true'` | post/update a PR comment |
+| `job-summary` | bool string, `'false'` | also write to `$GITHUB_STEP_SUMMARY`. A caller without `pull-requests: write` (e.g. a fork PR) can set `comment: false`/`job-summary: true` to see the diff without hitting a permission error |
+| `max-rows-per-sheet` | numeric string, `'30'` | caps the number of cell-change hunks rendered per sheet |
+| `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto` (default) auto-picks whichever of coordinate/row-aligned/column-aligned diffing reports the fewest changes per sheet. `coordinate` forces plain coordinate comparison, skipping alignment detection |
+| `visual` | bool string, `'false'` | render an Excel-like Before/After grid screenshot for each changed sheet and embed it under the text diff. Needs `permissions: contents: write` separately, and adds Node.js + Playwright + a Chromium download — meaningfully more job runtime, hence off by default |
+
+### Outputs
+
+| output | type | what it is |
+|---|---|---|
+| `has-changes` | bool string | whether any file matching `files` changed in the PR |
+| `changed-files-count` | numeric string | how many files matching `files` changed |
+
+See [docs/design/action.en.md](docs/design/action.en.md) for the full design and tradeoffs.
+
+## Using it as a CLI
+
+The GitHub Action above builds and runs `cli/` (package `xlsxdiff`, not published to crates.io) once per changed `.xlsx` file in a PR. That binary can also be built and run standalone — it prints one file's git diff as a GitHub-flavored Markdown section.
+
+### Building it
 
 ```bash
-cargo add exceldiff
+git clone https://github.com/MinamiyamaKotaro/exceldiff.git
+cd exceldiff
+cargo build --release -p xlsxdiff
 ```
 
-### Basic usage
+### Usage
 
-```rust
-use exceldiff::{parse_workbook, to_json_string};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let workbook = parse_workbook("book.xlsx")?;
-    let json = to_json_string(&workbook)?;
-    println!("{json}");
-    Ok(())
-}
+```text
+xlsxdiff [--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] [--grid-html-dir <dir>] <display_path> <A|M|D> [base_file] [head_file]
 ```
 
-- Use `parse_workbook_reader` instead when reading from any `Read + Seek`
-  input (an in-memory buffer, etc.) rather than a filesystem path.
-- To change the defaults for the zip bomb limit or the per-sheet cell-count
-  limit, pass a `SizeLimits` to the `_with_limits` variant (e.g.
-  `parse_workbook_with_limits`). See [Input / Output](#input--output) below
-  for the output JSON shape and details on these limits.
+- `display_path`: the path shown in the Markdown heading (the file's path in the repo).
+- `A`/`M`/`D`: the git status (added/modified/deleted).
+- `base_file`/`head_file`: the actual filesystem paths of the before/after revisions. `A` has no `base_file`, `D` has no `head_file` — omit it or pass an empty string.
+- `--max-rows-per-sheet <N>` (default `30`): caps the number of cell-change hunks rendered per sheet.
+- `--diff-mode <auto|coordinate>` (default `auto`): `auto` auto-picks alignment, `coordinate` forces plain coordinate comparison.
+- `--grid-html-dir <dir>`: when given, additionally writes one standalone HTML page per changed sheet (`<dir>/sheet-N.html`) plus a `<dir>/manifest.tsv` listing (`sheet_name\thtml_path`) — this is what `action.yml`'s `visual: true` screenshots.
 
-## Input / Output
+Example (`M` — both the before and after file exist):
 
-**Input**: a `.xlsx` file, via one of two entry points —
-
-- `parse_workbook(path)` — the common case, reads from a filesystem path.
-- `parse_workbook_reader(reader)` — from anything `Read + Seek` (an
-  in-memory buffer, a fully-read HTTP response body, ...), for callers that
-  don't go through the filesystem.
-
-Both return `Result<Workbook, Error>`, a fully resolved in-memory
-representation of every sheet (visible, hidden, and veryHidden alike). Each
-has a `_with_limits` variant taking an explicit `SizeLimits` to override the
-defaults: a 512 MiB Zip Bomb cap per ZIP entry, 2 GiB cumulative, and a
-5,000,000-cell cap per sheet (`Error::TooManyCells`) — the cell cap bounds
-a sheet's in-memory footprint independently of its raw XML byte size,
-since a pathologically cell-dense file can stay well under the byte-size
-cap while still costing gigabytes once every `<c>` materializes.
-
-**Output**: `to_json_string(&workbook)` / `to_json_writer(&workbook,
-writer)` serialize the resolved `Workbook` into JSON shaped like this
-(real output, from `tests/fixtures/complex/houganshi_merged.xlsx` — a
-sheet with a single merged region, `A1:C3`, holding one text cell):
-
-```json
-{
-  "sheets": [
-    {
-      "name": "Sheet1",
-      "visibility": "visible",
-      "maxRow": 3,
-      "maxCol": 3,
-      "defaultColumnWidth": null,
-      "columns": [],
-      "cells": [
-        {
-          "row": 1,
-          "col": 1,
-          "value": { "type": "text", "value": "houganshi" },
-          "rowSpan": 3,
-          "colSpan": 3
-        }
-      ],
-      "images": []
-    }
-  ]
-}
+```bash
+xlsxdiff "budget.xlsx" M /tmp/base/budget.xlsx /tmp/head/budget.xlsx
 ```
 
-- `visibility` is `"visible"`, `"hidden"`, or `"veryHidden"` (from `<sheet
-  state="...">`).
-- `maxRow`/`maxCol` are the sheet's bounding box (the highest populated or
-  merged coordinate) — not the OOXML `<dimension>` value, which isn't read
-  at all.
-- `columns` is the sheet's `<cols>` ranges (`{"min", "max", "width"}`,
-  1-based and inclusive), each entry covering every column in that range —
-  not one `columnWidth` value duplicated onto every cell, since that would
-  multiply output size for no benefit (see
-  [Sparse merged-cell arrangements](#sparse-merged-cell-arrangements)
-  below for the same principle applied to merged cells). `defaultColumnWidth`
-  is `<sheetFormatPr defaultColWidth="..">`'s value, or `null` if the
-  workbook doesn't set one; a column not covered by any `columns` entry
-  falls back to it. Neither fixture used in these two examples declares
-  `<cols>`, so both show the empty/absent case.
-- `cells` only contains populated coordinates: a blank cell in between is
-  simply absent, never emitted as a `null`/`"empty"` entry (see
-  [Motivation](#motivation)). Cells are ordered row-major, then
-  column-major (matching reading order), regardless of the order they
-  appear in the source XML — the sheet is backed by a `BTreeMap`, keyed
-  on `(row, col)`.
-- Each cell's `value` is tagged by `type`:
-  `"number"` | `"text"` | `"boolean"` | `"error"` | `"dateTime"` |
-  `"empty"` (a cell with formatting only, or a value JSON can't
-  represent — `NaN`/`±Infinity`).
-  `"dateTime"` serializes as ISO 8601 with no timezone designator or
-  fractional seconds (e.g. `"2023-06-15T00:00:00"`; a date-only cell gets a
-  midnight time component, since Excel itself doesn't distinguish
-  date-only from date+time as a type).
-- `rowSpan`/`colSpan` are present (and `> 1`) only on a merged region's
-  anchor cell; every other coordinate inside the region resolves to that
-  same anchor and is not emitted as a separate JSON cell.
-- `style` is present only when the cell carries a resolved style at all
-  (omitted entirely otherwise, not emitted as `"style": {}`):
-  - `font`: `{"sizePt": 11.0, "bold": false}`.
-  - `wrapText`: boolean.
-  - `alignment`: the horizontal alignment as a string — `"general"` |
-    `"left"` | `"center"` | `"right"` | `"fill"` | `"justify"` |
-    `"centerContinuous"` | `"distributed"`. Always present (unlike
-    `numberFormat` below, `"general"` is itself a meaningful value, not
-    "nothing to report").
-  - `numberFormat`: the resolved format code as a string (e.g. `"0%"`,
-    `"yyyy-mm-dd"`), covering both the built-in numFmtId table
-    (ECMA-376 §18.8.30) and custom `<numFmt>` codes. Omitted when the
-    format is `"General"` (no special formatting to report).
-  - `fillFgColor`/`fillBgColor`: the cell's fill color, tagged by `type`
-    exactly as `<fgColor>`/`<bgColor>` specify it — `{"type": "rgb",
-    "value": "FFFF0000"}` | `{"type": "theme", "value": {"index": 4,
-    "tint": -0.25}}` | `{"type": "indexed", "value": 64}`. Kept in this
-    raw, unresolved form rather than converted to a final displayed RGB
-    value: exceldiff's output is for diffing, so knowing *that* a fill
-    color changed doesn't require knowing what it actually renders as.
-    Omitted when the fill has no foreground/background color at all. When
-    the actual displayed color *is* needed, `resolve_color` converts any
-    of these three forms to a real RGB value on demand — see
-    [Resolving display colors](#resolving-display-colors) below.
-  - `borders`: `{"top": bool, "right": bool, "bottom": bool, "left": bool}`
-    — whether each side carries a border at all (line style/weight/color
-    are not reported; `<diagonal>` is not tracked). Omitted entirely when
-    no side has one, the same "nothing to report" treatment as
-    `fillFgColor`/`fillBgColor` — never emitted as all-`false`.
-- `hyperlink` is present only when the cell carries one (omitted
-  otherwise, not emitted as `"hyperlink": {}`): `{"target": "...",
-  "location": "...", "tooltip": "..."}`, each field itself omitted when
-  absent. `target` is the resolved external URL or internal part path
-  (from the worksheet's own relationships); `location` is an in-workbook
-  jump (e.g. `"Sheet2!A1"`) present on internal hyperlinks instead of, or
-  alongside, `target`. Kept raw, exactly like `fillFgColor`/`fillBgColor`
-  — the target/location string is never checked for existence and never
-  fetched, so a hyperlink pointing at a since-deleted sheet or a dead URL
-  still round-trips unchanged (diffing, not following, is the point). A
-  `ref` spanning multiple cells (`<hyperlink ref="A1:B1">`) attaches
-  independently to every cell in the range that already carries a value
-  or style of its own; a cell with no value/style/hyperlink of its own is
-  never materialized, even inside such a range.
-- `images` is the sheet's cell-anchored embedded images (always present,
-  even as an empty array — unlike `style`, which is omitted per-cell when
-  absent). See [Embedded images](#embedded-images) below for its shape.
-
-A second real example — every `CellValue` variant in one row
-(`tests/fixtures/normal/basic_types.xlsx`; cells re-ordered by column here
-for readability, since actual order is unspecified):
-
-```json
-{
-  "sheets": [
-    {
-      "name": "Sheet1",
-      "visibility": "visible",
-      "maxRow": 1,
-      "maxCol": 7,
-      "defaultColumnWidth": null,
-      "columns": [],
-      "cells": [
-        { "row": 1, "col": 1, "value": { "type": "text", "value": "日本語Text" } },
-        { "row": 1, "col": 2, "value": { "type": "number", "value": 42.0 } },
-        { "row": 1, "col": 3, "value": { "type": "number", "value": 19.99 } },
-        {
-          "row": 1, "col": 4,
-          "value": { "type": "dateTime", "value": "2023-06-15T00:00:00" },
-          "style": {
-            "font": { "sizePt": 11.0, "bold": false },
-            "wrapText": false,
-            "alignment": "general",
-            "numberFormat": "yyyy-mm-dd"
-          }
-        },
-        { "row": 1, "col": 5, "value": { "type": "boolean", "value": true } },
-        { "row": 1, "col": 6, "value": { "type": "boolean", "value": false } },
-        { "row": 1, "col": 7, "value": { "type": "error", "value": "#N/A" } }
-      ],
-      "images": []
-    }
-  ]
-}
-```
-
-(Column 4 is a date cell — its `numberFormat` comes from the cell's
-`<xf numFmtId="...">`, resolved against `xl/styles.xml`'s built-in/custom
-`<numFmt>` table; `openpyxl`'s default date format is `"yyyy-mm-dd"`.)
-
-A third real example — a sheet that does declare `<cols>`
-(`tests/fixtures/normal.rs`'s `column_widths()`: `<col min="1" max="3"
-width="12.5"/>`, `<col min="5" max="5" width="30"/>`, and
-`<sheetFormatPr defaultColWidth="9.1"/>`):
-
-```json
-{
-  "maxRow": 1,
-  "maxCol": 5,
-  "defaultColumnWidth": 9.1,
-  "columns": [
-    { "min": 1, "max": 3, "width": 12.5 },
-    { "min": 5, "max": 5, "width": 30.0 }
-  ],
-  "cells": [
-    { "row": 1, "col": 1, "value": { "type": "number", "value": 1.0 } },
-    { "row": 1, "col": 5, "value": { "type": "number", "value": 2.0 } }
-  ]
-}
-```
-
-Column 4 falls in the gap between the two `columns` ranges, so a cell there
-(none exist in this example) would fall back to `defaultColumnWidth`
-(9.1) rather than either range's `width`.
+A parse error or an unrecognized git status is rendered as an error section inside the Markdown output rather than aborting the process — one file's problem never stops the rest of the diff from being shown. See [docs/design/cli.en.md](docs/design/cli.en.md) for details.
 
 ## Embedded images
 
@@ -389,13 +276,16 @@ Core requirements driving the design:
   `parse/`) never mixes with the resolution logic (`resolve/`), which
   operates purely on in-memory data and needs no I/O to unit test.
 
-The module layout (see
-[docs/design/architecture.en.md](docs/design/architecture.en.md) for the
-full breakdown of each file's responsibility):
+The module layout (see [docs/design/architecture.en.md](docs/design/architecture.en.md)
+for the core 5-phase pipeline's full breakdown, and
+[docs/design/diff/mod.en.md](docs/design/diff/mod.en.md) /
+[docs/design/markdown.en.md](docs/design/markdown.en.md) /
+[docs/design/grid.en.md](docs/design/grid.en.md) for the diff-computation,
+Markdown-formatting, and grid-rendering layer built on top):
 
 ```text
 src/
-  lib.rs        # public API entry point (parse_workbook, parse_workbook_reader, to_json_string, ...)
+  lib.rs        # public API entry point (parse_workbook, diff_workbooks_best_effort, diff_file_section_from_paths, ...)
   error.rs      # crate-wide error type
   pipeline.rs   # orchestrates the 5-phase pipeline and resource lifetimes
 
@@ -403,8 +293,11 @@ src/
   parse/        # XML parsing (quick-xml usage is confined here), XXE mitigation
   model/        # pure data structures (Workbook, Sheet, Cell, CellValue, ...)
   resolve/      # shared-string/style/merge-cell resolution + on-demand color resolution, I/O-independent
-
   json.rs       # serializes a resolved Workbook to JSON
+
+  diff/         # the diff engine that compares two Workbooks (coordinate/row-aligned/column-aligned/best-effort auto-pick)
+  markdown.rs   # formats a WorkbookDiff into GitHub-flavored Markdown for a PR comment (the CLI's entry point, diff_file_section_from_paths)
+  grid.rs       # renders a changed sheet as an Excel-like grid HTML page (what action.yml's visual: true mode screenshots)
 ```
 
 ## OOXML parts covered
@@ -437,7 +330,7 @@ src/
 - `xl/drawings/drawingN.xml` and its own `_rels` (cell-anchored embedded
   images — anchor geometry, the embedded media's resolved path, and the
   image's own hyperlink, including images nested in `<xdr:grpSp>` groups;
-  see [Embedded images](#embedded-images) below)
+  see [Embedded images](#embedded-images) above)
 
 `[Content_Types].xml` is not read at all — the workbook part's actual path
 is resolved via `_rels/.rels`'s `officeDocument` relationship rather than
@@ -449,136 +342,12 @@ rationale and the strict-OPC-conformance tradeoff this makes).
 
 ## Benchmarks
 
-The benchmarking was done using [`hyperfine`](https://github.com/sharkdp/hyperfine)
-with `--warmup 3` on an `Apple M2 Pro` running `macOS 26.6.1`, comparing
-`exceldiff` (via `parse_workbook`) against
-[`calamine`](https://github.com/tafia/calamine) `0.26.1` (via
-`worksheet_range`) — a widely-used pure-Rust `.xlsx` reader — both built in
-release mode, on `tests/fixtures/complex/extreme_sparse.xlsx`: a real,
-openpyxl-authored file where only two cells are populated, `A1` and
-`XFD1048576` (Excel's actual maximum: row 1,048,576, column 16,384) — the
-sparse "grid-paper Excel" shape this library is purpose-built for (see
-[Motivation](#motivation)).
-
-```bash
-exceldiff
-  Time (mean ± σ):       3.0 ms ±   1.0 ms    [User: 1.3 ms, System: 1.1 ms]
-  Range (min … max):     2.1 ms …  18.3 ms    410 runs
-```
-
-`calamine` isn't shown as a completed hyperfine run because it never
-completed one: across repeated runs it was killed by the OS for excessive
-memory use after roughly 23-24 seconds, having grown to multiple GB of
-resident memory. The cause is structural, not a fluke: `calamine`'s
-`Range<T>` (the type `worksheet_range` returns) always backs onto a single
-dense `Vec<T>` sized to the *bounding box* of the populated cells —
-`Range::from_sparse` (`calamine` `0.26.1`, `src/lib.rs`) computes
-`cols * rows` from that bounding box and allocates `vec![T::default();
-cols * rows]` regardless of how few cells are actually non-empty. Here the
-two populated corners span the full sheet, so that bounding box *is*
-1,048,576 x 16,384 = 17,179,869,184 elements, and the allocation attempt
-is what gets the process killed.
-
-`exceldiff` doesn't hit this because cells are kept in a coordinate-keyed
-`BTreeMap<CellRef, Cell>` (see [Architecture](#architecture) above) sized to
-the number of populated cells, never to the sheet's addressable bounding
-box — so `extreme_sparse.xlsx` costs `exceldiff` exactly 2 map entries.
-
-The same run, visualized: resident memory (`ps -o rss`, sampled every
-100 ms) for each process from launch to exit —
-
-![exceldiff finishes in well under a second at 32 KB resident; calamine climbs to 2.35 GB over 32 seconds before the OS kills it](docs/benchmarks/extreme_sparse_memory.svg)
-
-`exceldiff`'s line is flat at 32 KB because there's nothing to allocate
-beyond the 2 map entries above; `calamine`'s climbs — noisily, as `Vec`
-reallocates while growing — until the OS sends `SIGKILL` at 32.2 s, peaking
-at 2.35 GB resident on a machine with roughly 58 MB free at the start of
-the run (16 GB total). Sampled at 100 ms granularity via a shell loop
-polling `ps`, not a profiler, so brief spikes between samples aren't
-captured and the true peak may be marginally higher than shown.
-
-### Sparse merged-cell arrangements
-
-A merge-heavy file could hit an unrelated cost even while respecting every
-existing limit ([Issue #43](https://github.com/MinamiyamaKotaro/xlsxparser/issues/43)):
-two 1x1 merges placed at opposite corners of a sheet stretch the merged-cell
-bounding box to cover virtually the whole sheet, so every other cell fell
-back to a linear scan over every merged region when resolving its origin —
-turning a legitimate file into an O(cells × merged regions) cost during JSON
-generation. `Sheet::finalize_merges` closes this with a single sweep-line
-pass, independent of how the merges are arranged in space (see
-[docs/design/model/sheet.md](docs/design/model/sheet.md)'s "修正:
-`finalize_merges`" section for the full story).
-
-Measured the same way as above (`hyperfine`, `--warmup 1`, same machine), on
-a generated 838 KB file with 300,000 distinct populated cells and 20,000
-merges (`resolve::merge::MAX_MERGE_REGIONS`, the current cap) arranged to
-maximize the bounding box (`tests/fixtures/security.rs`'s
-`sparse_merge_bounding_box_amplification`):
-
-```bash
-before (pre-#43 fix, v0.10.0)
-  Time (mean ± σ):     14.918 s ±  0.242 s    3 runs
-
-after (this fix, v0.10.1)
-  Time (mean ± σ):     600.6 ms ±   7.9 ms    4 runs
-```
-
-### Real-world merge-heavy worksheet vs. calamine
-
-> **Note: Different Goals, Different Results**
->
-> `calamine` specializes in raw data extraction, so it ignores blank cells
-> that carry only styling. `exceldiff`, by contrast, aims for complete
-> reproduction of appearance and diffs, so it keeps every blank cell that
-> carries nothing but a background fill or a border. In the real-world-file
-> benchmark below, note that the two libraries are extracting a fundamentally
-> different amount of information (resolution).
-
-The two benchmarks above are synthetic stress tests. This one is a real,
-hand-authored file: `tests/fixtures/other/standard_skill_sheet.xlsx`, a
-skills-matrix spreadsheet with 155 merged cells arranged irregularly (`A1:D11`,
-`H3:Q3`, `J36:J39`, ...) — the kind of layout that shows up in an actual
-business template, not a stress-test generator.
-
-Comparing `exceldiff` (`parse_workbook` + `iter_cells`) against `calamine`
-`0.36.1` (`worksheet_range` + `merge_cells_by_sheet_name`, walked and
-merge-resolved the same way), 500 parses averaged in release mode
-(`poc/skillsheet-bench-poc/`, a throwaway comparison crate — `calamine` is
-not, and was never added as, a dependency of the published package):
-
-| | `exceldiff` | `calamine` |
-|---|---|---|
-| wall time / parse | 16.96 ms | 7.38 ms |
-| instructions / parse | 200,474,727 | 84,912,087 |
-| peak memory footprint | 6.73 MB | 2.38 MB |
-| cells walked | 25,517 | 663 |
-| **time / cell walked** | **665 ns** | 11.13 µs |
-| **instructions / cell walked** | **7,858** | 128,073 |
-| block I/O (read + write ops, 500 iterations) | 0 | 0 |
-
-![exceldiff vs calamine, scope: exceldiff walked 25,517 cells, calamine's used-range detection saw only 663 — 38.5x the work, because exceldiff retains style-only blank cells that calamine never sees](docs/benchmarks/merge_cell_benchmark_scope.png)
-
-Read as a straight wall-clock race, this looks like a 2.3x loss for
-`exceldiff`. It isn't the same amount of work: `exceldiff` walked 25,517
-cells, `calamine`'s used-range detection saw only 663. The sheet's real data
-is 38 rows, but whoever authored it in Excel applied fill/border styling
-roughly 1,500 rows deep — `exceldiff` keeps every one of those style-bearing
-blank cells (retaining exactly this kind of cell-level state is the library's
-purpose; see [Motivation](#motivation)), while `calamine`'s `Range<Data>` has
-no concept of style and never sees them.
-
-Normalized per cell actually walked, the result flips: `exceldiff` costs
-665 ns and 7,858 instructions per cell against `calamine`'s 11.13 µs and
-128,073 instructions per cell — roughly **16.7x cheaper per cell**.
-`calamine`'s larger per-cell figure isn't inefficiency; it's fixed
-zip-decompression and XML-parse overhead amortized over a denominator 38x
-smaller. On the other two axes both held up cleanly: peak RSS stayed flat
-across all 500 iterations for both (no leak), and `/usr/bin/time -l`'s block
-I/O counters read zero for both, confirming neither ever spills to a temp
-file (see [Architecture](#architecture)).
-
-![exceldiff vs calamine, wall-clock time: exceldiff 16.96ms/parse (25,517 cells) vs calamine 7.38ms/parse (663 cells) — but normalized per cell walked, exceldiff is about 16.7x cheaper (665ns vs 11.13µs)](docs/benchmarks/merge_cell_benchmark_time.png)
+Parsing performance itself (memory use on a sparse "grid-paper Excel", the
+cost on a merge-heavy file, the comparison against `calamine`, etc.) lives
+in [`xlsxparser`'s README Benchmarks section](https://github.com/MinamiyamaKotaro/xlsxparser#benchmarks),
+which the parser underneath this crate is shared with. Benchmarks specific
+to `exceldiff` itself — diff computation, Markdown formatting, grid
+rendering — will be added here once there's a need for them.
 
 ## Security notes
 

@@ -41,6 +41,12 @@ composite actionは通常のワークフローjobと異なり、以下の2つを
 
 いずれも本actionが`pull_request`イベント専用(差分計算ステップが`github.event.pull_request.base.sha`/`head.sha`を参照する)であることの帰結でもある——`workflow_dispatch`等の他イベントから呼び出しても意味のある結果は得られない。
 
+## ブランディング・Marketplaceカテゴリ([Issue #27](https://github.com/MinamiyamaKotaro/exceldiff/issues/27))
+
+`action.yml`の`branding`は`icon: grid`(Feather v4.28.0由来——本actionの`visual: true`モードが実際にExcelライクな「グリッド」のスクリーンショットを生成すること([`grid.rs`](grid.md))に対応させた)・`color: green`(製品判断として決定)とした。
+
+Marketplace掲載時のカテゴリはリポジトリ内のファイルに保存する field が無く(掲載UI側で都度選択する)ため、ここに決定事項として記録する: プライマリカテゴリは**Code review**(PRに差分プレビューコメントを投稿するのが主機能のため)、セカンダリカテゴリは**Utilities**とする。
+
 ## 主要な構造
 
 ```yaml

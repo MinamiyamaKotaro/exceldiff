@@ -4,6 +4,8 @@
 
 A document summarizing the `src/` directory layout and the responsibilities of each module, finalized through the discussion in Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1). It maps to the 5-phase pipeline defined in the requirements specification ([requirements.md](../requirement/requirements.md)).
 
+**Scope of this document**: it only covers the core 5-phase pipeline (`container/`, `parse/`, `model/`, `resolve/`, `json.rs`), which shares its design and implementation with the sibling project [`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser). `exceldiff`'s own diff engine that compares two `Workbook`s (`diff/`), the `markdown.rs` that formats the result for a PR comment, and the `grid.rs` that renders an Excel-like grid are out of scope here — see [diff/mod.en.md](diff/mod.en.md) / [markdown.en.md](markdown.en.md) / [grid.en.md](grid.en.md) instead.
+
 ## Design Principles
 
 1. **Separation of responsibility by phase**: The one-directional pipeline — rels resolution → sanitization → streaming parse → analysis/deferred resolution → JSON generation — assigns each phase to a corresponding module on a one-to-one basis.
@@ -53,6 +55,8 @@ src/
   json.rs                   # Phase 5: JSON serialization including row_span/col_span
 ```
 
+`src/` also has `diff/` (the diff engine comparing two `Workbook`s), `markdown.rs` (formats a diff result for a PR comment), and `grid.rs` (renders an Excel-like grid) on top of this, but they aren't part of the 5-phase pipeline this document covers, so they're left out of the layout above — see [diff/mod.en.md](diff/mod.en.md) / [markdown.en.md](markdown.en.md) / [grid.en.md](grid.en.md) instead.
+
 ## Module Responsibility Details
 
 ### `lib.rs`
@@ -98,7 +102,7 @@ The layer that aggregates dependencies on XML parsing libraries such as `quick-x
 
 Defines pure Rust data structures such as `Cell` / `Sheet` / `Workbook`. Has no dependency on XML parsing or resolution logic. Optimizes memory usage via a sparse matrix (`BTreeMap<(row, col), Cell>`). See [model/sheet.en.md](model/sheet.en.md) for why `BTreeMap` (changed from `HashMap`).
 
-This sparse-matrix choice is what [README.md's Benchmarks section](../../README.md#benchmarks) measures directly against a dense-`Vec`-backed reader (`calamine`) on `tests/fixtures/complex/extreme_sparse.xlsx` — two cells at Excel's actual opposite corners, so a bounding-box-sized allocation is 17.18 billion elements. `exceldiff` costs exactly 2 map entries and finishes in single-digit milliseconds; the dense-array reader gets killed by the OS after climbing to multiple GB of resident memory. The README's resource-over-time plot (`docs/benchmarks/extreme_sparse_memory.svg`) makes this concrete rather than theoretical.
+This sparse-matrix choice is what [`xlsxparser`'s README Benchmarks section](https://github.com/MinamiyamaKotaro/xlsxparser#benchmarks) — the parser this implementation is shared with — measures directly against a dense-`Vec`-backed reader (`calamine`) on `tests/fixtures/complex/extreme_sparse.xlsx` — two cells at Excel's actual opposite corners, so a bounding-box-sized allocation is 17.18 billion elements. `exceldiff`, sharing that same implementation, likewise costs exactly 2 map entries and finishes in single-digit milliseconds; the dense-array reader gets killed by the OS after climbing to multiple GB of resident memory. `xlsxparser`'s resource-over-time plot (`docs/benchmarks/extreme_sparse_memory.svg` in that repo) makes this concrete rather than theoretical.
 
 - Detailed design (per-module design docs in progress under Issue [#3](https://github.com/MinamiyamaKotaro/xlsxparser/issues/3)): [mod.md](model/mod.en.md) / [cell.md](model/cell.en.md) / [sheet.md](model/sheet.en.md) / [workbook.md](model/workbook.en.md) / [style.md](model/style.en.md) / [color.md](model/color.en.md)
 
