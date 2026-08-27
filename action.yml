@@ -32,14 +32,26 @@ branding:
 #   - `permissions: pull-requests: write` (composite actions cannot
 #     declare their own `permissions:` block — that's workflow/job-level
 #     only; only needed when `comment: true`, the default).
-#   - `permissions: contents: write` — supersedes the plain `contents:
-#     read` above (implies it) when `visual: true`: rendered grid
-#     screenshots get committed to a dedicated orphan branch
-#     (`xlsx-diff-images`) in this same repository, which needs write
-#     access. See docs/design/grid.md for why (GitHub sanitizes `style=`
-#     out of PR comment HTML, so the grid itself can't be pasted into the
-#     comment directly — a hosted image is the only way to show it
-#     there).
+#   - `visual: true` needs no extra `permissions:` beyond the plain
+#     `contents: read` above: rendered grid screenshots are uploaded as a
+#     workflow artifact (`actions/upload-artifact@v4`), not committed
+#     anywhere, and artifact upload authorizes via the runner's own
+#     `ACTIONS_RUNTIME_TOKEN` rather than the `GITHUB_TOKEN` permissions
+#     model. See docs/design/grid.md for why an image is needed at all
+#     (GitHub sanitizes `style=` out of PR comment HTML, so the grid
+#     itself can't be pasted into the comment directly) and Issue #47 for
+#     why the artifact route replaced an earlier
+#     commit-to-orphan-branch-plus-raw.githubusercontent.com-link design:
+#     that scheme left screenshots unviewable on private repos (raw
+#     content on a private repo needs per-viewer auth the browser doesn't
+#     automatically carry across domains), and a since-abandoned
+#     data-URI/`uploads.github.com`-attachment alternative either got
+#     stripped by GitHub's comment sanitizer or turned out to be
+#     obscurity- rather than permission-gated. A downloadable artifact is
+#     slower to view (no inline preview) but is gated by the same
+#     repository-read permission as everything else here — the only
+#     option confirmed to actually enforce "only people with repo access
+#     can see this."
 #   - trigger `on: pull_request` (this action does nothing useful outside
 #     a pull_request event: the diff step reads
 #     `github.event.pull_request.base.sha`/`head.sha`).
@@ -88,11 +100,12 @@ inputs:
   visual:
     description: >-
       Also render an Excel-like Before/After grid screenshot for each
-      changed sheet (via `grid.rs`'s `render_sheet_split`) and embed it
-      under that file's text diff. Requires `permissions: contents:
-      write` (see "Preconditions" above) and installs Node.js +
-      Playwright + a Chromium download, which meaningfully adds to job
-      runtime — off by default for that reason.
+      changed sheet (via `grid.rs`'s `render_sheet_split`) and attach
+      them to the comment as a downloadable workflow artifact (see
+      "Preconditions" above for why it's a download link rather than an
+      inline image). Installs Node.js + Playwright + a Chromium
+      download, which meaningfully adds to job runtime — off by default
+      for that reason.
     required: false
     default: 'false'
 
@@ -160,10 +173,8 @@ runs:
         DIFF_MODE: ${{ inputs.diff-mode }}
         VISUAL: ${{ inputs.visual }}
         SCREENSHOT_SCRIPT: ${{ github.action_path }}/action-scripts/screenshot.mjs
-        IMAGES_BRANCH: xlsx-diff-images
-        IMAGES_WORKTREE: ${{ runner.temp }}/xlsx-diff-images-worktree
-        REPO: ${{ github.repository }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        VISUALS_DIR: ${{ runner.temp }}/xlsx-diff-visuals
+        VISUALS_LIST: ${{ runner.temp }}/xlsx-diff-visuals-list.tsv
       run: |
         set -euo pipefail
 
@@ -184,58 +195,6 @@ runs:
           printf '%s' "$1" | tr -c '[:alnum:]._-' '_'
         }
 
-        # Sets up $IMAGES_WORKTREE as a checkout of $IMAGES_BRANCH,
-        # creating that branch (as a parentless orphan — it holds nothing
-        # but generated screenshots, no reason to share history with the
-        # code) the first time this ever runs for the repo. A *separate*
-        # worktree (not the caller's own checkout `git worktree add`
-        # already has) so none of this ever touches the tree the diff
-        # step above reads from.
-        setup_images_worktree() {
-          if git ls-remote --exit-code --heads origin "$IMAGES_BRANCH" > /dev/null 2>&1; then
-            git fetch origin "$IMAGES_BRANCH" --quiet
-            git worktree add "$IMAGES_WORKTREE" -B "$IMAGES_BRANCH" "origin/$IMAGES_BRANCH" --quiet
-          else
-            git worktree add --orphan -B "$IMAGES_BRANCH" "$IMAGES_WORKTREE" --quiet
-          fi
-          git -C "$IMAGES_WORKTREE" config user.name "github-actions[bot]"
-          git -C "$IMAGES_WORKTREE" config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-        }
-
-        # Copies $1 (a local PNG) to $2 (its path within $IMAGES_BRANCH),
-        # commits, and pushes — retrying a few times against a fetch +
-        # rebase if another concurrent run raced this one onto the branch
-        # first (expected on a repo with multiple PRs touching .xlsx
-        # files at once; the branch itself has no other writers). Prints
-        # the resulting commit SHA on success, for the caller to build a
-        # raw.githubusercontent.com URL pinned to that exact commit
-        # (rather than the branch tip, which the next push moves).
-        push_image() {
-          local src="$1" dest_rel="$2"
-          local dest_abs="$IMAGES_WORKTREE/$dest_rel"
-          mkdir -p "$(dirname "$dest_abs")"
-          cp "$src" "$dest_abs"
-          (
-            cd "$IMAGES_WORKTREE"
-            git add "$dest_rel"
-            git commit -m "xlsx-diff: $dest_rel" --quiet
-            for attempt in 1 2 3 4 5; do
-              if git push origin "HEAD:$IMAGES_BRANCH" --quiet 2> /dev/null; then
-                git rev-parse HEAD
-                exit 0
-              fi
-              if [ "$attempt" -eq 5 ]; then
-                echo "warning: giving up pushing $dest_rel after 5 attempts" >&2
-                exit 1
-              fi
-              git fetch origin "$IMAGES_BRANCH" --quiet
-              git rebase "origin/$IMAGES_BRANCH" --quiet
-              sleep "$attempt"
-            done
-          )
-        }
-
         # --no-renames: a rename shows up as a plain Delete + Add pair
         # instead of an "R###" status line, which keeps the status
         # parsing below to exactly A/M/D.
@@ -248,10 +207,6 @@ runs:
         else
           echo "has-changes=true" >> "$GITHUB_OUTPUT"
           echo "changed-files-count=$(wc -l <<< "$changed" | tr -d ' ')" >> "$GITHUB_OUTPUT"
-
-          if [ "$VISUAL" = "true" ]; then
-            setup_images_worktree
-          fi
 
           while IFS=$'\t' read -r file_status path; do
             [ -z "$path" ] && continue
@@ -287,11 +242,15 @@ runs:
 
             "$BIN" "${bin_args[@]}" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
 
-            # A screenshot/push failure for one sheet is reported to
-            # stderr (visible in the job log) and skipped — never fatal
-            # to the rest of the comment, the same "one file's problem
-            # doesn't stop the others" policy the text diff above already
-            # follows for a parse error.
+            # A screenshot failure for one sheet is reported to stderr
+            # (visible in the job log) and skipped — never fatal to the
+            # rest of the comment, the same "one file's problem doesn't
+            # stop the others" policy the text diff above already follows
+            # for a parse error. Captured PNGs are collected under
+            # $VISUALS_DIR rather than embedded inline — see the
+            # "Preconditions" comment at the top of this file for why —
+            # and shipped in one batch as a single workflow artifact once
+            # every changed file has been processed (below).
             if [ "$VISUAL" = "true" ] && [ -s "$grid_dir/manifest.tsv" ]; then
               while IFS=$'\t' read -r sheet_name html_path; do
                 [ -z "$html_path" ] && continue
@@ -306,13 +265,11 @@ runs:
                   rm -rf "$png_dir"
                   continue
                 fi
-                dest_rel="pr-${PR_NUMBER}/$(sanitize "${HEAD_SHA:0:7}")/$(sanitize "$path")/sheet-$(sanitize "$sheet_name").png"
-                if commit_sha=$(push_image "$png_path" "$dest_rel"); then
-                  {
-                    echo "![${sheet_name}](https://raw.githubusercontent.com/${REPO}/${commit_sha}/${dest_rel})"
-                    echo
-                  } >> "$OUT"
-                fi
+                dest_rel="$(sanitize "$path")/sheet-$(sanitize "$sheet_name").png"
+                dest_abs="$VISUALS_DIR/$dest_rel"
+                mkdir -p "$(dirname "$dest_abs")"
+                cp "$png_path" "$dest_abs"
+                printf '%s\t%s\n' "$path" "$sheet_name" >> "$VISUALS_LIST"
                 rm -rf "$png_dir"
               done < "$grid_dir/manifest.tsv"
             fi
@@ -333,6 +290,48 @@ runs:
         # before the terminating EOF read). An explicit always-succeeding
         # command as the true last statement prevents that.
         :
+
+        if [ -s "$VISUALS_LIST" ]; then
+          echo "has-visuals=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has-visuals=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Uploaded as one artifact covering every screenshot from this run
+    # (all changed files/sheets), not one artifact per image — see the
+    # "Preconditions" comment at the top of this file for why this
+    # replaced an inline raw.githubusercontent.com image link.
+    - name: Upload grid screenshots
+      if: ${{ inputs.visual == 'true' && steps.diff.outputs.has-visuals == 'true' }}
+      id: upload_visuals
+      uses: actions/upload-artifact@v4
+      with:
+        name: xlsx-diff-screenshots
+        path: ${{ runner.temp }}/xlsx-diff-visuals
+
+    # Runs after the upload above specifically because `artifact-url` is
+    # only known once the artifact actually exists — the comment body
+    # ($OUT) was already written by the diff step, so this appends to it
+    # rather than folding the link into that step's own output.
+    - name: Append screenshot artifact link to comment
+      if: ${{ inputs.visual == 'true' && steps.diff.outputs.has-visuals == 'true' }}
+      shell: bash
+      env:
+        OUT: ${{ runner.temp }}/xlsx-diff-comment.md
+        VISUALS_LIST: ${{ runner.temp }}/xlsx-diff-visuals-list.tsv
+        ARTIFACT_URL: ${{ steps.upload_visuals.outputs.artifact-url }}
+      run: |
+        set -euo pipefail
+        {
+          echo
+          echo "### 🖼 Grid screenshots"
+          echo
+          echo "Screenshots of the changed sheets are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
+          echo
+          while IFS=$'\t' read -r path sheet_name; do
+            echo "- ${path} — ${sheet_name}"
+          done < "$VISUALS_LIST"
+        } >> "$OUT"
 
     - name: Write job summary
       if: ${{ inputs.job-summary == 'true' }}

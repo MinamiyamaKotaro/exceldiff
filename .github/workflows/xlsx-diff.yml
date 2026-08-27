@@ -15,7 +15,7 @@ name: .xlsx diff preview
 # from (see action.yml's own "Preconditions" comment).
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 on:
