@@ -451,10 +451,7 @@ fn grid_html_dir_writes_a_page_and_manifest_for_an_added_file() {
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("### 🆕 Added · `path/a.xlsx`\n"));
 
     let manifest = std::fs::read_to_string(format!("{}/manifest.tsv", dir.path_str())).unwrap();
-    assert_eq!(
-        manifest,
-        format!("Sheet1\t{}/grid.html\n", dir.path_str())
-    );
+    assert_eq!(manifest, format!("Sheet1\t{}/grid.html\n", dir.path_str()));
     let html = std::fs::read_to_string(format!("{}/grid.html", dir.path_str())).unwrap();
     assert!(html.contains("<!doctype html>"));
     assert!(html.contains("class=\"sheet\""));
