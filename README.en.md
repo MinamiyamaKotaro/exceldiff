@@ -21,7 +21,7 @@ wholesale, leaving nothing but an opaque binary diff.
 `exceldiff` closes that gap. A diff engine parses the before/after `.xlsx`
 into two `Workbook`s and compares them cell by cell, and a CLI plus GitHub
 Action summarize the result as a PR comment — Markdown text, or an
-Excel-like grid screenshot. The files this targets are the kind common in
+Excel-like grid HTML view. The files this targets are the kind common in
 Japanese business systems: sheets with an extreme number of rows/columns
 ("方眼紙Excel", "grid-paper Excel") and heavy use of merged cells. That the
 underlying parser handles both without ever building a full in-memory 2D
@@ -96,7 +96,7 @@ jobs:
       - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-To also see an Excel-like grid screenshot, set `visual: true`. No extra `permissions:` are needed — screenshots aren't embedded directly in the comment, they're attached as a workflow artifact, with a download link posted in the comment (only people with read access to this repository can download it; this is deliberate, so screenshots stay reliably viewable on private repos too — see the comment at the top of [action.yml](action.yml) and [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) for why):
+To also see an Excel-like grid view, set `visual: true`. No extra `permissions:` are needed — the grid isn't embedded directly in the comment, it's attached as one standalone HTML page per changed file (every changed sheet combined onto that same page) in a workflow artifact, with a download link posted in the comment (only people with read access to this repository can download it; this is deliberate, so the grid stays reliably viewable on private repos too — see the comment at the top of [action.yml](action.yml) and [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) for why). Being HTML rather than a screenshot image means a large sheet doesn't get shrunk into an illegible blur — it scrolls and zooms like any other web page:
 
 ```yaml
 permissions:
@@ -122,7 +122,7 @@ steps:
 | `job-summary` | bool string, `'false'` | also write to `$GITHUB_STEP_SUMMARY`. A caller without `pull-requests: write` (e.g. a fork PR) can set `comment: false`/`job-summary: true` to see the diff without hitting a permission error |
 | `max-rows-per-sheet` | numeric string, `'30'` | caps the number of cell-change hunks rendered per sheet |
 | `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto` (default) auto-picks whichever of coordinate/row-aligned/column-aligned diffing reports the fewest changes per sheet. `coordinate` forces plain coordinate comparison, skipping alignment detection |
-| `visual` | bool string, `'false'` | render an Excel-like Before/After grid screenshot for each changed sheet and attach them to the comment as a downloadable workflow artifact. No extra `permissions:` needed, but adds Node.js + Playwright + a Chromium download — meaningfully more job runtime, hence off by default |
+| `visual` | bool string, `'false'` | render an Excel-like Before/After grid view (HTML) for each changed sheet and attach them to the comment as a downloadable workflow artifact. No extra `permissions:` needed |
 
 ### Outputs
 
@@ -156,7 +156,7 @@ xlsxdiff [--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] [--grid-html
 - `base_file`/`head_file`: the actual filesystem paths of the before/after revisions. `A` has no `base_file`, `D` has no `head_file` — omit it or pass an empty string.
 - `--max-rows-per-sheet <N>` (default `30`): caps the number of cell-change hunks rendered per sheet.
 - `--diff-mode <auto|coordinate>` (default `auto`): `auto` auto-picks alignment, `coordinate` forces plain coordinate comparison.
-- `--grid-html-dir <dir>`: when given, additionally writes one standalone HTML page per changed sheet (`<dir>/sheet-N.html`) plus a `<dir>/manifest.tsv` listing (`sheet_name\thtml_path`) — this is what `action.yml`'s `visual: true` screenshots.
+- `--grid-html-dir <dir>`: when given, additionally writes every changed sheet combined onto one standalone HTML page (`<dir>/grid.html`) plus a `<dir>/manifest.tsv` listing each sheet's name against that same path (`sheet_name\thtml_path`) — `action.yml`'s `visual: true` attaches this page directly to its workflow artifact.
 
 Example (`M` — both the before and after file exist):
 
@@ -299,7 +299,7 @@ src/
 
   diff/         # the diff engine that compares two Workbooks (coordinate/row-aligned/column-aligned/best-effort auto-pick)
   markdown.rs   # formats a WorkbookDiff into GitHub-flavored Markdown for a PR comment (the CLI's entry point, diff_file_section_from_paths)
-  grid.rs       # renders a changed sheet as an Excel-like grid HTML page (what action.yml's visual: true mode screenshots)
+  grid.rs       # renders a changed sheet as an Excel-like grid HTML page (what action.yml's visual: true mode attaches to its artifact)
 ```
 
 ## OOXML parts covered

@@ -14,7 +14,7 @@ Rustで書かれた、軽量・高速な `.xlsx`(OOXML)パーサーライブラ�
 
 `.xlsx` ファイルは日本のビジネスシステムでよくgit管理・PRレビューの対象になりますが、`git diff` はそこから何も意味のある情報を返しません——`.xlsx` はZIP圧縮されたXMLパーツの集合であり、セル1つを変えただけでも共有文字列テーブルの並びやZIP圧縮結果全体が変わり得るため、gitからはただのバイナリ差分にしか見えないからです。
 
-`exceldiff` はこのギャップを埋めます。変更前後の `.xlsx` をパースして2つの `Workbook` として復元し、セル単位の追加・変更・削除を比較する差分エンジンを核に、その結果をMarkdownテキストやExcelライクなグリッド画像としてPRコメントへ要約するCLI・GitHub Actionまで一貫して提供します。対象は日本のビジネスシステムでよく見られる、行・列数が極端に多い(「方眼紙Excel」)シートや結合セルを多用したファイルです——パーサー自体がこれらをフルのインメモリ2次元グリッドを構築せず低メモリ・高速に扱えることは、単にパーサー自身の軽さにとどまらず、差分計算そのものの速度と正確さ(1行/1列の挿入だけで大量の`Modified`を誤検出しないための行/列アライメント検出を含む)に直結しています。
+`exceldiff` はこのギャップを埋めます。変更前後の `.xlsx` をパースして2つの `Workbook` として復元し、セル単位の追加・変更・削除を比較する差分エンジンを核に、その結果をMarkdownテキストやExcelライクなグリッドのHTMLビューとしてPRコメントへ要約するCLI・GitHub Actionまで一貫して提供します。対象は日本のビジネスシステムでよく見られる、行・列数が極端に多い(「方眼紙Excel」)シートや結合セルを多用したファイルです——パーサー自体がこれらをフルのインメモリ2次元グリッドを構築せず低メモリ・高速に扱えることは、単にパーサー自身の軽さにとどまらず、差分計算そのものの速度と正確さ(1行/1列の挿入だけで大量の`Modified`を誤検出しないための行/列アライメント検出を含む)に直結しています。
 
 この基盤パーサー部分は、姉妹プロジェクトである[`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser)と同じ設計・実装をベースにしています。パース処理そのものの詳細なアーキテクチャ・対応OOXMLパーツ・パース性能のベンチマーク(`calamine`との比較等)は`xlsxparser`側のREADMEにまとまっているため、そちらを参照してください。
 
@@ -67,7 +67,7 @@ jobs:
       - uses: MinamiyamaKotaro/exceldiff@v1
 ```
 
-Excelライクなグリッドのスクリーンショットも見たい場合は `visual: true` を指定します。追加の`permissions:`は不要です——スクリーンショットはPRコメントへの直接埋め込みではなく、ワークフローのartifactとして添付され、コメントにはダウンロードリンクが載ります(このリポジトリの閲覧権限を持つ人だけがダウンロードできます。プライベートリポジトリで画像を確実に見えるようにするための設計です。詳細は [action.yml](action.yml) 冒頭のコメントと [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) を参照):
+Excelライクなグリッドのビューも見たい場合は `visual: true` を指定します。追加の`permissions:`は不要です——グリッドはPRコメントへの直接埋め込みではなく、変更ファイルごとに全シートを1つにまとめた単体HTMLページとしてワークフローのartifactへ添付され、コメントにはダウンロードリンクが載ります(このリポジトリの閲覧権限を持つ人だけがダウンロードできます。プライベートリポジトリで確実に見えるようにするための設計です。詳細は [action.yml](action.yml) 冒頭のコメントと [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47) を参照)。スクリーンショット画像ではなくHTMLなので、大きなシートでも縮小されて潰れず、ブラウザでスクロール・拡大しながら閲覧できます:
 
 ```yaml
 permissions:
@@ -93,7 +93,7 @@ steps:
 | `job-summary` | bool文字列, `'false'` | `$GITHUB_STEP_SUMMARY` へも書き出すか。forkからのPRなど `pull-requests: write` を付与できない環境では、`comment: false`・`job-summary: true` にすると権限エラーを避けつつ差分を確認できます |
 | `max-rows-per-sheet` | 数値文字列, `'30'` | 1シートあたりに表示するセル変更ハンクの上限数 |
 | `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto`(既定)は座標一致/行アライメント/列アライメントのうち最も変更が少なく報告される方式を自動選択。`coordinate`はアライメント検出をスキップした単純な座標比較を強制します |
-| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのBefore/Afterスクリーンショットを生成し、ワークフローのartifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要。Node.js・Playwright・Chromiumダウンロードが追加されジョブ実行時間が伸びるため既定はオフ |
+| `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのBefore/AfterビューをHTMLページとして生成し、ワークフローのartifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要 |
 
 ### outputs
 
@@ -127,7 +127,7 @@ xlsxdiff [--max-rows-per-sheet <N>] [--diff-mode <auto|coordinate>] [--grid-html
 - `base_file`/`head_file`: 変更前/変更後の実際のファイルシステムパス。`A`に`base_file`、`D`に`head_file`は無く、その場合は省略するか空文字列を渡します。
 - `--max-rows-per-sheet <N>`(既定 `30`): 1シートあたりに表示するセル変更ハンクの上限数。
 - `--diff-mode <auto|coordinate>`(既定 `auto`): `auto`はアライメント自動選択、`coordinate`は単純な座標比較を強制。
-- `--grid-html-dir <dir>`: 指定すると、変更のあったシートごとに独立したHTMLページ(`<dir>/sheet-N.html`)と一覧 `<dir>/manifest.tsv`(`sheet_name\thtml_path`)を追加で書き出します(`action.yml`の`visual: true`がこれをスクリーンショット元として使用します)。
+- `--grid-html-dir <dir>`: 指定すると、変更のあった全シートを1つにまとめた単体HTMLページ(`<dir>/grid.html`)と、シート名の一覧 `<dir>/manifest.tsv`(`sheet_name\thtml_path`、全行が同じ`grid.html`を指す)を追加で書き出します(`action.yml`の`visual: true`がこのHTMLページをそのままworkflow artifactへ添付します)。
 
 例(`M`——変更前後どちらのファイルも存在するケース):
 
@@ -214,7 +214,7 @@ src/
 
   diff/         # 2つの Workbook を比較する差分エンジン(座標一致/行アライメント/列アライメント/ベストエフォート自動選択)
   markdown.rs   # WorkbookDiff を GitHub Flavored MarkdownのPRコメントへ整形(CLIのエントリポイント diff_file_section_from_paths)
-  grid.rs       # 変更のあったシートをExcelライクなグリッドHTMLとして描画(action.ymlの visual: true モードがスクリーンショット元として使用)
+  grid.rs       # 変更のあったシートをExcelライクなグリッドHTMLとして描画(action.ymlの visual: true モードがそのままartifactへ添付)
 ```
 
 ## 対応OOXMLパーツ

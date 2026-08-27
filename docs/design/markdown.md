@@ -14,7 +14,7 @@
 - `MarkdownOptions::max_rows_per_sheet` で1シートあたりのセルハンク表示件数上限を呼び出し側から指定可能にする（[`action.yml`の`max-rows-per-sheet`input](action.md)と接続。結合セルハンクは上限の対象外 — 理由は下記コード中のドキュメントコメント参照）
 - `MarkdownOptions::diff_mode`（[`DiffMode`](#主要な型関数案)）で`M`ステータスの差分計算アルゴリズムを`Auto`（既定、`diff_workbooks_best_effort`）と`Coordinate`（`diff_workbooks`、アライメント検出なしの単純座標比較）から選択可能にする（[`action.yml`の`diff-mode`input](action.md)と接続、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)）
 - ファイルの見出し(`` ### <バッジ> · `path` ``)に、追加/変更/削除を一目で判別できる絵文字バッジ(🆕/✏️/🗑️/❓)を付与する(`file_status_badge`) — パスだけでは複数ファイルが変更されたPRで状態を見分けにくいため
-- **含まない責務**: `.xlsx` のパース・差分計算そのもの（[`parse_workbook`](lib.md)・[`diff::diff_workbooks_best_effort`](diff/best_effort.md)、Issue #25。呼び出し側の責務）、GitHub Actionsワークフロー自体の実装（`.github/workflows/xlsx-diff.yml`）、方眼紙Excelを実際のExcelグリッドのような見た目でHTML表示する機能（別issueの検討事項。GitHubのPRコメントは投稿されたHTML内の `style=` 属性をサニタイズして無効化するため、色付きの罫線・塗りつぶしをコメント本文へ直接埋め込むことはできない — この制約により、そうした視覚的なグリッド表示は別の出力先（例: スクリーンショット画像＋GitHub Pagesのリンク）を要する設計上の判断であり、本モジュールのスコープ外）
+- **含まない責務**: `.xlsx` のパース・差分計算そのもの（[`parse_workbook`](lib.md)・[`diff::diff_workbooks_best_effort`](diff/best_effort.md)、Issue #25。呼び出し側の責務）、GitHub Actionsワークフロー自体の実装（`.github/workflows/xlsx-diff.yml`）、方眼紙Excelを実際のExcelグリッドのような見た目でHTML表示する機能（[`grid.md`](grid.md)・[`action.md`](action.md)で実装済み。GitHubのPRコメントは投稿されたHTML内の `style=` 属性をサニタイズして無効化するため、色付きの罫線・塗りつぶしをコメント本文へ直接埋め込むことはできない — この制約により、そうした視覚的なグリッド表示は別の出力先（シートごとの単体HTMLページをworkflow artifactとして添付し、コメントにはダウンロードリンクを掲載——[Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)参照)を要する設計上の判断であり、本モジュールのスコープ外）
 
 ## 主要な型・関数（案）
 
@@ -107,4 +107,4 @@ CLIの元々の実装は `| | Cell | Before | After |` 形式のMarkdownテー�
 
 1. **公開関数名・型名の最終決定**: `format_file_section`/`FileStatus`は本実装での名称。[Issue #31本文](https://github.com/MinamiyamaKotaro/exceldiff/issues/31)も「公開関数名は要検討」としていたが、レビューを経て確定した現状の名称をここに記録する。
 2. **`Write`への書き込み対応**: Issue #31本文は「出力は`String`(または`Write`への書き込み)」としていたが、本実装は`String`のみを提供する。[`json.rs`](json.md)の`to_json_writer`/`to_json_string`と同じ「Writer版を主、String版はラッパー」というパターンに合わせるかどうかは、実際のワークフローでの出力サイズ・メモリ使用量が問題になった場合に再検討する。
-3. **方眼紙Excelのグリッド表示との関係**: 「設計判断」節で触れた通り、GitHubのPRコメントは装飾的なHTML/CSSをサニタイズするため、方眼紙Excelを実際のExcelのグリッドのような見た目で表示するには、スクリーンショット画像＋GitHub Pagesへの静的ホスティングという別経路が必要になる。この経路の具体的な実装（CI側でのヘッドレスブラウザによるレンダリング、`actions/upload-pages-artifact`/`actions/deploy-pages`の導入）は、本モジュールのスコープ外の別issueとして切り出す。
+3. ~~**方眼紙Excelのグリッド表示との関係**~~ **解決済み**: 「設計判断」節で触れた通り、GitHubのPRコメントは装飾的なHTML/CSSをサニタイズするため、方眼紙Excelを実際のExcelのグリッドのような見た目で表示するには別経路が必要になる。[`grid.rs`](grid.md)がその実装で、生成した単体HTMLページを`action.yml`の`visual: true`がworkflow artifactとして添付し、コメントにはダウンロードリンクを掲載する([Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)、詳細は[action.md](action.md)参照)。当初検討していたスクリーンショット画像化・GitHub Pagesホスティングはいずれも採用しなかった。
