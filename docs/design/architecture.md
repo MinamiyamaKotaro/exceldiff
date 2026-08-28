@@ -2,7 +2,7 @@
 
 *[English](architecture.en.md)*
 
-Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1) での議論を経て確定した `src/` ディレクトリ構成と、各モジュールの責務をまとめたドキュメント。要求仕様書（[requirements.md](../requirement/requirements.md)）が定義する5フェーズ・パイプラインに対応させている。
+Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1) での議論を経て確定した `src/` ディレクトリ構成と、各モジュールの責務をまとめたドキュメント。姉妹プロジェクト`xlsxparser`の要求仕様書（[requirements.md](https://github.com/MinamiyamaKotaro/xlsxparser/blob/master/docs/requirement/requirements.md)）が定義する5フェーズ・パイプラインに対応させている——本書がカバーするコアパイプライン自体がそのパーサーと設計・実装を共有しているため(下記「本ドキュメントの対象範囲」参照)。`exceldiff`固有の要件は[別の要求仕様書](../requirement/requirements.md)を参照。
 
 **本ドキュメントの対象範囲**: ここでカバーするのは、姉妹プロジェクト[`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser)と設計・実装を共有するコアの5フェーズパイプライン(`container/`・`parse/`・`model/`・`resolve/`・`json.rs`)のみ。`exceldiff`固有の、2つの`Workbook`を比較する差分エンジン(`diff/`)・その結果をPRコメント向けMarkdownへ整形する`markdown.rs`・Excelライクなグリッドを描画する`grid.rs`は対象外——それぞれ[diff/mod.md](diff/mod.md)・[markdown.md](markdown.md)・[grid.md](grid.md)を参照。
 

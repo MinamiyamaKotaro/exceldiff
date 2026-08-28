@@ -2,7 +2,7 @@
 
 *[日本語](architecture.md)*
 
-A document summarizing the `src/` directory layout and the responsibilities of each module, finalized through the discussion in Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1). It maps to the 5-phase pipeline defined in the requirements specification ([requirements.md](../requirement/requirements.md)).
+A document summarizing the `src/` directory layout and the responsibilities of each module, finalized through the discussion in Issue [#1](https://github.com/MinamiyamaKotaro/xlsxparser/issues/1). It maps to the 5-phase pipeline defined in the sister project `xlsxparser`'s own requirements specification ([requirements.md](https://github.com/MinamiyamaKotaro/xlsxparser/blob/master/docs/requirement/requirements.md)) — the core pipeline this document covers shares its design and implementation with that parser (see "Scope of this document" below). `exceldiff`'s own requirements live in [a separate requirements specification](../requirement/requirements.en.md).
 
 **Scope of this document**: it only covers the core 5-phase pipeline (`container/`, `parse/`, `model/`, `resolve/`, `json.rs`), which shares its design and implementation with the sibling project [`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser). `exceldiff`'s own diff engine that compares two `Workbook`s (`diff/`), the `markdown.rs` that formats the result for a PR comment, and the `grid.rs` that renders an Excel-like grid are out of scope here — see [diff/mod.en.md](diff/mod.en.md) / [markdown.en.md](markdown.en.md) / [grid.en.md](grid.en.md) instead.
 

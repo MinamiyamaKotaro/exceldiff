@@ -36,7 +36,7 @@ pub enum Error {
     DanglingRelationship { r_id: String },
 
     // --- フェーズ2: サニタイズ ---
-    /// 展開後の総サイズが上限を超えた（Zip Bomb対策、要求仕様書2章）。
+    /// 展開後の総サイズが上限を超えた（Zip Bomb対策、xlsxparser側要求仕様書2章）。
     #[error("zip bomb detected: uncompressed size {actual} bytes exceeds limit {limit} bytes")]
     ZipBombDetected { limit: u64, actual: u64 },
 
@@ -208,7 +208,7 @@ impl From<std::io::Error> for Error {
 - 依存先: なし（`model/` を含むクレート内の他モジュールに依存しない、最も基底のリーフモジュール。`error.rs` が他モジュールを参照すると循環依存になるため）。外部クレートとしては `thiserror`（エラー型定義の定型コード削減）にのみ依存する。`quick-xml` には依存しない。`XmlParse::source` はXMLパーサーの具体的なエラー型を直接保持せず `Box<dyn std::error::Error + Send + Sync + 'static>` として型消去するため、`quick-xml`（や将来 `parse/` が採用しうる他のXMLパーサー）はパブリック依存にならない（詳細は主要な型セクションの解説を参照。PR #6 レビュー指摘を反映）。
 - 依存元: クレート内のほぼ全モジュール（`container/`, `parse/`, `model/`, `resolve/`, `pipeline.rs`, `lib.rs`）。[`json.rs`](json.md) は `Error::JsonSerialize`（`serde_json`/I/O由来の失敗のみを表現。PR #10 レビューを踏まえて追加）を除き本型を新規に生成しない。
 
-`thiserror` はコンパイル時のみのproc-macro依存であり、ランタイムの実行バイナリサイズや速度への影響がないため、要求仕様書1章が掲げる「軽量かつ高速」という方針と矛盾しない。
+`thiserror` はコンパイル時のみのproc-macro依存であり、ランタイムの実行バイナリサイズや速度への影響がないため、xlsxparser側要求仕様書1章が掲げる「軽量かつ高速」という方針と矛盾しない。
 
 ## エラー処理方針
 

@@ -40,7 +40,7 @@ pub enum Error {
 
     // --- Phase 2: sanitization ---
     /// The total uncompressed size exceeded the configured limit (Zip Bomb
-    /// protection, requirements spec section 2).
+    /// protection, xlsxparser's own requirements spec section 2).
     #[error("zip bomb detected: uncompressed size {actual} bytes exceeds limit {limit} bytes")]
     ZipBombDetected { limit: u64, actual: u64 },
 
@@ -231,7 +231,7 @@ impl From<std::io::Error> for Error {
 - Depends on: nothing within the crate (the most foundational leaf module — not even `model/` — since `error.rs` depending on any other module would create a cycle). Depends only on the external crate `thiserror` (to reduce boilerplate in defining the error type). It does not depend on `quick-xml`: `XmlParse::source` type-erases the parser's error into `Box<dyn std::error::Error + Send + Sync + 'static>` instead of holding its concrete type directly, so `quick-xml` (or any other XML parser `parse/` might adopt in the future) never becomes a public dependency (see the explanation in Key Types; reflects feedback from the PR #6 review).
 - Depended on by: nearly every module in the crate (`container/`, `parse/`, `model/`, `resolve/`, `pipeline.rs`, `lib.rs`). [`json.rs`](json.en.md) generates only `Error::JsonSerialize` (representing `serde_json`/I/O failures only; added following the PR #10 review) and no other variant.
 
-`thiserror` is a compile-time-only proc-macro dependency with no impact on runtime binary size or speed, so it does not conflict with the "lightweight and fast" policy in requirements spec section 1.
+`thiserror` is a compile-time-only proc-macro dependency with no impact on runtime binary size or speed, so it does not conflict with the "lightweight and fast" policy in xlsxparser's own requirements spec section 1.
 
 ## Error Handling Policy
 

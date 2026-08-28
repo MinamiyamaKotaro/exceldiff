@@ -2,13 +2,13 @@
 
 *[日本語](json.md)*
 
-Design doc for `src/json.rs`. This implements Phase 5, "JSON generation (return)," as defined by [architecture.md](architecture.en.md). It serializes the fully analyzed and resolved [`model::Workbook`](model/workbook.en.md) into JSON carrying attributes such as `row_span` / `col_span` needed for frontend rendering (requirements chapter 5).
+Design doc for `src/json.rs`. This implements Phase 5, "JSON generation (return)," as defined by [architecture.md](architecture.en.md). It serializes the fully analyzed and resolved [`model::Workbook`](model/workbook.en.md) into JSON carrying attributes such as `row_span` / `col_span` needed for frontend rendering (xlsxparser's own requirements spec chapter 5).
 
 ## Responsibility / Scope
 
 - Serializes [`model::Workbook`](model/workbook.en.md) into JSON that includes `row_span`/`col_span` and a value kind tag
 - Writes cells one at a time, directly to the serializer, from the iterator [`Sheet::iter_cells`](model/sheet.en.md) returns (which iterates only origin cells), never building an intermediate `Vec` for a whole sheet on the heap (reflects the [PR #10 review](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332), resolving Open Question 5 — keeps peak memory in check for the "grid-paper Excel"-scale sheets the requirements target)
-- Computes `row_span`/`col_span` using [`Sheet::merged_region_at`](model/sheet.en.md), never including a merged cell's virtual coordinates in the JSON output (implements requirements 3.2 and chapter 5)
+- Computes `row_span`/`col_span` using [`Sheet::merged_region_at`](model/sheet.en.md), never including a merged cell's virtual coordinates in the JSON output (implements xlsxparser's own requirements spec 3.2 and chapter 5)
 - Emits, for each [`CellValue`](model/cell.en.md) variant, the JSON value along with a kind tag (`type: "number" | "text" | "boolean" | "error" | "dateTime"`; a valueless cell, or a value that cannot be represented in JSON, falls back to `"empty"`)
 - **Not responsible for**: resolving or validating model data itself (`resolve/` — by the time data reaches this file, `Workbook` holds only valid data that has already passed every phase's validation), preparing the `Write` implementation passed to `to_json_writer` itself (opening a file, obtaining an HTTP response body, etc. — the caller's responsibility)
 
@@ -275,7 +275,7 @@ fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
         // Silently substituting 0.0 for NaN/Infinity would make it
         // indistinguishable, downstream, from a value that legitimately
         // evaluated to zero, risking incorrect aggregation results (given
-        // requirements chapter 1's accounting/business-system use case;
+        // xlsxparser's own requirements chapter 1's accounting/business-system use case;
         // reflects the PR #10 review, resolving Open Question 2). Falling
         // back to Empty (JSON `null`) instead lets the frontend safely
         // treat it as "no value present."
@@ -336,7 +336,7 @@ fn visibility_tag(v: SheetVisibility) -> &'static str {
 
 - `to_json_writer` / `to_json_string` return `Result<_, Error>`. `serde_json::to_writer` is specified to return `Err` when it encounters a non-finite float (`NaN`/`Infinity`), but this file always converts a non-finite `f64` into `JsonCellValue::Empty` inside `cell_value_to_json` before it ever reaches `serde_json`, so in practice no error arises from that path. `Result` is still returned regardless, for two reasons: (1) if `writer` is a `File`, network socket, or other I/O-backed implementation, the write itself can genuinely fail; (2) to uphold the existing policy of never using `unwrap`/`expect` internally ([error.md Error Handling Policy](error.en.md))
 - `serde_json::Error` is never placed directly as a concrete type on an `Error` field; it is wrapped, type-erased as `Box<dyn std::error::Error + Send + Sync + 'static>`, in the newly added `Error::JsonSerialize` variant — the same reasoning as `error.md`'s `XmlParse::source`, keeping `serde_json` out of the public dependency surface
-- The one value JSON cannot represent — `f64`'s `NaN`/`Infinity` (which `CellValue::Number` can in theory hold) — does not cause the whole document's serialization to be abandoned via `Err`; instead, only that cell falls back to `JsonCellValue::Empty` (equivalent to JSON `null`), and processing continues. It is not silently substituted with a valid number like `0.0`, because in the accounting/business-system use case requirements chapter 1 targets, that would make "a failed or undefined computation" indistinguishable from "a value that legitimately evaluated to zero" for any downstream aggregation (reflects the [PR #10 review](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332))
+- The one value JSON cannot represent — `f64`'s `NaN`/`Infinity` (which `CellValue::Number` can in theory hold) — does not cause the whole document's serialization to be abandoned via `Err`; instead, only that cell falls back to `JsonCellValue::Empty` (equivalent to JSON `null`), and processing continues. It is not silently substituted with a valid number like `0.0`, because in the accounting/business-system use case xlsxparser's own requirements chapter 1 targets, that would make "a failed or undefined computation" indistinguishable from "a value that legitimately evaluated to zero" for any downstream aggregation (reflects the [PR #10 review](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332))
 
 ## Testing Strategy
 
