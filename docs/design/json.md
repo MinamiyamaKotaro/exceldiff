@@ -2,13 +2,13 @@
 
 *[English](json.en.md)*
 
-`src/json.rs` に対応する設計書。[architecture.md](architecture.md) が定義するフェーズ5「JSON生成（返却）」を担う。分析・解決が完了した [`model::Workbook`](model/workbook.md) を、フロントエンド描画に必要な `row_span` / `col_span` などの属性を含むJSONへシリアライズする（要求仕様書5章）。
+`src/json.rs` に対応する設計書。[architecture.md](architecture.md) が定義するフェーズ5「JSON生成（返却）」を担う。分析・解決が完了した [`model::Workbook`](model/workbook.md) を、フロントエンド描画に必要な `row_span` / `col_span` などの属性を含むJSONへシリアライズする(xlsxparser側要求仕様書5章)。
 
 ## 責務・スコープ
 
 - [`model::Workbook`](model/workbook.md) を、`row_span`/`col_span` や値の種別タグを含むJSONへシリアライズする
 - [`Sheet::iter_cells`](model/sheet.md)（起点セルのみを走査）が返すイテレータから1セルずつ直接シリアライザへ書き出し、シート全体分の中間 `Vec` をヒープ上に構築しない（[PR #10 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332)を反映してオープンクエスチョン5を解決。要求仕様書が主眼とする「方眼紙Excel」規模のシートに対するピークメモリ抑制）
-- [`Sheet::merged_region_at`](model/sheet.md) を用いて `row_span`/`col_span` を算出し、結合セルの仮想セル座標をJSON出力へ含めない（要求仕様書3.2、5章の実装）
+- [`Sheet::merged_region_at`](model/sheet.md) を用いて `row_span`/`col_span` を算出し、結合セルの仮想セル座標をJSON出力へ含めない（xlsxparser側要求仕様書3.2、5章の実装）
 - [`CellValue`](model/cell.md) の各バリアントに応じて、JSON上の値と種別タグ（`type: "number" | "text" | "boolean" | "error" | "dateTime"`。値を持たない、または表現不能な値は `"empty"`）を出力する
 - **含まない責務**: モデルデータの解決・検証そのもの（`resolve/`。本ファイルに到達する時点で `Workbook` は全フェーズの検証を通過済みの正常データのみを保持する）、`to_json_writer` に渡す `Write` 実装そのものの用意（ファイルオープン・HTTPレスポンスの確保等は呼び出し側の責務）
 
@@ -271,7 +271,7 @@ fn cell_value_to_json(value: Option<&CellValue>) -> JsonCellValue {
         Some(CellValue::Number(n)) if n.is_finite() => JsonCellValue::Number(*n),
         // NaN/Infinityを0.0へ静かに置き換えると、下流の集計処理が
         // 「正常に0と評価された」値と区別できず誤った集計結果を招きうる
-        // （会計・業務システム向けという要求仕様書1章の利用文脈を踏まえ、
+        // （会計・業務システム向けというxlsxparser側要求仕様書1章の利用文脈を踏まえ、
         // PR #10レビュー指摘を反映してオープンクエスチョン2を解決）。
         // 値なし（Empty/JSON上のnull相当）へフォールバックし、フロント
         // エンドが「値が存在しない」ものとして安全に扱えるようにする。
@@ -331,7 +331,7 @@ fn visibility_tag(v: SheetVisibility) -> &'static str {
 
 - `to_json_writer` / `to_json_string` は `Result<_, Error>` を返す。`serde_json::to_writer` は非有限浮動小数点数（`NaN`/`Infinity`）を検知すると `Err` を返す仕様だが、本ファイルは `cell_value_to_json` の時点で非有限な `f64` を必ず `JsonCellValue::Empty` へ変換してから `serde_json` へ渡すため、この経路でのエラーは実質的に発生しない。それでも `Result` を返す設計としているのは、(1) `writer` が `File` やネットワークソケット等I/Oを伴う実装の場合、書き込み自体が失敗しうるため、(2) ライブラリ内部で `unwrap`/`expect` を使わない（[error.md エラー処理方針](error.md)）という既存方針を守るためである
 - `serde_json::Error` は具体的な型を `Error` のフィールドへ直接置かず `Box<dyn std::error::Error + Send + Sync + 'static>` として型消去した新設バリアント `Error::JsonSerialize` へ包む。理由は [error.md](error.md) の `XmlParse::source` と同一で、`serde_json` をパブリック依存にしないため
-- 唯一JSONが表現できない値である `f64` の `NaN`/`Infinity`（`CellValue::Number` が理論上保持しうる）は、`Err` を返して呼び出し元にドキュメント全体のシリアライズを諦めさせるのではなく、当該セルのみ `JsonCellValue::Empty`（JSON上の `null` 相当）へフォールバックし、処理を継続する。`0.0` のような有効な数値へ静かに置き換えないのは、会計・業務システム向けという要求仕様書1章の利用文脈において「計算失敗・未定義値」と「正常に評価されたゼロ」が下流の集計処理で区別できなくなることを避けるため（[PR #10 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332)を反映）
+- 唯一JSONが表現できない値である `f64` の `NaN`/`Infinity`（`CellValue::Number` が理論上保持しうる）は、`Err` を返して呼び出し元にドキュメント全体のシリアライズを諦めさせるのではなく、当該セルのみ `JsonCellValue::Empty`（JSON上の `null` 相当）へフォールバックし、処理を継続する。`0.0` のような有効な数値へ静かに置き換えないのは、会計・業務システム向けというxlsxparser側要求仕様書1章の利用文脈において「計算失敗・未定義値」と「正常に評価されたゼロ」が下流の集計処理で区別できなくなることを避けるため（[PR #10 レビュー](https://github.com/MinamiyamaKotaro/xlsxparser/pull/10#pullrequestreview-4949223332)を反映）
 
 ## テスト方針
 
