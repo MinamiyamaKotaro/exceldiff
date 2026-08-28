@@ -386,7 +386,10 @@ fn render_table(
                 continue;
             }
         };
-        out.push_str(&format!("<tr><th class=\"row-head\">{row}</th>"));
+        let row_height_px = row_pixel_height(this_sheet, row);
+        out.push_str(&format!(
+            "<tr style=\"height:{row_height_px}px;\"><th class=\"row-head\">{row}</th>"
+        ));
         for col_slot in col_plan {
             let col = match *col_slot {
                 LineSlot::Line(col) => col,
@@ -619,6 +622,23 @@ fn column_pixel_width(sheet: Option<&Sheet>, col: u32) -> u32 {
         .or_else(|| sheet.and_then(|s| s.default_col_width()))
         .unwrap_or(8.43);
     excel_width_to_px(width).max(2)
+}
+
+/// Excel's row height is already in points, unlike column width's
+/// character-unit/MDW conversion — 1pt = 96/72px at the standard 96 DPI,
+/// no font metrics involved (Issue #51).
+fn excel_height_pt_to_px(height_pt: f64) -> u32 {
+    (height_pt * 96.0 / 72.0).round() as u32
+}
+
+/// A row's real rendered height in pixels: its own `<row ht="..">`, else
+/// the sheet's `defaultRowHeight`, else Excel's own hardcoded global
+/// default (15pt — the height Excel itself falls back to when a workbook
+/// specifies neither, the row-axis counterpart of `column_pixel_width`'s
+/// 8.43-character default).
+fn row_pixel_height(sheet: Option<&Sheet>, row: u32) -> u32 {
+    let height_pt = sheet.and_then(|s| s.row_height(row)).unwrap_or(15.0);
+    excel_height_pt_to_px(height_pt).max(2)
 }
 
 fn cell_value_html(v: Option<&CellValue>) -> String {
@@ -1219,6 +1239,71 @@ mod tests {
         // 2.14 characters is a commonly-used grid-paper column width that
         // yields exactly 15px under Excel's own conversion formula.
         assert_eq!(excel_width_to_px(2.14), 15);
+    }
+
+    #[test]
+    fn excel_height_pt_to_px_matches_known_values() {
+        // Cross-checked independently against a real .xlsx fixture
+        // (Issue #51): 15pt (Excel's own default row height) -> 20px,
+        // 166.5pt (a tall wrapped-text row) -> 222px.
+        assert_eq!(excel_height_pt_to_px(15.0), 20);
+        assert_eq!(excel_height_pt_to_px(166.5), 222);
+    }
+
+    #[test]
+    fn row_pixel_height_falls_back_to_default_then_excels_own_default() {
+        let mut sheet = Sheet::new("Sheet1".into(), SheetVisibility::Visible);
+        assert_eq!(row_pixel_height(Some(&sheet), 1), 20); // Excel's 15pt default.
+        assert_eq!(row_pixel_height(None, 1), 20);
+
+        sheet.set_row_heights(vec![], Some(30.0));
+        assert_eq!(row_pixel_height(Some(&sheet), 1), 40);
+
+        sheet.set_row_heights(
+            vec![crate::model::RowHeightRange {
+                min: 1,
+                max: 1,
+                height_pt: 45.0,
+            }],
+            Some(30.0),
+        );
+        assert_eq!(row_pixel_height(Some(&sheet), 1), 60);
+        assert_eq!(row_pixel_height(Some(&sheet), 2), 40);
+    }
+
+    #[test]
+    fn render_sheet_split_applies_row_height_to_the_tr_style() {
+        let mut base = Sheet::new("Sheet1".into(), SheetVisibility::Visible);
+        base.insert_cell(
+            CellRef { row: 1, col: 1 },
+            Cell {
+                value: Some(CellValue::Number(1.0)),
+                style: None,
+            },
+        );
+        base.set_row_heights(
+            vec![crate::model::RowHeightRange {
+                min: 1,
+                max: 1,
+                height_pt: 45.0,
+            }],
+            None,
+        );
+        let head = base.clone();
+
+        let base_wb = workbook_with(base.clone());
+        let head_wb = workbook_with(head.clone());
+        let sheet_diff = SheetDiff {
+            name: "Sheet1".to_string(),
+            status: DiffStatus::Modified,
+            old_visibility: None,
+            new_visibility: None,
+            cells: Vec::new(),
+            merges: Vec::new(),
+        };
+
+        let html = render_sheet_split(&sheet_diff, &base_wb, &head_wb, Some(&base), Some(&head));
+        assert!(html.contains("<tr style=\"height:60px;\">"));
     }
 
     #[test]

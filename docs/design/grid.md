@@ -17,6 +17,7 @@
 - [`Sheet::merged_region_at`](model/sheet.md)を用いて、各面が実際に持つ結合セル構造をそのままHTMLの`rowspan`/`colspan`として描画する。結合セルの追加/解除/リサイズもモデルの構造情報として正しく反映されるが、専用の視覚マーカーは持たない(レビューフィードバックにより削除——結合セルの変更は`SheetDiff.merges`が保持する集計上「modified」に算入されるのみ)
 - `wrapText`が有効なセルは折り返し表示、無効なセルは実際のExcelの挙動(セル境界で切り詰め、隣接セルが空なら自然にはみ出す)を再現する(`next_cell_is_empty`)
 - 列幅を文字単位からpx単位へExcelの実際の変換式で換算し(`excel_width_to_px`)、`<table>`自体に総px幅を明示指定してブラウザが内容に合わせて列を広げるのを防ぐ(`table-layout: fixed`だけでは不十分——詳細は`render_table`のドキュメントコメント参照)
+- 行高をpt単位からpx単位へ換算し(`excel_height_pt_to_px`。列幅と異なりフォントメトリクス非依存の単純な変換——[model/sheet.md](model/sheet.md)「機能: 行の高さ」参照)、各`<tr>`に`style="height:...px;"`として明示指定する(Issue #51)
 - 変更のあった行/列の前後2行/2列だけを残し、それ以外の連続した未変更の行/列を`⋯ N row(s)/column(s) omitted ⋯`という1行/1列に畳み込む(`build_line_plan`)。行・列どちらの軸にも同じロジックを適用する
 - `grid_sections_from_paths`(Issue #23の後続、[`action.yml`の`visual`input](action.md))は`markdown.rs::diff_file_section_from_paths`と同じ「パス→パース→diff→整形」の高水準APIを、本モジュール独自に提供する——A/Dステータスは空の`Workbook`を片側に見立てた`diff_workbooks`呼び出しだけで(専用の差分計算ロジックを新設せずに)表現できる。返り値`Vec<GridSection>`はシート単位のHTMLフラグメントの集合で、パースエラー・変更なしの場合は空になる
 - `wrap_grid_page`は`render_sheet_split`/`GridSection::html`が返すフラグメント(群)を、スタイルシート・凡例付きの単体HTMLページへ包む——`examples/xlsx_diff_grid.rs`と`cli/`の`--grid-html-dir`(workflow artifactへの添付用)の双方が共有する
@@ -52,7 +53,7 @@ pub fn grid_sections_from_paths(
 ) -> Vec<GridSection>;
 ```
 
-内部の`LineSlot`/`CellChange`/`Side`列挙型、`render_table`/`render_cell`/`resolve_visual_style`/`border_sides_css`/`excel_width_to_px`/`column_pixel_width`等のヘルパーはすべて非公開。実装本体は[`src/grid.rs`](../../src/grid.rs)を参照。
+内部の`LineSlot`/`CellChange`/`Side`列挙型、`render_table`/`render_cell`/`resolve_visual_style`/`border_sides_css`/`excel_width_to_px`/`column_pixel_width`/`excel_height_pt_to_px`/`row_pixel_height`等のヘルパーはすべて非公開。実装本体は[`src/grid.rs`](../../src/grid.rs)を参照。
 
 ## 依存関係
 
@@ -76,6 +77,7 @@ pub fn grid_sections_from_paths(
 - ある軸(行または列)に変更が全く無い`SheetDiff`(可視性のみの変更など)は、畳み込むことで実際に表示量を削減できるほど大きい場合はその軸全体を単一のgapへ畳み込み、そうでなければそのまま全行を表示すること——「その軸に変更が無い」というだけの理由で無条件に全行を表示してしまわないことの確認
 - 複数シートを持つワークブックで、シート見出しの位置番号(`sheet1：`/`sheet2：`)がheadのシート順を正しく反映することの確認
 - `excel_width_to_px`が既知の換算値(方眼紙Excelでよく使われる2.14文字幅 → 15px)を正しく返すことの確認(Excel公式の変換式の実装そのものの検証)
+- `excel_height_pt_to_px`が実ファイルで独立に確認した既知の換算値(15pt→20px、166.5pt→222px)を正しく返すこと、`row_pixel_height`が明示的な行高→`defaultRowHeight`→Excelの既定値(15pt)の順にフォールバックすること、`render_sheet_split`が実際に`<tr style="height:...px;">`を出力することの確認(Issue #51)
 - `column_letters`が複数文字の列(Z列の次のAA列等)を正しく変換することの確認
 - `html_escape`が`&`/`<`/`>`を正しくエスケープすることの確認
 - スタイル付きセルの太字フラグ(`font.bold`)がインラインCSSの`font-weight:700;`として反映されることの確認

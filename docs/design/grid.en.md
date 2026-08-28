@@ -17,6 +17,7 @@ Its primary target is "grid-paper Excel" (a fine, uniform cell grid with merged 
 - Renders each side's actual merged-cell structure as real HTML `rowspan`/`colspan`, via [`Sheet::merged_region_at`](model/sheet.en.md). A merge that was added, removed, or resized is correctly reflected in that structural information, but carries no dedicated visual marker of its own (removed per review feedback — a merge change is only counted toward the "modified" total `SheetDiff.merges` already carries)
 - A cell with `wrapText` on wraps; one without reproduces Excel's actual default behavior instead (clip at the cell boundary, or spill naturally into an empty neighbor — `next_cell_is_empty`)
 - Converts column width from Excel's character-based unit to pixels using Excel's own real formula (`excel_width_to_px`), and pins the `<table>`'s own total width explicitly so the browser can't widen columns to fit content (`table-layout: fixed` alone isn't enough — see `render_table`'s doc comment for why)
+- Converts row height from Excel's points unit to pixels (`excel_height_pt_to_px` — unlike column width, needs no font metrics at all; see [model/sheet.en.md](model/sheet.en.md)'s "Feature: row height" section), and sets it explicitly on each `<tr>` as `style="height:...px;"` (Issue #51)
 - Keeps only 2 rows/columns of context on either side of an actual change, collapsing any longer run of unchanged rows/columns into a single `⋯ N row(s)/column(s) omitted ⋯` line (`build_line_plan`) — the same logic applied independently to both the row and column axis
 - `grid_sections_from_paths` ([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23) follow-up, [`action.yml`'s `visual` input](action.en.md)) provides its own path-based, "parse → diff → render" high-level entry point mirroring `markdown.rs::diff_file_section_from_paths`'s shape — the `A`/`D` statuses are expressed with no separate diffing logic at all, just a `diff_workbooks` call against an empty stand-in `Workbook` on the missing side. It returns `Vec<GridSection>`, one HTML fragment per sheet — empty on a parse error or when nothing changed
 - `wrap_grid_page` wraps `render_sheet_split`/`GridSection::html`'s fragment(s) into a standalone HTML page with a stylesheet and legend — shared by both `examples/xlsx_diff_grid.rs` and `cli/`'s `--grid-html-dir` flag (for attaching to a workflow artifact)
@@ -52,7 +53,7 @@ pub fn grid_sections_from_paths(
 ) -> Vec<GridSection>;
 ```
 
-The internal `LineSlot`/`CellChange`/`Side` enums and helpers (`render_table`, `render_cell`, `resolve_visual_style`, `border_sides_css`, `excel_width_to_px`, `column_pixel_width`, …) are all private. See [`src/grid.rs`](../../src/grid.rs) for the actual implementation.
+The internal `LineSlot`/`CellChange`/`Side` enums and helpers (`render_table`, `render_cell`, `resolve_visual_style`, `border_sides_css`, `excel_width_to_px`, `column_pixel_width`, `excel_height_pt_to_px`, `row_pixel_height`, …) are all private. See [`src/grid.rs`](../../src/grid.rs) for the actual implementation.
 
 ## Dependencies
 
@@ -76,6 +77,7 @@ Builds synthetic `Sheet`/`Workbook` instances directly via `Sheet::new`/`insert_
 - A `SheetDiff` with nothing changed on an axis at all (e.g. a visibility-only diff) collapses that whole axis into a single gap when it's large enough that a gap would actually save space, and renders it in full otherwise — it doesn't unconditionally render every line just because nothing on that axis is "changed"
 - On a multi-sheet workbook, the sheet heading's position number (`sheet1：`/`sheet2：`) correctly reflects head's own sheet order
 - `excel_width_to_px` returns the correct value for a known conversion (2.14 characters — a common grid-paper width — → 15px), directly testing the implementation of Excel's own official formula
+- `excel_height_pt_to_px` returns the correct value for known conversions independently confirmed against a real file (15pt → 20px, 166.5pt → 222px), `row_pixel_height` falls back explicit height → `defaultRowHeight` → Excel's own 15pt default in that order, and `render_sheet_split` actually emits `<tr style="height:...px;">` (Issue #51)
 - `column_letters` correctly converts a multi-letter column (e.g. the column right after Z, AA)
 - `html_escape` correctly escapes `&`/`<`/`>`
 - A styled cell's bold flag (`font.bold`) is reflected as `font-weight:700;` in the inline CSS

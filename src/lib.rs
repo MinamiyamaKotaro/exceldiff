@@ -54,7 +54,7 @@ pub use markdown::{
 pub use model::{
     Alignment, AnchorMarker, Borders, Cell, CellRef, CellValue, ColWidthRange, ColorRef,
     DateTimeValue, Font, Hyperlink, Image, ImageAnchor, ImageExtent, MergedRegion, ResolvedStyle,
-    Rgb, Sheet, SheetVisibility, StyleId, ThemePalette, Workbook,
+    Rgb, RowHeightRange, Sheet, SheetVisibility, StyleId, ThemePalette, Workbook,
 };
 pub use resolve::resolve_color;
 
