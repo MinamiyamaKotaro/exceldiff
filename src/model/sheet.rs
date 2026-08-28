@@ -515,9 +515,9 @@ impl Sheet {
             return;
         }
 
-        let Some(origin_cell) = cells.get_mut(&region.start) else {
-            return;
-        };
+        let origin_cell = cells
+            .get_mut(&region.start)
+            .expect("insert_merge backfills a blank cell at region.start, so it's always present");
         match &mut origin_cell.style {
             Some(style) => {
                 let style = Arc::make_mut(style);
@@ -1313,32 +1313,42 @@ mod tests {
     #[test]
     fn finalize_merges_border_fold_never_mutates_a_style_shared_with_unrelated_cells() {
         let mut sheet = Sheet::new("Sheet1".into(), SheetVisibility::Visible);
-        let shared = Arc::new(ResolvedStyle {
-            borders: Borders {
-                right: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        });
+        // The *origin* (not the perimeter cell) starts out sharing this
+        // Arc with an unrelated cell (I9) — the shape that actually
+        // exercises `Arc::make_mut`'s clone-on-write branch, since the
+        // fold has to mutate an *existing* style rather than manufacture
+        // a fresh one. Snapshotting the value here (not just holding the
+        // Arc) matters too: comparing against `&*shared_before` after the
+        // fact would trivially "pass" even under a broken in-place
+        // mutation, since both sides would alias the same, now-mutated,
+        // allocation.
+        let shared_before = Arc::new(ResolvedStyle::default());
+        let expected_unrelated_style = (*shared_before).clone();
         sheet.insert_cell(
-            r(1, 1), // A1: origin, unstyled.
+            r(1, 1), // A1: origin, shares `shared_before` with I9.
             Cell {
                 value: Some(crate::model::CellValue::Boolean(true)),
-                style: None,
+                style: Some(Arc::clone(&shared_before)),
             },
         );
         sheet.insert_cell(
-            r(1, 2), // B1: perimeter cell (right edge), shares `shared`.
-            Cell {
-                value: None,
-                style: Some(Arc::clone(&shared)),
-            },
-        );
-        sheet.insert_cell(
-            r(9, 9), // Z100-equivalent: unrelated cell, also shares `shared`.
+            r(9, 9), // I9: unrelated cell, shares `shared_before` with the origin.
             Cell {
                 value: Some(crate::model::CellValue::Boolean(false)),
-                style: Some(Arc::clone(&shared)),
+                style: Some(Arc::clone(&shared_before)),
+            },
+        );
+        sheet.insert_cell(
+            r(1, 2), // B1: perimeter cell (right edge), its own distinct style.
+            Cell {
+                value: None,
+                style: Some(Arc::new(ResolvedStyle {
+                    borders: Borders {
+                        right: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
             },
         );
         sheet.insert_merge(MergedRegion {
@@ -1349,8 +1359,15 @@ mod tests {
 
         assert_eq!(
             sheet.get(r(9, 9)).and_then(|c| c.style.as_deref()),
-            Some(&*shared),
+            Some(&expected_unrelated_style),
             "the unrelated cell's shared style must be untouched"
+        );
+        assert!(
+            !Arc::ptr_eq(
+                &shared_before,
+                sheet.get(r(1, 1)).unwrap().style.as_ref().unwrap(),
+            ),
+            "the origin must have split off its own Arc rather than mutating the shared one"
         );
         assert_eq!(
             sheet
