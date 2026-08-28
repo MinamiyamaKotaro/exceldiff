@@ -28,7 +28,7 @@ let json = exceldiff::to_json_string(&workbook)?;
 ```
 
 - [docs/requirement/requirements.md](docs/requirement/requirements.md) —
-  機能要件と、後述する5フェーズ・パイプラインの要約([English](docs/requirement/requirements.en.md)版もあります)。
+  差分検出・出力・配布に関する本プロジェクト固有の機能要件(基盤パーサー自体の要件は姉妹プロジェクト`xlsxparser`側を参照。[English](docs/requirement/requirements.en.md)版もあります)。
 - [docs/design/architecture.md](docs/design/architecture.md) — `src/`
   ディレクトリ全体の構成・各モジュールの責務・設計方針([English](docs/design/architecture.en.md)版もあります)。
   ここから、全ファイルそれぞれの設計書(責務・スコープ、主要な型・関数シグネチャ、依存関係、エラー処理方針、テスト方針、未決事項を記載)にリンクしており、各設計書は日英両方(`*.md` / `*.en.md`)で書かれています。実装が設計書のドラフトと異なる形に落ち着いた場合(外部APIの詳細が想定と違う形で確定した、テスト作成中にバグが見つかった等)は、何がどう変わったかを記録するため設計書自体をその場で更新しています。

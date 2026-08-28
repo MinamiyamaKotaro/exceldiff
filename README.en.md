@@ -49,8 +49,10 @@ let json = exceldiff::to_json_string(&workbook)?;
 ```
 
 - [docs/requirement/requirements.en.md](docs/requirement/requirements.en.md) —
-  the functional requirements and the 5-phase pipeline summarized below
-  (also available in [Japanese](docs/requirement/requirements.md)).
+  this project's own functional requirements around diff detection,
+  output, and distribution (the underlying parser's own requirements live
+  in the sister project `xlsxparser`; also available in
+  [Japanese](docs/requirement/requirements.md)).
 - [docs/design/architecture.en.md](docs/design/architecture.en.md) — the
   overall `src/` directory layout, module responsibilities, and design
   principles (also available in [Japanese](docs/design/architecture.md)).
