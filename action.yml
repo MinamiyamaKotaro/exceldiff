@@ -177,6 +177,18 @@ runs:
       run: |
         set -euo pipefail
 
+        # Fails fast on a typo'd diff-scope rather than silently falling
+        # back to "pr" behavior later — the branch below only ever checks
+        # for "commit", so any other unexpected value would otherwise run
+        # to completion having quietly ignored what was actually asked for.
+        case "$DIFF_SCOPE" in
+          pr|commit) ;;
+          *)
+            echo "::error::diff-scope must be 'pr' or 'commit', got '${DIFF_SCOPE}'" >&2
+            exit 1
+            ;;
+        esac
+
         {
           echo "<!-- xlsx-diff-comment -->"
           echo "## 📊 .xlsx diff preview"
@@ -307,11 +319,22 @@ runs:
             commits=$(git log --reverse --format=%H "$BASE_SHA..$HEAD_SHA")
             while IFS= read -r sha; do
               [ -z "$sha" ] && continue
-              parent=$(git rev-parse "${sha}^1")
+              # A root commit (no parent) has no "^1" — `git rev-parse`
+              # would fail there and, under `set -e`, abort this whole
+              # step. Falling back to git's well-known empty-tree object
+              # matches how `git show`/`git diff` themselves treat a root
+              # commit, so it diffs cleanly against "nothing" instead.
+              if ! parent=$(git rev-parse "${sha}^1" 2>/dev/null); then
+                parent="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+              fi
               commit_changed=$(git diff --no-renames --name-status "$parent" "$sha" -- "$FILES" || true)
               [ -z "$commit_changed" ] && continue
 
-              subject=$(git log -1 --format=%s "$sha")
+              # Escaped so a subject containing a lone/unmatched backtick
+              # can't leave an unterminated Markdown code span open,
+              # which would otherwise swallow (and corrupt the rendering
+              # of) everything in the comment written after it.
+              subject=$(git log -1 --format=%s "$sha" | sed 's/`/\\`/g')
               short="${sha:0:7}"
               {
                 echo
