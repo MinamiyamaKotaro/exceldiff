@@ -11,7 +11,7 @@
 - Rustツールチェーンのセットアップ・`cli/`(パッケージ`xlsxdiff`)のビルド・変更された`.xlsx`ファイルごとの差分計算・Markdownコメントの投稿(または既存コメントの更新)までを、composite actionの`steps`としてカプセル化する。
 - 呼び出し元のワークフローファイルが個々のステップを重複して書く必要をなくす——本リポジトリ自身の`.github/workflows/xlsx-diff.yml`も、この`action.yml`を`uses: ./`で呼び出すことでセルフドッグフーディングする(下記「テスト方針」参照)。
 - `visual: true`の場合、変更のあったシートごとに[`grid.rs`が生成するExcelライクなグリッドHTML](grid.md)ページを収集し、1回のjob実行分をまとめて1つのGitHub Actions artifact(`actions/upload-artifact@v4`)としてアップロードして、そのダウンロードリンクをテキスト差分の下に追記する(下記「ビジュアルモード」参照)。実際にHTMLを収集・公開する処理そのものは[`grid.rs`の責務には含まれていない](grid.md)ため、この配線は本actionが担う。
-- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形・グリッドHTML生成そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)/[`grid_sections_from_paths`](grid.md)と、それを呼び出す[`cli/`](cli.md)の責務)、事前ビルド済みバイナリの配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)の検討事項、P2)、変更セル数の合計を返すoutput・コミット単位での差分表示(いずれも[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み。下記「未決事項」参照)。
+- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形・グリッドHTML生成そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)/[`grid_sections_from_paths`](grid.md)と、それを呼び出す[`cli/`](cli.md)の責務)、事前ビルド済みバイナリの配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)の検討事項、P2)、変更セル数の合計を返すoutput(`changed-cells-count`、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み、[Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43)未着手分。下記「未決事項」参照)。コミット単位での差分表示は`diff-scope: commit`として実装済み(下記「inputs / outputs」)。
 
 ## inputs / outputs([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))
 
@@ -23,6 +23,7 @@
 | `job-summary` | bool文字列, `'false'` | `$GITHUB_STEP_SUMMARY`へも書き出すか。`comment`と独立に指定可能——forkからのPR等`pull-requests: write`権限を付与できない環境では`comment: false`・`job-summary: true`にすることで、権限エラーを起こさずJob Summary上で差分を確認できる |
 | `max-rows-per-sheet` | 数値文字列, `'30'` | [`MarkdownOptions::max_rows_per_sheet`](markdown.md)へ渡す(`cli/`の`--max-rows-per-sheet`フラグ経由) |
 | `diff-mode` | string enum `auto`\|`coordinate`, `'auto'` | [`MarkdownOptions::diff_mode`](markdown.md)へ渡す(`cli/`の`--diff-mode`フラグ経由)。`auto`は現行の`diff_workbooks_best_effort`(座標一致/行アライメント/列アライメント自動選択)、`coordinate`はアライメント検出をスキップした単純座標比較 |
+| `diff-scope` | string enum `pr`\|`commit`, `'pr'` | `pr`(既定)はPRの累積`base.sha`⇔`head.sha`差分を1ファイル1セクションとして出力する従来通りの挙動。`commit`はPRが導入した各コミットを`git log --reverse base.sha..head.sha`で列挙し、コミットごとに直前の親(`<commit>^1`)との差分を`## Commit <short-sha> — <subject>`見出しの下にサブセクションとして出力する——同一PR内で新規追加されたファイルへの修正が常に`Added`としてしか見えない問題([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23))を解消する([Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43))。`has-changes`/`changed-files-count`outputsへの影響はなく、常に累積diffベースのまま。`visual: true`と併用した場合、グリッドHTMLの保存先も`<commit-short-sha>/`でネームスペース分けされる(下記「ビジュアルモード」参照)。`push`(直前pushの`before`/`after`)モードは未実装(下記「未決事項」) |
 | `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのビューを単体HTMLページとして生成し、workflow artifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要(下記「呼び出し元に要求する前提」) |
 
 | output | 型 | 内容 |
@@ -61,6 +62,7 @@ inputs:
   job-summary:            # 既定値 'false'
   max-rows-per-sheet:      # 既定値 '30'
   diff-mode:                # 既定値 'auto'
+  diff-scope:                # 既定値 'pr'（'pr' | 'commit'）
   visual:                    # 既定値 'false'
 outputs:
   has-changes:            # steps.diff.outputs.has-changes
@@ -71,10 +73,14 @@ runs:
     - dtolnay/rust-toolchain@stable
     - Swatinem/rust-cache@v2         # workspaces: 本action自身のパス起点
     - cargo build --release -p xlsxdiff --manifest-path ...
-    - id: diff              # 変更ファイルごとにgit show + xlsxdiffを実行しMarkdownを組み立て、
-                              # has-changes/changed-files-countを$GITHUB_OUTPUTへ書き出す。
+    - id: diff              # has-changes/changed-files-countは常に累積base..headから$GITHUB_OUTPUTへ書き出す。
+                              # diff-scope: pr（既定）なら変更ファイルごとに、
+                              # diff-scope: commitならPRの各コミット×そのコミットで変更されたファイルごとに
+                              # git show + xlsxdiffを実行しMarkdownを組み立てる（commitモードは
+                              # "## Commit <short-sha> — <subject>" 見出しでサブセクション化）。
                               # visual: trueならシートごとの単体HTMLページを
-                              # ${{ runner.temp }}/xlsx-diff-visuals/へ集約し、
+                              # ${{ runner.temp }}/xlsx-diff-visuals/へ（commitモードは
+                              # commit-short-sha/ でネームスペース分けして）集約し、
                               # has-visualsを$GITHUB_OUTPUTへ書き出す
     - if: inputs.visual && steps.diff.outputs.has-visuals == 'true'
       id: upload_visuals     # actions/upload-artifact@v4 でxlsx-diff-visuals/を1つのartifactへ
@@ -120,6 +126,8 @@ GitHubのPRコメントはHTML内の`style=`属性をサニタイズするため
 3. **ダウンロードリンクの追記**: アップロードした`upload-artifact`ステップの`artifact-url`output(形式: `https://github.com/{owner}/{repo}/actions/runs/{run_id}/artifacts/{artifact_id}`)を、diffステップが既に書き終えたコメントMarkdownの末尾へ別ステップで追記する(`artifact-url`はartifactが実在して初めて決まるため、diffステップ自身では書けない)。このURLをダウンロードするには「GitHubにログイン済みであること」が要件——実質的にこのリポジトリへの閲覧権限を持つユーザーしかダウンロードできない([`actions/upload-artifact`のREADME](https://github.com/actions/upload-artifact)に明記)。
 
 **変更ファイル単位でのベストエフォート**: HTMLのコピーに失敗しても、その変更ファイル分だけを諦めてstderrへ警告を出し、処理を続行する([`cli/`のエラー処理方針](cli.md)と同じ「1件の失敗が全体を止めない」方針)。アップロード自体はjob全体で1回だけなので、旧方式にあった「pushの競合」への対処(リトライ・rebase)は不要になった。
+
+**`diff-scope: commit`との組み合わせ(Issue #43)**: 保存先パスがファイルパスのみでキーされていると(`{sanitize(ファイルパス)}.html`)、同じファイルが複数コミットで変更された場合に後のコミットの分が前のコミットの分を上書きしてしまう——Issue #43のPoCで実際にこの上書きを再現した上で確認済み。これを避けるため、`diff-scope: commit`モードでは保存先を`{commit-short-sha}/{sanitize(ファイルパス)}.html`とコミット単位でネームスペース分けし、`$VISUALS_LIST`にも先頭列としてコミットラベルを追加(`commit_label\tpath\tsheet1,sheet2,...`)して、コメント末尾の箇条書きもコミットごとに`**Commit \`<short-sha>\`**`見出しでグループ化する。`diff-scope: pr`(既定)ではこの列は`-`固定(空文字列ではない——`IFS`にタブだけを設定していても、タブは`read`にとって依然「IFS空白文字」として扱われ、行頭の空フィールドが黙って読み飛ばされ後続の列がすべて1つずつ前へずれる、というbashの挙動があるため。実装時にこの列を空文字列にしたところ`diff-scope: pr`側の出力が実際に壊れることを確認し、`-`という非空プレースホルダに変更して解消した)。
 
 ### 変更履歴: pushベースの配信からartifactへ(Issue #47)
 
@@ -167,13 +175,14 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 2. **シェルロジックの単体検証**: 「変更ファイルごとに`git show`でbase/headを取り出し`xlsxdiff`を起動してMarkdownへ連結し、`has-changes`/`changed-files-count`を`$GITHUB_OUTPUT`へ書く」というシェルスクリプト部分は`${{ github.action_path }}`・`${{ runner.temp }}`・`$GITHUB_OUTPUT`をローカルパスに置き換えれば`bash`だけでそのまま実行できる。実際に、ローカルの使い捨てgitリポジトリへA(追加)・M(変更)・D(削除)の3ステータスが混在する差分を作りこのスクリプトを実行して意図通りのMarkdownが生成されること、および変更あり/なし双方のケースで`has-changes`/`changed-files-count`が正しい値になることを確認済み。`--max-rows-per-sheet`/`--diff-mode`フラグが実際に`MarkdownOptions`へ届くことは、`cli/`側の統合テスト([`cli/tests/cli.rs`](../../cli/tests/cli.rs))で検証している(下記「依存関係」)——`action.yml`のシェルスクリプト部分としては、フラグの値をそのまま`"$BIN"`へ渡しているだけなので、フラグ自体の意味までは再検証しない。
 3. **実際のGitHub Actions上での結合検証**: `.github/workflows/xlsx-diff.yml`自体を`uses: ./`で本actionを呼び出す形に書き換えた(下記「依存関係」参照)。これにより、`.xlsx`ファイルを変更する今後の任意のPRが本action全体(Rustツールチェーンのセットアップ・`github.action_path`起点でのビルド・`rust-cache`のワークスペース指定・コメント投稿)の実行結果を検証する回帰テストとして機能する——外部のテスト用リポジトリを別途用意しなくても、本リポジトリ自身がdogfoodingの場になる。**この結合検証だけが発見できた不具合が実際にあった**(上記「事後発見」参照)——単一ファイルのみ変更というケースは、ローカルのシェルスクリプト単体検証(複数ステータス混在の差分で検証していた)や静的検証では再現せず、GitHub Actions実機での複数回の試行によってのみ再現・特定できた。composite actionの検証において実機結合テストを省略できない理由の実例。
 4. **`visual`モード固有の検証**: 使い捨てのgitリポジトリに対し、diffステップのシェルロジックを`VISUAL=true`で単体実行し、`xlsxdiff --grid-html-dir`が書き出したHTMLがそのまま`xlsx-diff-visuals/`へ収集され(実際に生成された`.html`ファイルの中身も目視確認)、`has-visuals`が正しく`true`になることをローカルで確認済み。`actions/upload-artifact@v4`の`artifact-url`が実際にコメント上でクリック可能なダウンロードリンクとして表示されること、プライベートリポジトリでのアクセス制御(未認証ではHTTP 404、認証済みならダウンロード可能)については、PR #48の時点でGitHub Actions実機・使い捨て外部リポジトリの双方で確認済み(下記「未決事項」参照)——本変更(PNG→HTML)によってartifactの中身が変わっただけで、配信経路自体の権限モデルは変わっていないため、その部分の再検証は不要と判断した。
+5. **`diff-scope: commit`の検証(Issue #43)**: 実装前にPoC(`poc/issue43-poc/`、非コミット)で、使い捨てgitリポジトリ上で「Added→Modified→Added」のコミット列を作り、コミット単位ループが実際にIssue #23の問題を解消することと、`visual: true`併用時にファイル名衝突が起きること(グリッドHTMLが後のコミットの分で上書きされる)を確認した上で、コミット単位ネームスペース分けの修正案でその衝突が解消することを確認した(いずれもGitHub issueコメントとして記録: [最初のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/43#issuecomment-5448294124)・[追加検証コメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/43#issuecomment-5448338647))。実装後、`action.yml`から実際の2ステップ分のシェルスクリプトを抽出し(`yaml.safe_load`でパース→`run:`フィールドをファイル書き出し)、`bash -n`で構文検証した上で、ビルド済み`xlsxdiff`バイナリ・使い捨てgitリポジトリに対して`diff-scope=pr`/`commit`両方・`visual=true`/`false`両方・非`.xlsx`のみのコミット(スキップされるべき)を実際に実行し、コメントMarkdown・`$VISUALS_DIR`のディレクトリ構造・`$VISUALS_LIST`の内容・`$GITHUB_OUTPUT`をすべて目視確認した。この過程で、`$VISUALS_LIST`の先頭列(コミットラベル)を空文字列にしていたところ、`diff-scope: pr`(既定モード)側の出力が実際に壊れる不具合を発見した——`IFS=$'\t'`を設定していても、タブは`read`にとって「IFS空白文字」として扱われ続けるため行頭の空フィールドが黙って読み飛ばされ後続列が1つずつ前へずれる、というbash特有の挙動によるもの(上記「ビジュアルモード」参照)。プレースホルダを`-`に変更して解消・再検証済み。**ただし、この検証はすべてローカルのシェルスクリプト単体実行によるものであり、上記項目3で述べた「ローカル検証だけでは不十分で実際のGitHub Actions実行でしか再現しない不具合がある」という教訓を踏まえると、実際のGitHub Actions上での結合検証(複数コミットを持つ本物のPRでのdogfooding)はまだ実施していない**(下記「未決事項」参照)。
 
 ## 未決事項 / オープンクエスチョン
 
 1. **`cli`クレートの`crates.io`公開**: 本actionは`cli/`をソースからビルドする方式を採用しており、`cli/Cargo.toml`の`publish = false`は変更していない。公開する実利(例: 呼び出し元でのビルド時間短縮のため事前ビルド済みバイナリを配布する、[Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28))が生じるまでは現状維持とする。
-2. **inputs/outputsの汎用化(続き)**: `files`/`comment`/`job-summary`/`max-rows-per-sheet`/`diff-mode`/`visual`inputsと`has-changes`/`changed-files-count`outputsは実装済み([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))。以下は後続タスクとして残っている:
+2. **inputs/outputsの汎用化(続き)**: `files`/`comment`/`job-summary`/`max-rows-per-sheet`/`diff-mode`/`visual`inputsと`has-changes`/`changed-files-count`outputsは実装済み([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))。~~`diff-scope`(コミット単位の差分表示)~~([Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43)、`commit`モードのみ実装済み): 新規`diff-scope`input(`pr`(既定・従来通り)/`commit`)を追加し、`commit`モードはPRが導入した各コミットを`git log --reverse base.sha..head.sha`で列挙して直前の親(`<commit>^1`)との差分をコミットごとのMarkdownサブセクションとして出力する——新規追加されたファイルへのPR内修正が常に`Added`として扱われる問題([Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23))を解消する。`visual: true`併用時のグリッドHTML成果物もコミット単位でネームスペース分けする(上記「ビジュアルモード」参照)。設計はPoC(`poc/issue43-poc/`)で事前検証し、実装後もローカルでシェルスクリプト単体検証まで実施済みだが、**実際のGitHub Actions上での結合検証(dogfooding)はまだ未実施**(上記「テスト方針」項目5参照)。以下は引き続き未着手:
    - `changed-cells-count`output: 現状`xlsxdiff`はMarkdown文字列をstdoutへ書くのみで、追加/変更/削除セル数を機械可読な形で外に出していない。`cli/`側に集計出力(例: stderrへの`added=N modified=M deleted=D`行)を追加した上で、`action.yml`側でファイルごとに合算する必要がある。
-   - `diff-scope`(コミット単位の差分表示): 現状は常にPRの`base.sha`⇔`head.sha`の累積差分のみ(新規追加されたファイルへのPR内修正は常に`Added`として扱われる——[Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)参照)。`push`(直前pushの`before`/`after`)や`commit`(PR内の各コミットを隣接ペアごとに差分)単位への切り替えは、コメント出力自体が「1PRにつき1セクション」から「複数セクション」へ構造が変わるため優先度を下げ、P2として別途着手する。
+   - `diff-scope: push`(直前pushの`before`/`after`単位への切り替え)は未実装のまま残っている。`pull_request`イベントの`synchronize`アクションのペイロードには`before`/`after`フィールドが存在する([octokit/webhooksのJSON Schemaで確認](https://github.com/octokit/webhooks))が、`opened`等それ以外のアクションには存在しないため、そのケースのフォールバック(例: `base.sha`/`head.sha`にフォールバックする)を含めて別途設計・検証が必要。
    - コメント文言・マーカー(`<!-- xlsx-diff-comment -->`)自体のカスタマイズは、具体的な要望が出るまでスコープ外のままとする。
    - `files`inputはgitパススペックとして実装した(シェルグロブではない)。GitHub Actionsの`paths:`トリガーフィルタ構文とは別物である点に注意——本actionはワークフローのトリガー自体を制御しない。
 3. ~~**外部リポジトリからの実地検証**~~([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)、解決済み): プレリリースタグ`v0.1.0-rc1`を切り、別リポジトリ(throwaway、`MinamiyamaKotaro/exceldiff-action-verify`)から`uses: MinamiyamaKotaro/exceldiff@v0.1.0-rc1`で実際に呼び出し、checkout→差分計算→PRコメント投稿までend-to-endで成功を確認した。この検証自体が実際にバグを発見した——README基本例どおり`permissions: pull-requests: write`のみを書いた呼び出し元では`contents`が黙って`none`になり`actions/checkout`が失敗する問題(上記「`permissions:`ブロック」参照、修正はPR #45)。セルフドッグフーディング(常に`visual: true`で`contents: write`を書く)だけでは決して発見できなかった不具合であり、外部からの実地検証を省略できない実例になった。
