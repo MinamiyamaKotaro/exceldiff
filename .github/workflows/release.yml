@@ -106,17 +106,45 @@ jobs:
       # pre-release-tag convention — see docs/design/action.md's "外部
       # リポジトリからの実地検証") marks it a pre-release, same as the
       # `v0.1.0-rc1` tag already used for Issue #23's live verification.
+      #
+      # A bare major-version tag (`v1`, `v2`, ...) is treated as a *moving*
+      # pointer, per this action's own README usage example
+      # (`uses: MinamiyamaKotaro/exceldiff@v1`) and the convention popular
+      # Actions like `actions/checkout` follow: each new vN.x.y release
+      # force-moves the matching `vN` git tag to the same commit, which
+      # re-triggers this workflow for that tag too. `gh release create`
+      # fails outright if a release already exists for the tag, so the
+      # release step is idempotent — delete any existing release *object*
+      # for this tag first (`gh release delete` defaults to leaving the git
+      # tag itself alone unless `--cleanup-tag` is passed, which is exactly
+      # what's wanted here — actions/checkout above already needs that tag
+      # to exist) before recreating it with the freshly built assets.
+      # `--generate-notes`
+      # is skipped for a moving tag: it compares against "the previous
+      # release chronologically," which for a repeatedly-recreated `v1`
+      # release is a confusing, ever-changing diff rather than useful notes.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          prerelease_flag=()
-          if [[ "$TAG" == *-* ]]; then
-            prerelease_flag=(--prerelease)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes
           fi
-          gh release create "$TAG" dist/* \
-            --title "$TAG" \
-            --generate-notes \
-            "${prerelease_flag[@]}"
+
+          if [[ "$TAG" =~ ^v[0-9]+$ ]]; then
+            gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --notes "Moving pointer to the latest \`${TAG}.x.y\` release — always tracks whichever \`${TAG}.*\` tag was most recently pushed. See that release's own notes for what changed."
+          else
+            prerelease_flag=()
+            if [[ "$TAG" == *-* ]]; then
+              prerelease_flag=(--prerelease)
+            fi
+            gh release create "$TAG" dist/* \
+              --title "$TAG" \
+              --generate-notes \
+              "${prerelease_flag[@]}"
+          fi
