@@ -63,7 +63,7 @@ pub fn grid_sections_from_paths(
 
 ## 設計判断: なぜ`markdown.rs`と統合せず別モジュールにしたか
 
-`markdown.rs`と本モジュールはどちらも`diff::WorkbookDiff`/`SheetDiff`を入力に取るが、出力の性質が根本的に異なる——`markdown.rs`はGitHubのPRコメントというサニタイズされた環境に耐える出力(装飾的なHTML/CSSを一切使わない)を目的とし、本モジュールは逆に、装飾的なCSS(色・罫線・列幅)そのものが価値の中心である出力を目的とする。両者を1つの関数にまとめると、常に両方のスタイルを計算するコストが生じる上、片方だけを呼びたい呼び出し側にとって無関係な引数(`base`/`head`の`Workbook`全体——本モジュールはセルの実際のスタイル・列幅・結合構造を読むために必要とするが、`markdown.rs`は`WorkbookDiff`だけで完結し不要)を渡す必要が生じる。実際、`examples/xlsx_diff_cli.rs`(`markdown.rs`を使う)と`examples/xlsx_diff_grid.rs`(本モジュールを使う)は、同じ`diff_workbooks`の呼び出し結果を全く異なる形へ整形しており、共有すべき実装はほとんど無い。
+`markdown.rs`と本モジュールはどちらも`diff::WorkbookDiff`/`SheetDiff`を入力に取るが、出力の性質が根本的に異なる——`markdown.rs`はGitHubのPRコメントというサニタイズされた環境に耐える出力(装飾的なHTML/CSSを一切使わない)を目的とし、本モジュールは逆に、装飾的なCSS(色・罫線・列幅)そのものが価値の中心である出力を目的とする。両者を1つの関数にまとめると、常に両方のスタイルを計算するコストが生じる上、片方だけを呼びたい呼び出し側にとって無関係な引数(`base`/`head`の`Workbook`全体——本モジュールはセルの実際のスタイル・列幅・結合構造を読むために必要とするが、`markdown.rs`は`WorkbookDiff`だけで完結し不要)を渡す必要が生じる。実際、`cli/`(`markdown.rs::diff_file_section_from_paths`を使う)と`examples/xlsx_diff_grid.rs`(本モジュールを使う)は、同じ`diff_workbooks`の呼び出し結果を全く異なる形へ整形しており、共有すべき実装はほとんど無い。
 
 ## テスト方針
 
