@@ -8,10 +8,10 @@ As noted in [`cli.md`](cli.en.md)'s open question 1, [Issue #23](https://github.
 
 ## Responsibilities / Scope
 
-- Encapsulates Rust toolchain setup, building `cli/` (package `xlsxdiff`), computing the diff for each changed `.xlsx` file, and posting/updating the Markdown comment, all as composite-action `steps`.
+- Encapsulates resolving the `xlsxdiff` binary (downloading a pre-built release, falling back to Rust toolchain setup + building `cli/` from source only when that download isn't available — [Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28), see "Pre-built binary distribution" below), computing the diff for each changed `.xlsx` file, and posting/updating the Markdown comment, all as composite-action `steps`.
 - Removes the need for a calling workflow to duplicate these steps itself — this repo's own `.github/workflows/xlsx-diff.yml` dogfoods it by calling this `action.yml` via `uses: ./` (see "Test plan" below).
 - When `visual: true`, collects [`grid.rs`'s Excel-like grid HTML](grid.en.md) page for each changed sheet, uploads every page from a single job run as one GitHub Actions artifact (`actions/upload-artifact@v4`), and appends its download link under the text diff (see "Visual mode" below). Actually collecting and publishing that HTML is [explicitly outside `grid.rs`'s own scope](grid.en.md), so this action is where that wiring lives.
-- **Explicitly out of scope**: parsing `.xlsx`, computing the diff, Markdown formatting, or grid HTML rendering itself (all [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s/[`grid_sections_from_paths`](grid.en.md)'s and, by extension, [`cli/`](cli.en.md)'s responsibility); pre-built binary distribution ([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)/[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28), P2); a `changed-cells-count` output (carved out as follow-up work under [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24), still unstarted as of [Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43) — see "Open questions" below). Commit-scoped diffing is implemented as `diff-scope: commit` (see "Inputs / outputs" below).
+- **Explicitly out of scope**: parsing `.xlsx`, computing the diff, Markdown formatting, or grid HTML rendering itself (all [`exceldiff::diff_file_section_from_paths`](markdown.en.md)'s/[`grid_sections_from_paths`](grid.en.md)'s and, by extension, [`cli/`](cli.en.md)'s responsibility); a `changed-cells-count` output (carved out as follow-up work under [Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24), still unstarted as of [Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43) — see "Open questions" below). Commit-scoped diffing is implemented as `diff-scope: commit` (see "Inputs / outputs" below). Pre-built binary distribution is implemented as `release.yml` plus `action.yml`'s "Resolve xlsxdiff binary" step (see "Pre-built binary distribution" below).
 
 ## Inputs / outputs ([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))
 
@@ -70,10 +70,17 @@ outputs:
 runs:
   using: composite
   steps:
-    - dtolnay/rust-toolchain@stable
-    - Swatinem/rust-cache@v2         # workspaces: rooted at this action's own path
-    - cargo build --release -p xlsxdiff --manifest-path ...
-    - id: diff               # writes has-changes/changed-files-count to $GITHUB_OUTPUT from the
+    - id: resolve_binary      # if github.action_ref is non-empty, downloads + checksum-verifies
+                               # the matching pre-built release binary; sets found=true/bin-path
+                               # on success (Issue #28)
+    - if: steps.resolve_binary.outputs.found != 'true'
+      uses: dtolnay/rust-toolchain@stable
+    - if: steps.resolve_binary.outputs.found != 'true'
+      uses: Swatinem/rust-cache@v2   # workspaces: rooted at this action's own path
+    - id: build_fallback      # only when found != true: cargo build --release -p xlsxdiff
+      if: steps.resolve_binary.outputs.found != 'true'
+    - id: diff               # BIN = resolve_binary's (on success) or build_fallback's bin-path.
+                               # writes has-changes/changed-files-count to $GITHUB_OUTPUT from the
                                # cumulative base..head diff, always. diff-scope: pr (default) then
                                # runs git show + xlsxdiff once per changed file; diff-scope: commit
                                # instead runs it once per (PR commit x file changed in that commit),
@@ -158,10 +165,44 @@ Right after "History, part 2" replaced the PNG with HTML, further feedback asked
 
 Added a dedicated test to `cli/tests/cli.rs`, `grid_html_dir_combines_every_changed_sheet_into_one_page`, passing a two-sheet `.xlsx` pair (built with a new `xlsx_zip_multi_sheet` helper — an in-memory minimal pair rather than reusing two unrelated real fixtures, same reasoning [[feedback_test_fixture_determinism]] gives elsewhere) and confirming both `manifest.tsv` lines point at the same `grid.html`, exactly one HTML file is actually written, and it contains both sheets' `class="sheet"` sections.
 
+## Pre-built binary distribution ([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28))
+
+The composite action (P0) always required a `cargo build` on every invocation, which was Issue #28's original concern about slowness. A PoC done before implementing (see Issue #28's comments) measured this and found the concern partly right, but for a different reason than assumed: `dtolnay/rust-toolchain` takes ~0.6s and `Swatinem/rust-cache`'s restore ~0.4s, both cheap — but **`Swatinem/rust-cache` never actually gets a hit, because `xlsx-diff.yml` is `pull_request`-only (never runs on a push to `master`), so the default branch never gets its own cache entry for this key, and every new PR's first run starts cold (`No cache found.`)**. `cargo build --release -p xlsxdiff` itself measured at ~14 seconds in that state.
+
+### Design: download-first, transparent fallback to a source build
+
+`action.yml`'s first step, "Resolve xlsxdiff binary," does the following (see [`action.yml`](../../action.yml) for the implementation):
+
+1. If `${{ github.action_ref }}` (the ref from the caller's `uses: owner/repo@ref`) is non-empty and `runner.os`/`runner.arch` map to a known combination (the supported-targets table below), it fetches `https://github.com/MinamiyamaKotaro/exceldiff/releases/download/{action_ref}/xlsxdiff-{action_ref}-{target}.tar.gz` and its `SHA256SUMS` via `curl -fsSL`, verifies the checksum (`sha256sum -c`, falling back to `shasum -a 256 -c` since macOS's BSD userland has no `sha256sum` at all), and only extracts + `chmod +x`'s a binary that passed verification.
+2. If any of the above doesn't pan out (empty ref, unsupported platform, download failure, checksum mismatch), it **unconditionally** falls back to the original source-build path — `dtolnay/rust-toolchain` + `Swatinem/rust-cache` + `cargo build --release -p xlsxdiff` — simply by attaching `if: steps.resolve_binary.outputs.found != 'true'` to those three steps (a composite action's per-step `if:` makes skipping a whole step this cleanly possible).
+3. **Deliberately no shape-based pre-filter on `action_ref`** — any non-empty value triggers a download attempt. An early PoC draft gated this behind a `^v[0-9]+\.[0-9]+` regex to only attempt version-tag-shaped refs, but that missed this repo's own README-documented usage, `uses: MinamiyamaKotaro/exceldiff@v1` (major-version-only), and would have silently skipped the download and fallen back to a source build every time — a real bug caught and fixed live in Issue #28's comments. Since a failed `curl` (404) already falls through to the source build correctly, the shape check turned out to add nothing.
+
+This design means this repo's own `.github/workflows/xlsx-diff.yml` (`uses: ./`, `action_ref` always empty) **automatically** keeps taking the source-build path — the mechanism that lets pre-built binaries roll out at all is, by construction, the same one that guarantees this repo's own self-dogfooding never breaks.
+
+### `release.yml` (new)
+
+`.github/workflows/release.yml` triggers on a `v*`-shaped tag push, matrix-builds on `ubuntu-latest`/`macos-latest` (twice — native `aarch64-apple-darwin` and a same-OS cross-build to `x86_64-apple-darwin`)/`windows-latest`, packages each target's binary as `xlsxdiff-{tag}-{target}.tar.gz` via plain `tar` (every target uses `.tar.gz`, Windows included — `windows-latest` has a working `tar` too, so a separate `.zip`/`Compress-Archive` path wasn't needed), and a final aggregation job generates a `SHA256SUMS` covering every asset and attaches everything to a GitHub Release via `gh release create`.
+
+`xlsxdiff`'s dependency graph (checked with `cargo tree`: `quick-xml`/`serde`/`serde_json`/`thiserror`/`zip` — even `zip`'s `deflate` feature is pure Rust via `flate2` → `zlib-rs`, not C zlib) has zero C/native dependencies (`exceldiff`'s optional `diff-storage` feature, which pulls in `rusqlite`'s bundled-C-SQLite build, is never enabled here since `cli/Cargo.toml`'s `exceldiff = { path = ".." }` requests no features). So every target builds by compiling natively on that OS's own GitHub-hosted runner — no `cross`/Docker needed at all; a real local test even confirmed a same-machine cross-build (arm64 macOS → x86_64 macOS) succeeding in 7 seconds.
+
+Supported targets, in priority order:
+
+| target | priority | notes |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | P0 | matches `ubuntu-latest`; the overwhelming majority of real callers |
+| `aarch64-apple-darwin` | P1 | `macos-latest` is an arm64 host today |
+| `x86_64-apple-darwin` | P1 | same-OS cross-build |
+| `x86_64-pc-windows-msvc` | P1 | `windows-latest` |
+| `aarch64-unknown-linux-gnu` | P2 (not implemented) | likely needs a cross-linker; out of scope for now — see "Open questions" below |
+
+### What's still unverified
+
+This PoC/implementation confirmed locally: (a) a real successful download path against a `.tar.gz` + `SHA256SUMS` mocked with a local `python3 -m http.server`, including confirming the extracted, `chmod +x`'d binary actually runs correctly; (b) correct fallback on a checksum mismatch, tested against a deliberately corrupted archive; (c) the target-triple resolution logic across every `runner.os`/`runner.arch` combination. **What hasn't been done yet is actually pushing a tag, letting `release.yml` run, and verifying the download-success path against a real GitHub Release asset** — cutting a tag/Release is this action's first genuinely public, semi-irreversible action, so timing that is left as a separate decision (see "Open questions" below).
+
 ## Dependencies
 
-- Depends on: [`cli/`](cli.en.md) (built via `cargo build -p xlsxdiff`; the `xlsxdiff` binary is run once per changed file, with the `--max-rows-per-sheet`/`--diff-mode` flags, plus `--grid-html-dir` when `visual: true`. The positional-argument contract — `<display_path> <A|M|D> [base_file] [head_file]` — is unchanged). ~~`action-scripts/`~~ (a Playwright-dependent Node package) was removed, see "History, part 2" above — `visual: true` now runs on the Rust toolchain alone.
-- Depended on by: [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml) — the only caller so far, referencing this action via `uses: ./` within this same repository. External repositories calling it via `uses: MinamiyamaKotaro/exceldiff@<tag>` is an intended future use, but no such external caller exists yet.
+- Depends on: [`cli/`](cli.en.md) (run once per changed file, with the `--max-rows-per-sheet`/`--diff-mode` flags, plus `--grid-html-dir` when `visual: true`. The positional-argument contract — `<display_path> <A|M|D> [base_file] [head_file]` — is unchanged. See "Pre-built binary distribution" above for how the binary itself is obtained). ~~`action-scripts/`~~ (a Playwright-dependent Node package) was removed, see "History, part 2" above — `visual: true` now runs on the Rust toolchain alone.
+- Depended on by: [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml) — the only caller so far, referencing this action via `uses: ./` within this same repository. External repositories calling it via `uses: MinamiyamaKotaro/exceldiff@<tag>` is an intended future use, but no such external caller exists yet. [`.github/workflows/release.yml`](../../.github/workflows/release.yml) — new dependent, publishing `xlsxdiff`'s pre-built binaries to a GitHub Release on a tag push.
 
 ## Error handling policy
 
@@ -179,7 +220,7 @@ A composite action is a YAML definition, not something `cargo test` exercises, s
 
 ## Open questions
 
-1. **Publishing the `cli` crate to crates.io**: this action builds `cli/` from source, and `cli/Cargo.toml`'s `publish = false` is unchanged. Leave it as-is until there's an actual reason to publish (e.g. distributing pre-built binaries to cut a caller's build time — [Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)/[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)).
+1. **Publishing the `cli` crate to crates.io**: this action builds `cli/` from source, and `cli/Cargo.toml`'s `publish = false` is unchanged. Pre-built binary distribution ([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28), see "Pre-built binary distribution" above) ended up shipping via direct GitHub Release assets instead, so `crates.io` publication still isn't needed — [Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)'s assumed reason to publish never materialized. Leave it as-is until some other reason to publish comes up.
 2. **Generalizing inputs/outputs (continued)**: `files`/`comment`/`job-summary`/`max-rows-per-sheet`/`diff-mode`/`visual` inputs and `has-changes`/`changed-files-count` outputs are implemented ([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)). ~~Commit-scoped diffing (`diff-scope`)~~ ([Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43), `commit` mode only): added a `diff-scope` input (`pr` default/as before, or `commit`). `commit` mode enumerates every commit the PR introduces via `git log --reverse base.sha..head.sha` and diffs each against its immediate parent (`<commit>^1`) as its own Markdown subsection — fixing a file added and later modified within the same PR always reporting as `Added` ([the Issue #23 discussion](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)). The `visual: true` grid HTML artifact is also namespaced per commit (see "Visual mode" above). Verified beforehand with a PoC (`poc/issue43-poc/`) and, after implementing, with a local shell-script check — but **an actual GitHub Actions integration check (dogfooding) hasn't happened yet** (see "Test plan" item 5). Still left as follow-up work:
    - A `changed-cells-count` output: `xlsxdiff` currently only emits a Markdown string, with no machine-readable added/modified/deleted count. Needs a `cli/`-side change (e.g. a summary line to stderr like `added=N modified=M deleted=D`) that `action.yml` sums across files.
    - `diff-scope: push` (switching to the immediately-preceding push's `before`/`after`) is still unimplemented. The `pull_request` event's `synchronize`-action payload does carry `before`/`after` fields ([confirmed against octokit/webhooks' JSON Schema](https://github.com/octokit/webhooks)), but other actions like `opened` don't have them — a fallback (e.g. to `base.sha`/`head.sha`) needs its own design and verification.
@@ -188,3 +229,7 @@ A composite action is a YAML definition, not something `cargo test` exercises, s
 3. ~~**Real-world verification from an external repository**~~([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23), resolved): cut a pre-release tag `v0.1.0-rc1` and called it from a separate throwaway repository (`MinamiyamaKotaro/exceldiff-action-verify`) via `uses: MinamiyamaKotaro/exceldiff@v0.1.0-rc1`, confirming checkout → diff computation → PR comment posting worked end-to-end. This test itself caught a real bug: a caller workflow declaring only `permissions: pull-requests: write` (exactly this README's own basic example) silently lost `contents` access, breaking `actions/checkout` (see "A `permissions:` block" above; fixed in PR #45). Self-dogfooding alone (which always writes `contents: write` for `visual: true`) could never have caught this — a concrete case for why external verification isn't optional.
 4. ~~**`xlsx-diff-images` branch growth**~~ (resolved by the Issue #47 redesign): the push-based scheme (commits growing without bound) is retired in favor of artifact uploads (auto-expire after 90 days by default, shorter via `retention-days`), so this risk no longer applies.
 5. ~~**Live GitHub Actions verification of `visual` mode**~~ (resolved, [Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47), [PR #48](https://github.com/MinamiyamaKotaro/exceldiff/pull/48)): a throwaway `.xlsx` fixture, added in a temporary commit, triggered this repo's own `uses: ./` workflow for real ([run 33122403504](https://github.com/MinamiyamaKotaro/exceldiff/actions/runs/33122403504)); confirmed via the GitHub REST API that `actions/upload-artifact@v4` succeeded, the comment carried a working `artifact-url` link, and the artifact itself (`xlsx-diff-screenshots`, id `9666997603`) exists and isn't expired. The fixture was removed afterward (same throwaway-then-delete approach as Issue #23/#24). **Private-repo access was verified separately, after merge**: a new PR on the existing throwaway external verification repo (`MinamiyamaKotaro/exceldiff-action-verify`, private) called this action via `uses:` pinned to the merge commit (`0c4f571`), and the GitHub API confirmed both directions — (a) an unauthenticated request to the `artifact-url` returns HTTP 404 (401 from the API), and (b) an authenticated request with real repo access successfully downloads the zip, containing the expected screenshot PNG. Unlike the old `raw.githubusercontent.com` scheme (broken even for an authorized viewer) and the rejected `uploads.github.com` route (reachable even without authentication), this is direct evidence the new design actually restricts viewing to people with real repository access.
+6. **Pre-built binary distribution's unverified remainder** ([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28), see "Pre-built binary distribution" above): the design was verified with a PoC (`poc/issue28-poc/`) — the download-success path, the checksum-mismatch fallback, and the target-triple resolution logic were all confirmed locally (including against a local `python3 -m http.server` mock). What's still open:
+   - **An actual GitHub Actions integration check — pushing a real tag, letting `release.yml` run, and downloading a real GitHub Release asset**. This will eventually be needed for the same reason items 3 and 5 above give (some bugs only reproduce on a real run, never locally), but cutting a tag/Release is this action's first genuinely public, semi-irreversible action, so its timing (what version number, whether to cut a verification-only pre-release the way `v0.1.0-rc1` was used) is left as a separate decision.
+   - `aarch64-unknown-linux-gnu` (ARM64 Linux) isn't implemented yet — likely needs a cross-linker, and whether `ubuntu-latest` has a generally-available native ARM64 variant needs its own look.
+   - Independent of `changed-cells-count` (item 2 above), whether `release.yml`'s `SHA256SUMS` format/asset naming convention is reusable for that or other future tooling integrations hasn't been considered.

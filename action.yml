@@ -138,26 +138,111 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+    # Issue #28: tries a pre-built release binary first (matching
+    # `github.action_ref` against this repo's own GitHub Releases,
+    # published by .github/workflows/release.yml), falling back to
+    # building from source when no matching release/asset exists —
+    # notably this repo's own `uses: ./` self-dogfooding below (empty
+    # `action_ref`), or a caller pinned to a branch/commit rather than a
+    # release tag. See docs/design/action.md's "事前ビルド済みバイナリ配布"
+    # section and Issue #28's PoC comments for the verified design
+    # (including why the download is attempted unconditionally for any
+    # non-empty ref rather than pre-filtering by a version-shaped regex —
+    # a real bug in an earlier draft that silently skipped this repo's
+    # own documented `@v1`-style major-version-tag usage).
+    - name: Resolve xlsxdiff binary
+      id: resolve_binary
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+        REPO: MinamiyamaKotaro/exceldiff
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        BIN_DIR: ${{ runner.temp }}/xlsxdiff-bin
+      run: |
+        set -euo pipefail
+        mkdir -p "$BIN_DIR"
+
+        # sha256sum (Linux, and Git-for-Windows' Git Bash) vs `shasum -a
+        # 256` (macOS's BSD userland ships no sha256sum at all).
+        sha256_check() {
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c -
+          else
+            shasum -a 256 -c -
+          fi
+        }
+
+        # Maps GitHub Actions' own runner.os/runner.arch context values
+        # to the Rust target triple release.yml names its assets after.
+        case "$RUNNER_OS" in
+          Linux) os_part="unknown-linux-gnu" ;;
+          macOS) os_part="apple-darwin" ;;
+          Windows) os_part="pc-windows-msvc" ;;
+          *) os_part="" ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch_part="x86_64" ;;
+          ARM64) arch_part="aarch64" ;;
+          *) arch_part="" ;;
+        esac
+        target=""
+        [ -n "$os_part" ] && [ -n "$arch_part" ] && target="${arch_part}-${os_part}"
+
+        bin_name="xlsxdiff"
+        [ "$RUNNER_OS" = "Windows" ] && bin_name="xlsxdiff.exe"
+
+        found=false
+
+        if [ -n "$ACTION_REF" ] && [ -n "$target" ]; then
+          archive="xlsxdiff-${ACTION_REF}-${target}.tar.gz"
+          base_url="https://github.com/${REPO}/releases/download/${ACTION_REF}"
+
+          echo "Attempting prebuilt binary: ${base_url}/${archive}"
+          if curl -fsSL --connect-timeout 5 --max-time 20 "${base_url}/${archive}" -o "$BIN_DIR/${archive}" \
+             && curl -fsSL --connect-timeout 5 --max-time 20 "${base_url}/SHA256SUMS" -o "$BIN_DIR/SHA256SUMS"; then
+            if (cd "$BIN_DIR" && grep " ${archive}\$" SHA256SUMS | sha256_check); then
+              tar -xzf "$BIN_DIR/${archive}" -C "$BIN_DIR"
+              chmod +x "$BIN_DIR/$bin_name"
+              found=true
+              echo "Using prebuilt binary for ${target}."
+            else
+              echo "::warning::Checksum mismatch for ${archive}; falling back to building from source."
+            fi
+          else
+            echo "No prebuilt binary for ${ACTION_REF}/${target} (or download failed); falling back to building from source."
+          fi
+        else
+          echo "Local checkout or unsupported platform (${RUNNER_OS}/${RUNNER_ARCH}); building from source."
+        fi
+
+        echo "found=$found" >> "$GITHUB_OUTPUT"
+        echo "bin-path=$BIN_DIR/$bin_name" >> "$GITHUB_OUTPUT"
 
     # `workspaces` must point at this action's own checkout
     # (`github.action_path`), not the default `.` (the caller's
     # checkout) — see docs/design/action.md point 2.
+    - name: Install Rust toolchain
+      if: steps.resolve_binary.outputs.found != 'true'
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Cache cargo build
+      if: steps.resolve_binary.outputs.found != 'true'
       uses: Swatinem/rust-cache@v2
       with:
         workspaces: "${{ github.action_path }} -> target"
 
     # `--manifest-path` makes Cargo resolve its target dir relative to
     # this action's own workspace root (`github.action_path`), not the
-    # caller's `$PWD` — see docs/design/action.md point 1. The build
-    # step below reads the binary back out of that same location.
-    - name: Build xlsx diff CLI
+    # caller's `$PWD` — see docs/design/action.md point 1.
+    - name: Build xlsx diff CLI (source fallback)
+      id: build_fallback
+      if: steps.resolve_binary.outputs.found != 'true'
       shell: bash
       run: |
         cargo build --release -p xlsxdiff \
           --manifest-path "${{ github.action_path }}/Cargo.toml"
+        echo "bin-path=${{ github.action_path }}/target/release/xlsxdiff" >> "$GITHUB_OUTPUT"
 
     - name: Compute diffs for changed files
       id: diff
@@ -165,7 +250,7 @@ runs:
       env:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        BIN: ${{ github.action_path }}/target/release/xlsxdiff
+        BIN: ${{ steps.resolve_binary.outputs.found == 'true' && steps.resolve_binary.outputs.bin-path || steps.build_fallback.outputs.bin-path }}
         OUT: ${{ runner.temp }}/xlsx-diff-comment.md
         FILES: ${{ inputs.files }}
         MAX_ROWS_PER_SHEET: ${{ inputs.max-rows-per-sheet }}
