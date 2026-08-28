@@ -183,6 +183,8 @@ composite action化(P0)は呼び出しのたびに`cargo build`を要求する�
 
 `.github/workflows/release.yml`が`v*`形式のタグpushをトリガーに、`ubuntu-latest`/`macos-latest`(2回、`aarch64-apple-darwin`とクロスビルドの`x86_64-apple-darwin`)/`windows-latest`の4ジョブをマトリクスビルドし、各ターゲットのバイナリを`xlsxdiff-{tag}-{target}.tar.gz`として`tar`で固めた上で(Windows含め全ターゲット`.tar.gz`に統一——`windows-latest`にも動く`tar`があるため`.zip`/`Compress-Archive`用の別経路は不要と判断)、最後の集約ジョブが全アセットの`SHA256SUMS`を生成し`gh release create`でGitHub Releaseへ添付する。
 
+`v1`のような裸のメジャーバージョンタグ(README自身が案内する呼び出し例`uses: MinamiyamaKotaro/exceldiff@v1`に対応)は*移動する*ポインタとして扱う——`actions/checkout`等の人気Actionが踏襲する慣行に倣い、新しい`v1.x.y`をリリースするたびに`v1`タグを同じコミットへforce-moveし、pushし直す。この再pushは`release.yml`を再度トリガーするが、`gh release create`はそのタグに既にReleaseが存在すると失敗するため、「Create GitHub Release」ステップはまず`gh release view "$TAG"`で既存Releaseの有無を確認し、存在すれば`gh release delete "$TAG" --yes`(gitタグ自体は`--cleanup-tag`を渡さない限り削除されない)でRelease*オブジェクト*だけを削除してから作り直す、という冪等な手順にしてある。タグ形状が`^v[0-9]+$`(裸のメジャーバージョン)にマッチする場合は`--generate-notes`も使わない——「直前のリリースとの差分」を自動生成する`--generate-notes`は、繰り返し作り直される`v1`のようなタグに対しては毎回内容が変わる紛らわしい差分になるため、固定文言の`--notes`に置き換えている。
+
 `xlsxdiff`の依存グラフ(`cargo tree`で確認済み: `quick-xml`/`serde`/`serde_json`/`thiserror`/`zip`——`zip`の`deflate`featureも`flate2`→`zlib-rs`という純Rust実装で、Cのzlibを要求しない)にはC/ネイティブ依存が一切無い(`exceldiff`のオプション機能`diff-storage`が使う`rusqlite`の`bundled`(C製SQLite同梱)featureは、`cli/Cargo.toml`が`exceldiff = { path = ".." }`とfeature指定なしで依存しているため`xlsxdiff`バイナリには含まれない)。そのため各ターゲットは対応するOSのGitHub-hostedランナー上でネイティブに`cargo build --release --target <トリプル>`するだけでビルドでき、`cross`やDockerは一切不要——実際にこのマシン(arm64 macOS)からmacOSの別アーキテクチャ(x86_64)へのクロスビルドが7秒で成功することも確認済み。
 
 対応ターゲット(優先度順):
