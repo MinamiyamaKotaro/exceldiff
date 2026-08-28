@@ -195,9 +195,12 @@ composite action化(P0)は呼び出しのたびに`cargo build`を要求する�
 | `x86_64-pc-windows-msvc` | P1 | `windows-latest` |
 | `aarch64-unknown-linux-gnu` | P2(未実装) | クロスリンカが必要になる見込みで今回のスコープ外——下記「未決事項」参照 |
 
-### 未検証の部分
+### 実機検証(`v0.14.0-rc1`)
 
-このPoC・実装はいずれも(a) 実際の`curl`ダウンロード成功パスをローカルの簡易HTTPサーバー(`python3 -m http.server`)で模した`.tar.gz`+`SHA256SUMS`に対して検証(展開・`chmod +x`後のバイナリが実際に動作することまで確認)、(b) チェックサム不一致時に正しくフォールバックすることを、破損させたアーカイブに対して検証、(c) `runner.os`/`runner.arch`の全組み合わせに対するターゲットトリプル解決ロジックの検証、まではローカルで実施済み。しかし**実際にタグをpushして`release.yml`を走らせ、本物のGitHub Releaseアセットに対してダウンロード成功パスを実機検証することはまだ行っていない**——タグ・Releaseの作成は公開・準不可逆な操作のため、実施タイミングは別途判断する(下記「未決事項」参照)。
+ローカルでの検証((a) 簡易HTTPサーバーでのダウンロード成功パスのモック、(b) チェックサム不一致時のフォールバック、(c) `runner.os`/`runner.arch`全組み合わせのターゲットトリプル解決)に続き、検証専用プレリリースタグ`v0.14.0-rc1`を実際に切って`release.yml`を走らせ、以下を実機で確認した(詳細は下記「未決事項」項目6):
+
+- `release.yml`が4ターゲットすべてのビルド・`SHA256SUMS`込みのGitHub Release公開に成功。ローカルから実際に`curl`でアセットを取得しチェックサム検証(`OK`)・展開したところ、本物のELF実行ファイルであることを確認。
+- `action.yml`側のダウンロード成功パスは、既存の使い捨て外部リポジトリ(`MinamiyamaKotaro/exceldiff-action-verify`)から`uses: MinamiyamaKotaro/exceldiff@v0.14.0-rc1`で呼び出して確認——ジョブログ上、`dtolnay/rust-toolchain`/`Swatinem/rust-cache`/`cargo build`のいずれも一切実行されず、「Resolve xlsxdiff binary」の`curl`ダウンロード+チェックサム検証だけでバイナリが解決され(`found=true`)、そのままコメント投稿・grid artifact添付まで正常完了(checkout開始からコメント投稿ステップ開始まで約6秒)。
 
 ## 依存関係
 
@@ -229,7 +232,8 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 3. ~~**外部リポジトリからの実地検証**~~([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)、解決済み): プレリリースタグ`v0.1.0-rc1`を切り、別リポジトリ(throwaway、`MinamiyamaKotaro/exceldiff-action-verify`)から`uses: MinamiyamaKotaro/exceldiff@v0.1.0-rc1`で実際に呼び出し、checkout→差分計算→PRコメント投稿までend-to-endで成功を確認した。この検証自体が実際にバグを発見した——README基本例どおり`permissions: pull-requests: write`のみを書いた呼び出し元では`contents`が黙って`none`になり`actions/checkout`が失敗する問題(上記「`permissions:`ブロック」参照、修正はPR #45)。セルフドッグフーディング(常に`visual: true`で`contents: write`を書く)だけでは決して発見できなかった不具合であり、外部からの実地検証を省略できない実例になった。
 4. ~~**`xlsx-diff-images`ブランチの肥大化**~~(Issue #47の設計変更により解消): pushベース方式(コミットが無期限に増え続ける)自体を廃止し、artifactアップロード(90日で自動失効、`retention-days`で短縮も可能)へ置き換えたため、このリスクは前提ごと無くなった。
 5. ~~**`visual`モードのGitHub Actions実機検証**~~([Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)、[PR #48](https://github.com/MinamiyamaKotaro/exceldiff/pull/48)で解決済み): 使い捨ての`.xlsx`フィクスチャを一時的に追加するコミットで本リポジトリ自身の`uses: ./`ワークフローを実際にトリガーし([実行33122403504](https://github.com/MinamiyamaKotaro/exceldiff/actions/runs/33122403504))、`actions/upload-artifact@v4`のアップロード成功・PRコメントへの`artifact-url`リンク掲載・そのartifact自体の実在(`xlsx-diff-screenshots`、id `9666997603`、期限切れでない)をGitHub REST APIで確認した。検証用フィクスチャは確認後削除済み(Issue #23/#24と同じ手順)。**プライベートリポジトリでの検証も追加で実施済み**: マージ後、既存の使い捨て外部検証リポジトリ(`MinamiyamaKotaro/exceldiff-action-verify`、非公開)の新規PRから、マージコミット(`0c4f571`)を指す`uses:`で本actionを呼び出し、実際にコメント・artifactが生成されることを確認した上で、(a) 認証なしでの`artifact-url`アクセスがHTTP 404(APIは401)になり閲覧をブロックされること、(b) 権限を持つ側(オーナー自身のトークン)からは実際にzipをダウンロードでき、中身が期待通りのスクリーンショットPNGであることの両方をGitHub APIで確認した——旧`raw.githubusercontent.com`方式(閲覧権限があっても見えない)、および不採用にした`uploads.github.com`方式(認証なしでも到達できてしまう)のどちらとも異なり、意図通り「リポジトリ権限のある人だけが見える」が実現できていることの直接証拠。
-6. **事前ビルド済みバイナリ配布の実機未検証部分**([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)、上記「事前ビルド済みバイナリ配布」参照): 設計はPoC(`poc/issue28-poc/`)で検証し、ダウンロード成功パス・チェックサム不一致時のフォールバック・ターゲットトリプル解決ロジックはいずれもローカル(簡易HTTPサーバーでのモック含む)で確認済みだが、以下は未着手のまま残っている:
-   - **実際のタグpush→`release.yml`実行→本物のGitHub Releaseアセットに対する`action.yml`側ダウンロードの実機検証**。項目3・5と同じ理由(ローカル検証だけでは見つからない不具合がある)でいずれ必要になるが、タグ・Releaseの作成は本actionにとって初めての公開・準不可逆な操作であり、実施タイミング(バージョン番号の付け方、`v0.1.0-rc1`と同様の検証専用プレリリースを切るか等)は別途判断する。
+6. ~~**事前ビルド済みバイナリ配布のGitHub Actions実機検証**~~([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)、解決済み): 検証専用プレリリースタグ`v0.14.0-rc1`を切り、`release.yml`が実際に4ターゲット(`x86_64-unknown-linux-gnu`/`aarch64-apple-darwin`/`x86_64-apple-darwin`/`x86_64-pc-windows-msvc`)すべてのビルド・GitHub Releaseへの`SHA256SUMS`込みアセット公開に成功することを確認した。ローカルからも実際に`curl`でこのRelease アセットをダウンロードし、チェックサム検証(`OK`)・展開・生成されたLinuxバイナリが本物のELF実行ファイルであることを確認済み。**`action.yml`側のダウンロード成功パスの実機検証**は、本リポジトリ自身の`uses: ./`では`action_ref`が常に空でこの経路を通れないため、Issue #23と同じ既存の使い捨て外部リポジトリ(`MinamiyamaKotaro/exceldiff-action-verify`)から`uses: MinamiyamaKotaro/exceldiff@v0.14.0-rc1`(`visual: true`込み)で実際に呼び出して行った——ジョブログを直接確認したところ、`dtolnay/rust-toolchain`・`Swatinem/rust-cache`・`cargo build`のいずれのグループも一切現れず、「Resolve xlsxdiff binary」ステップの`curl`ダウンロード+チェックサム検証(`found=true`)だけでバイナリが解決され、そのままコメント投稿・grid artifact添付まで正常に完了した(checkout開始からコメント投稿ステップ開始まで約6秒)。検証用PR・ブランチは確認後クローズ・削除済み。`v0.14.0-rc1`タグ・Releaseは`v0.1.0-rc1`と同様、検証の記録として残す。
+7. **事前ビルド済みバイナリ配布の残課題**([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)): 上記項目6の実機検証で解決しなかった部分:
    - `aarch64-unknown-linux-gnu`(ARM64 Linux)ターゲットは未実装。クロスリンカが必要になる可能性が高く、`ubuntu-latest`にネイティブARM64版が一般提供されているかも含め別途調査が必要。
    - `changed-cells-count`output(上記項目2参照)とは独立した課題だが、`release.yml`が生成する`SHA256SUMS`のフォーマット・アセット命名規則が将来この手のoutputやその他のツール連携に流用可能かは未検討。
+   - `v0.14.0-rc1`は検証目的のプレリリースであり、本actionにとって初めての「正式な」安定版タグ(例: `v1`)をいつ・どのバージョン番号で切るかは別途判断が必要。
