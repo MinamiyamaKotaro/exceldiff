@@ -1,4 +1,4 @@
-# `.xlsx` Parser Library Requirements Specification
+# `.xlsx` Diff Tool Requirements Specification
 
 *[Japanese](requirements.md)*
 
@@ -8,58 +8,68 @@ Rust
 
 ## 1. Project Overview
 
-Develop a lightweight, high-performance `.xlsx` (OOXML) parser library as a replacement for existing `.xlsx` parsers. The goal is to process and analyze — without loading a full in-memory grid — the shapes that come up constantly in Japanese business systems: "grid-paper Excel" (an extreme number of rows/columns, sometimes reaching millions of cells) and heavy use of merged cells, and to return the result as a JSON format that's easy to consume from a frontend or another system.
+`.xlsx` files routinely end up under git management and PR review in Japanese business systems, but `git diff` returns nothing meaningful for them — `.xlsx` is a collection of ZIP-compressed XML parts, so even a single-cell edit can reorder the shared-string table and change the entire ZIP compression output, leaving git with nothing but an opaque binary diff.
 
-## 2. System Architecture and Processing Pipeline
+This project closes that gap: it parses the before/after `.xlsx` files into two `Workbook`s, diffs them cell by cell (added/modified/deleted), and consistently delivers the result — as Markdown text or an Excel-like HTML grid view — through a library, a CLI, and a GitHub Action, all summarized into a PR comment. The target is the shapes that come up constantly in Japanese business systems: "grid-paper Excel" (sheets with an extreme number of rows/columns) and files that make heavy use of merged cells.
 
-The parser operates as a one-directional data processing pipeline made up of the following 5 phases.
+## 2. Relationship to the Underlying Parser
 
-### Phase 1: Relationship Resolution and Resource Disposal (Expand → Discard)
+This project's OOXML parsing (ZIP extraction, sanitization, streaming parse, shared-string/style resolution, merged-cell resolution) is built on the same design and implementation as the sister project [`xlsxparser`](https://github.com/MinamiyamaKotaro/xlsxparser). The detailed requirements for parsing itself (the 5-phase pipeline, sparse-matrix memory optimization, transparent merged-cell access, etc.) live in `xlsxparser`'s own requirements specification — this document defines only what's specific to this project, built on top of that: diff detection, output, and distribution.
 
-* **Processing:** Expand the `_rels` files (e.g. `xl/_rels/workbook.xml.rels`) from the ZIP archive and build, in memory, a routing map linking each sheet ID (`r:id`) to its part's file path (e.g. `worksheets/sheet1.xml`).
-* **Mandatory requirement:** To improve memory efficiency and prevent temporary data from lingering, **the expanded `_rels` scratch data and any related resources must be deleted/discarded from memory (or the filesystem) immediately once the routing map has been built**.
+The parser's low memory footprint and speed matter to this project for more than just being a lightweight parser in its own right — **they translate directly into the diff engine's own speed and accuracy**. The time and memory complexity of comparing two versions of a cell-heavy sheet depends heavily on how sparse the data structure the parser hands back actually is.
 
-### Phase 2: Sanitization (Rejecting Malicious Injection)
+## 3. Diff Engine Requirements
 
-* **Processing:** Assume the incoming file's safety is not guaranteed, and interpose the following security mechanisms as a layer before any content is trusted.
-* **Requirements:**
-  * **Zip countermeasures:** Detect and block Zip Bombs (memory-exhaustion attacks via highly compressed files) and path traversal (Zip Slip) during decompression.
-  * **XXE countermeasures:** Disable external entity expansion during XML parsing, to prevent unauthorized local file reference.
+### 3.1 Cell-Level Diff Detection
 
-### Phase 3: Streaming Parse and Boundary Definition (Paging)
+- Compare two `Workbook`s (before/after) and, per sheet, detect added, modified, and deleted cells.
+- Plain coordinate-based comparison (matching the same `(row, col)` on both sides) is the baseline strategy.
 
-* **Processing:** To prevent memory exhaustion, never expand the target sheet's (`sheetX.xml`) full DOM into memory.
-* **Requirements:** Use an event-driven (SAX-style) parser, treating each `<row>` inside `<sheetData>` as a processing boundary. Once one row's worth of data has been read and retained (as described below), discard that row's XML nodes.
+### 3.2 Row/Column Alignment Detection (Avoiding False Positives)
 
-### Phase 4: Analysis and Deferred Resolution
+- Coordinate-based comparison alone means a single row or column inserted partway through a sheet shifts every subsequent cell's coordinates, falsely reporting all of them as modified.
+- Row-alignment and column-alignment detection identify inserted/deleted rows and columns from content-similarity, so cells that didn't actually change aren't reported as `Modified`.
+- A "best-effort" mode — auto-selecting whichever of coordinate/row-aligned/column-aligned comparison reports the fewest changes — is the default, with a switch to plain coordinate comparison (skipping alignment detection) also available.
 
-* **Processing:** Convert and combine the collected raw data into a meaningful data structure.
-* **Requirements:**
-  * **Shared string / style resolution:** When a cell's value is `t="s"` (a shared-string index), look it up against the retained `SharedStringTable` and assign the actual string data.
-  * **Deferred merged-cell resolution:** After the streaming parse completes, read the `<mergeCells>` element that appears near the end of the sheet. Cross-reference the list of merged ranges (e.g. `A1:C3`) against the cell data already collected to establish merge state.
+### 3.3 Change Kinds Covered
 
-### Phase 5: JSON Generation (Return)
+Beyond cell values, diff detection also covers:
 
-* **Processing:** Serialize the fully analyzed and resolved data model into JSON.
-* **Requirements:** To make rendering easy on a frontend, return structured JSON with attributes such as `row_span`/`col_span` attached.
+- Cell styling (font, alignment, number format, fill color, borders)
+- Merged-cell ranges and state
+- Embedded images (anchor position, hyperlink)
+- Cell hyperlinks
+- Column width / row height
+- Sheet visibility (visible/hidden/very-hidden)
 
-## 3. Core Functional Requirements (Business-System-Specific Requirements)
+## 4. Output Format Requirements
 
-### 3.1 Memory Optimization via Sparse Matrix (Grid-Paper Excel Countermeasure)
+### 4.1 Markdown Text Diff (for GitHub PR comments)
 
-* Allocating data as a 2D array (`rows x columns`) is prohibited.
-* Only cells that hold data or formatting are kept, in a hash map (e.g. `HashMap`) keyed by coordinate (e.g. `row: 1, col: 1`).
-* Blank cells never get an in-memory instance, and are also excluded from JSON output (or, where necessary, emitted as a minimal `null`).
+- Output as GitHub-Flavored Markdown, pastable directly into a PR comment.
+- Contains no decorative HTML/CSS at all, so nothing is lost when it passes through GitHub's comment sanitizer.
+- The number of cell-change hunks rendered per sheet must be cappable — so one enormous change doesn't blow up the comment itself.
 
-### 3.2 Transparent Access Support for Merged Cells
+### 4.2 Excel-Like Grid View (HTML)
 
-* For a merged cell (e.g. `A1:C3`), account for access not only to the origin cell holding the real data (`A1`), but also to the virtual cell coordinates contained within the merged range (`B1`, `C2`, etc.).
-* During the analysis phase, internally map an "alias reference" from each virtual cell to the origin cell (`A1`), so that whichever coordinate is requested, the correct merged value and merge metadata are returned.
+- For each changed sheet, generate an Excel-like grid as HTML, with Before and After laid out side by side.
+- Rendered as real HTML rather than a screenshot image, so large sheets don't get shrunk into illegibility — the result scrolls and zooms like any other web page in a browser.
 
-## 4. Primary OOXML Spec Files Handled
+## 5. Distribution/Packaging Requirements
 
-* `[Content_Types].xml`: MIME type definitions for each part
-* `xl/workbook.xml`: sheet composition definitions
-* `xl/sharedStrings.xml`: centralized string data (must honor `xml:space="preserve"`)
-* `xl/styles.xml`: cell formatting/style definitions
-* `xl/worksheets/sheetX.xml`: a sheet's actual data (includes `<sheetData>`, `<mergeCells>`, etc.)
+### 5.1 CLI
+
+- Given one changed file's git status (added/modified/deleted) and the actual before/after file paths, write that file's diff to stdout as a Markdown string.
+- One file's parse error must not stop the rest of the files' diffs from being shown — the error itself is emitted as part of the diff output.
+
+### 5.2 GitHub Action
+
+- For every `.xlsx` file a PR changes, automatically post (or update) a single PR comment summarizing the above CLI's output for all of them.
+- Let the caller customize which `.xlsx` files are targeted, whether to post a comment, the per-sheet display cap, and the diff strategy (plain coordinate vs. best-effort auto).
+- Beyond building from source on every invocation, leave room for a faster path via downloading a pre-built binary.
+- Beyond the PR's cumulative diff (the default), allow switching to a per-commit breakdown of the diffs that make up the PR.
+
+## 6. Security Requirements
+
+- Assume the incoming `.xlsx` is untrusted; the parser's own Zip Bomb/Zip Slip/XXE countermeasures are inherited as-is during parsing.
+- A cell's string value (including a formula's computed result string) passes through unescaped at every stage of the diff output — safe for JSON/Markdown output, but a caller that re-emits the diff result into CSV or another spreadsheet format is responsible for its own formula-injection countermeasures.
