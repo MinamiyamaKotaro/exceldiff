@@ -102,6 +102,20 @@ inputs:
       alignment detection — see docs/design/action.md for the tradeoff.
     required: false
     default: 'auto'
+  diff-scope:
+    description: >-
+      `pr` (default) diffs the PR's cumulative `base.sha`..`head.sha` as
+      one Markdown section per changed file, same as always. `commit`
+      instead walks every commit the PR introduces (in order) and renders
+      one subsection per commit, diffing each commit against its
+      immediate parent — so a file added in one commit and then modified
+      in a later commit of the same PR shows both instead of only a
+      final "Added" (Issue #23, Issue #43). `visual: true`'s grid HTML
+      artifact is namespaced by commit in this mode too, so each
+      commit's rendering stays separately downloadable rather than the
+      later commit's grid silently overwriting the earlier one's.
+    required: false
+    default: 'pr'
   visual:
     description: >-
       Also render an Excel-like Before/After grid view for each changed
@@ -156,11 +170,24 @@ runs:
         FILES: ${{ inputs.files }}
         MAX_ROWS_PER_SHEET: ${{ inputs.max-rows-per-sheet }}
         DIFF_MODE: ${{ inputs.diff-mode }}
+        DIFF_SCOPE: ${{ inputs.diff-scope }}
         VISUAL: ${{ inputs.visual }}
         VISUALS_DIR: ${{ runner.temp }}/xlsx-diff-visuals
         VISUALS_LIST: ${{ runner.temp }}/xlsx-diff-visuals-list.tsv
       run: |
         set -euo pipefail
+
+        # Fails fast on a typo'd diff-scope rather than silently falling
+        # back to "pr" behavior later — the branch below only ever checks
+        # for "commit", so any other unexpected value would otherwise run
+        # to completion having quietly ignored what was actually asked for.
+        case "$DIFF_SCOPE" in
+          pr|commit) ;;
+          *)
+            echo "::error::diff-scope must be 'pr' or 'commit', got '${DIFF_SCOPE}'" >&2
+            exit 1
+            ;;
+        esac
 
         {
           echo "<!-- xlsx-diff-comment -->"
@@ -179,9 +206,99 @@ runs:
           printf '%s' "$1" | tr -c '[:alnum:]._-' '_'
         }
 
+        # Diffs one (status, path) pair between $3/$4 revisions and
+        # appends its Markdown section to $OUT, exactly like the old
+        # inline loop body did. $5 is a commit label (short SHA, or ""
+        # in `diff-scope: pr` mode) — threaded into both the grid HTML's
+        # destination path and $VISUALS_LIST's new leading column so a
+        # file touched by more than one commit gets one grid page *per
+        # commit* instead of the later commit's page silently
+        # overwriting the earlier one's at the same path (Issue #43).
+        process_one_file() {
+          local file_status="$1" path="$2" base_sha="$3" head_sha="$4" commit_label="$5"
+          [ -z "$path" ] && return 0
+
+          local base_file="" head_file=""
+          case "$file_status" in
+            A)
+              head_file=$(mktemp)
+              git show "$head_sha:$path" > "$head_file"
+              ;;
+            D)
+              base_file=$(mktemp)
+              git show "$base_sha:$path" > "$base_file"
+              ;;
+            M)
+              base_file=$(mktemp)
+              head_file=$(mktemp)
+              git show "$base_sha:$path" > "$base_file"
+              git show "$head_sha:$path" > "$head_file"
+              ;;
+            *)
+              return 0
+              ;;
+          esac
+
+          local bin_args=(--max-rows-per-sheet "$MAX_ROWS_PER_SHEET" --diff-mode "$DIFF_MODE")
+          local grid_dir=""
+          if [ "$VISUAL" = "true" ]; then
+            grid_dir=$(mktemp -d)
+            bin_args+=(--grid-html-dir "$grid_dir")
+          fi
+
+          "$BIN" "${bin_args[@]}" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
+
+          # xlsxdiff --grid-html-dir writes every changed sheet's
+          # fragment into one combined, self-contained page
+          # (grid.html — inline <style>, no external assets, see
+          # grid.rs's wrap_grid_page) plus manifest.tsv listing each
+          # sheet's name against that same path. Collected under
+          # $VISUALS_DIR rather than embedded inline — see the
+          # "Preconditions" comment at the top of this file for why —
+          # and shipped in one batch as a single workflow artifact once
+          # every changed file has been processed (below). A copy
+          # failure is reported to stderr and skipped — never fatal to
+          # the rest of the comment, the same "one file's problem
+          # doesn't stop the others" policy the text diff above already
+          # follows for a parse error. `commit_label` (empty in `pr`
+          # mode) namespaces the destination under its own subdirectory
+          # so per-commit pages for the same path never collide.
+          if [ "$VISUAL" = "true" ] && [ -s "$grid_dir/manifest.tsv" ]; then
+            local html_path dest_rel dest_abs sheet_names
+            html_path=$(cut -f2 "$grid_dir/manifest.tsv" | head -n1)
+            if [ -n "$commit_label" ]; then
+              dest_rel="${commit_label}/$(sanitize "$path").html"
+            else
+              dest_rel="$(sanitize "$path").html"
+            fi
+            dest_abs="$VISUALS_DIR/$dest_rel"
+            mkdir -p "$(dirname "$dest_abs")"
+            if cp "$html_path" "$dest_abs"; then
+              sheet_names=$(cut -f1 "$grid_dir/manifest.tsv" | paste -sd, -)
+              # "-" (never a real short SHA) rather than "" for a
+              # commit-less (`pr` mode) row: tab counts as IFS
+              # *whitespace* to `read`, which silently strips/collapses
+              # empty fields at a line's edges — an empty leading column
+              # here would shift every field left by one downstream.
+              printf '%s\t%s\t%s\n' "${commit_label:--}" "$path" "$sheet_names" >> "$VISUALS_LIST"
+            else
+              echo "warning: failed to collect grid HTML for $path" >&2
+            fi
+          fi
+          [ -n "$grid_dir" ] && rm -rf "$grid_dir"
+
+          [ -n "$base_file" ] && rm -f "$base_file"
+          [ -n "$head_file" ] && rm -f "$head_file"
+        }
+
         # --no-renames: a rename shows up as a plain Delete + Add pair
         # instead of an "R###" status line, which keeps the status
-        # parsing below to exactly A/M/D.
+        # parsing below to exactly A/M/D. Computed unconditionally
+        # (regardless of $DIFF_SCOPE) since has-changes/changed-files-count
+        # always reflect the PR's cumulative diff — `diff-scope: commit`
+        # only changes how the comment *body* is broken into sections, not
+        # what these two outputs report, so callers reading them see no
+        # behavior change either way.
         changed=$(git diff --no-renames --name-status "$BASE_SHA" "$HEAD_SHA" -- "$FILES" || true)
 
         if [ -z "$changed" ]; then
@@ -192,70 +309,48 @@ runs:
           echo "has-changes=true" >> "$GITHUB_OUTPUT"
           echo "changed-files-count=$(wc -l <<< "$changed" | tr -d ' ')" >> "$GITHUB_OUTPUT"
 
-          while IFS=$'\t' read -r file_status path; do
-            [ -z "$path" ] && continue
-
-            base_file=""
-            head_file=""
-            case "$file_status" in
-              A)
-                head_file=$(mktemp)
-                git show "$HEAD_SHA:$path" > "$head_file"
-                ;;
-              D)
-                base_file=$(mktemp)
-                git show "$BASE_SHA:$path" > "$base_file"
-                ;;
-              M)
-                base_file=$(mktemp)
-                head_file=$(mktemp)
-                git show "$BASE_SHA:$path" > "$base_file"
-                git show "$HEAD_SHA:$path" > "$head_file"
-                ;;
-              *)
-                continue
-                ;;
-            esac
-
-            bin_args=(--max-rows-per-sheet "$MAX_ROWS_PER_SHEET" --diff-mode "$DIFF_MODE")
-            grid_dir=""
-            if [ "$VISUAL" = "true" ]; then
-              grid_dir=$(mktemp -d)
-              bin_args+=(--grid-html-dir "$grid_dir")
-            fi
-
-            "$BIN" "${bin_args[@]}" "$path" "$file_status" "$base_file" "$head_file" >> "$OUT"
-
-            # xlsxdiff --grid-html-dir writes every changed sheet's
-            # fragment into one combined, self-contained page
-            # (grid.html — inline <style>, no external assets, see
-            # grid.rs's wrap_grid_page) plus manifest.tsv listing each
-            # sheet's name against that same path. Collected under
-            # $VISUALS_DIR rather than embedded inline — see the
-            # "Preconditions" comment at the top of this file for why —
-            # and shipped in one batch as a single workflow artifact once
-            # every changed file has been processed (below). A copy
-            # failure is reported to stderr and skipped — never fatal to
-            # the rest of the comment, the same "one file's problem
-            # doesn't stop the others" policy the text diff above already
-            # follows for a parse error.
-            if [ "$VISUAL" = "true" ] && [ -s "$grid_dir/manifest.tsv" ]; then
-              html_path=$(cut -f2 "$grid_dir/manifest.tsv" | head -n1)
-              dest_rel="$(sanitize "$path").html"
-              dest_abs="$VISUALS_DIR/$dest_rel"
-              mkdir -p "$(dirname "$dest_abs")"
-              if cp "$html_path" "$dest_abs"; then
-                sheet_names=$(cut -f1 "$grid_dir/manifest.tsv" | paste -sd, -)
-                printf '%s\t%s\n' "$path" "$sheet_names" >> "$VISUALS_LIST"
-              else
-                echo "warning: failed to collect grid HTML for $path" >&2
+          if [ "$DIFF_SCOPE" = "commit" ]; then
+            # One subsection per PR commit, each diffed against its own
+            # immediate (first) parent — a merge commit inside the PR's
+            # range is walked the same way `git show <sha>`/GitHub's own
+            # PR "Commits" tab treats it (first-parent diff), so a merge
+            # that carries no .xlsx change of its own naturally produces
+            # an empty/skipped subsection (verified in the Issue #43 PoC).
+            commits=$(git log --reverse --format=%H "$BASE_SHA..$HEAD_SHA")
+            while IFS= read -r sha; do
+              [ -z "$sha" ] && continue
+              # A root commit (no parent) has no "^1" — `git rev-parse`
+              # would fail there and, under `set -e`, abort this whole
+              # step. Falling back to git's well-known empty-tree object
+              # matches how `git show`/`git diff` themselves treat a root
+              # commit, so it diffs cleanly against "nothing" instead.
+              if ! parent=$(git rev-parse "${sha}^1" 2>/dev/null); then
+                parent="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
               fi
-            fi
-            [ -n "$grid_dir" ] && rm -rf "$grid_dir"
+              commit_changed=$(git diff --no-renames --name-status "$parent" "$sha" -- "$FILES" || true)
+              [ -z "$commit_changed" ] && continue
 
-            [ -n "$base_file" ] && rm -f "$base_file"
-            [ -n "$head_file" ] && rm -f "$head_file"
-          done <<< "$changed"
+              # Escaped so a subject containing a lone/unmatched backtick
+              # can't leave an unterminated Markdown code span open,
+              # which would otherwise swallow (and corrupt the rendering
+              # of) everything in the comment written after it.
+              subject=$(git log -1 --format=%s "$sha" | sed 's/`/\\`/g')
+              short="${sha:0:7}"
+              {
+                echo
+                echo "## Commit \`${short}\` — ${subject}"
+                echo
+              } >> "$OUT"
+
+              while IFS=$'\t' read -r file_status path; do
+                process_one_file "$file_status" "$path" "$parent" "$sha" "$short"
+              done <<< "$commit_changed"
+            done <<< "$commits"
+          else
+            while IFS=$'\t' read -r file_status path; do
+              process_one_file "$file_status" "$path" "$BASE_SHA" "$HEAD_SHA" ""
+            done <<< "$changed"
+          fi
         fi
 
         # `read` returns non-zero once the herestring above is exhausted —
@@ -306,7 +401,21 @@ runs:
           echo
           echo "Excel-like grid views (HTML, one page per changed file — download and open in a browser) are attached as a workflow artifact (downloading requires read access to this repository): ${ARTIFACT_URL}"
           echo
-          while IFS=$'\t' read -r path sheet_names; do
+          # $VISUALS_LIST's leading column is a commit label (short SHA)
+          # in `diff-scope: commit` mode, "-" otherwise (see the diff
+          # step's own comment on why not simply ""). A real label gets
+          # grouped under its own subheading (matching the per-commit
+          # sections above them in the comment body); "-" (plain
+          # `diff-scope: pr` mode) falls through to the original flat
+          # list, unchanged.
+          last_commit=""
+          while IFS=$'\t' read -r commit_label path sheet_names; do
+            if [ "$commit_label" != "-" ] && [ "$commit_label" != "$last_commit" ]; then
+              [ -n "$last_commit" ] && echo
+              echo "**Commit \`${commit_label}\`**"
+              echo
+              last_commit="$commit_label"
+            fi
             echo "- ${path} — ${sheet_names}"
           done < "$VISUALS_LIST"
         } >> "$OUT"

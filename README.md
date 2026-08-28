@@ -93,6 +93,7 @@ steps:
 | `job-summary` | bool文字列, `'false'` | `$GITHUB_STEP_SUMMARY` へも書き出すか。forkからのPRなど `pull-requests: write` を付与できない環境では、`comment: false`・`job-summary: true` にすると権限エラーを避けつつ差分を確認できます |
 | `max-rows-per-sheet` | 数値文字列, `'30'` | 1シートあたりに表示するセル変更ハンクの上限数 |
 | `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto`(既定)は座標一致/行アライメント/列アライメントのうち最も変更が少なく報告される方式を自動選択。`coordinate`はアライメント検出をスキップした単純な座標比較を強制します |
+| `diff-scope` | `pr` \| `commit`, `'pr'` | `pr`(既定)はPRの累積差分を1ファイル1セクションとして出力する従来通りの挙動。`commit`はPRが導入した各コミットを直前の親との差分に分解し、コミットごとのサブセクションとして出力します——同一PR内で新規追加したファイルへの修正が常に「Added」としてしか見えない問題を解消します。`visual: true`と併用した場合、グリッドHTMLもコミットごとに別ファイルとしてダウンロードできます |
 | `visual` | bool文字列, `'false'` | 変更のあったシートごとにExcelライクなグリッドのBefore/AfterビューをHTMLページとして生成し、ワークフローのartifactとして添付(コメントにはダウンロードリンクを掲載)するか。追加の`permissions:`は不要 |
 
 ### outputs

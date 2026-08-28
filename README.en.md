@@ -122,6 +122,7 @@ steps:
 | `job-summary` | bool string, `'false'` | also write to `$GITHUB_STEP_SUMMARY`. A caller without `pull-requests: write` (e.g. a fork PR) can set `comment: false`/`job-summary: true` to see the diff without hitting a permission error |
 | `max-rows-per-sheet` | numeric string, `'30'` | caps the number of cell-change hunks rendered per sheet |
 | `diff-mode` | `auto` \| `coordinate`, `'auto'` | `auto` (default) auto-picks whichever of coordinate/row-aligned/column-aligned diffing reports the fewest changes per sheet. `coordinate` forces plain coordinate comparison, skipping alignment detection |
+| `diff-scope` | `pr` \| `commit`, `'pr'` | `pr` (default) diffs the PR's cumulative changes as one section per file, same as always. `commit` instead breaks each commit the PR introduces into its own subsection, diffed against its immediate parent — so a file added and then modified within the same PR shows both instead of only a final "Added". With `visual: true`, the grid HTML is also downloadable separately per commit |
 | `visual` | bool string, `'false'` | render an Excel-like Before/After grid view (HTML) for each changed sheet and attach them to the comment as a downloadable workflow artifact. No extra `permissions:` needed |
 
 ### Outputs
