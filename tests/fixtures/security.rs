@@ -1,5 +1,6 @@
 //! Category 5 (セキュリティ, `tests/fixtures/security/` in Issue #28):
-//! proves the sanitization layer described in `docs/security/design-review.md`
+//! proves the sanitization layer described in xlsxparser's own
+//! `docs/security/design-review.md`
 //! actually stops each attack, rather than merely existing in
 //! `container/sanitize.rs` unit tests that never touch a real archive.
 //!

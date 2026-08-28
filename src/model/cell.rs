@@ -37,7 +37,8 @@ impl CellRef {
     /// propagate an attacker-controlled bound into `Sheet::max_row`/
     /// `max_col` and, from there, into `json.rs`'s `maxRow`/`maxCol`
     /// output — which a downstream consumer might trust to size a dense
-    /// grid (security review `docs/security/code-review.md` Finding 2).
+    /// grid (xlsxparser's own security review
+    /// `docs/security/old/code-review.md` Finding 2).
     pub const MAX_ROW: u32 = 1_048_576;
     pub const MAX_COL: u32 = 16_384;
 
@@ -179,8 +180,9 @@ mod tests {
 
     #[test]
     fn from_a1_rejects_row_or_col_far_beyond_excels_real_maximum() {
-        // Security review docs/security/code-review.md Finding 2: a
-        // coordinate like this parsed successfully before this bound was
+        // xlsxparser's own security review
+        // docs/security/old/code-review.md Finding 2: a coordinate like
+        // this parsed successfully before this bound was
         // added, and its row/col flowed unclamped into Sheet::max_row/
         // max_col and from there into json.rs's maxRow/maxCol output — a
         // downstream consumer trusting those to size a dense grid could be
