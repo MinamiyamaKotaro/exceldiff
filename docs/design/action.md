@@ -8,10 +8,10 @@
 
 ## 責務・スコープ
 
-- Rustツールチェーンのセットアップ・`cli/`(パッケージ`xlsxdiff`)のビルド・変更された`.xlsx`ファイルごとの差分計算・Markdownコメントの投稿(または既存コメントの更新)までを、composite actionの`steps`としてカプセル化する。
+- `xlsxdiff`バイナリの解決(事前ビルド済みリリースの取得、ダウンロードできない場合のみRustツールチェーンのセットアップ+`cli/`ビルドへフォールバック——[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)、下記「事前ビルド済みバイナリ配布」参照)・変更された`.xlsx`ファイルごとの差分計算・Markdownコメントの投稿(または既存コメントの更新)までを、composite actionの`steps`としてカプセル化する。
 - 呼び出し元のワークフローファイルが個々のステップを重複して書く必要をなくす——本リポジトリ自身の`.github/workflows/xlsx-diff.yml`も、この`action.yml`を`uses: ./`で呼び出すことでセルフドッグフーディングする(下記「テスト方針」参照)。
 - `visual: true`の場合、変更のあったシートごとに[`grid.rs`が生成するExcelライクなグリッドHTML](grid.md)ページを収集し、1回のjob実行分をまとめて1つのGitHub Actions artifact(`actions/upload-artifact@v4`)としてアップロードして、そのダウンロードリンクをテキスト差分の下に追記する(下記「ビジュアルモード」参照)。実際にHTMLを収集・公開する処理そのものは[`grid.rs`の責務には含まれていない](grid.md)ため、この配線は本actionが担う。
-- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形・グリッドHTML生成そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)/[`grid_sections_from_paths`](grid.md)と、それを呼び出す[`cli/`](cli.md)の責務)、事前ビルド済みバイナリの配布([Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)の検討事項、P2)、変更セル数の合計を返すoutput(`changed-cells-count`、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み、[Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43)未着手分。下記「未決事項」参照)。コミット単位での差分表示は`diff-scope: commit`として実装済み(下記「inputs / outputs」)。
+- **含まない責務**: `.xlsx`のパース・差分計算・Markdown整形・グリッドHTML生成そのもの(すべて[`exceldiff::diff_file_section_from_paths`](markdown.md)/[`grid_sections_from_paths`](grid.md)と、それを呼び出す[`cli/`](cli.md)の責務)、変更セル数の合計を返すoutput(`changed-cells-count`、[Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24)で後続タスクとして切り出し済み、[Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43)未着手分。下記「未決事項」参照)。コミット単位での差分表示は`diff-scope: commit`として実装済み(下記「inputs / outputs」)。事前ビルド済みバイナリの配布は`release.yml`+`action.yml`の「Resolve xlsxdiff binary」ステップとして実装済み(下記「事前ビルド済みバイナリ配布」参照)。
 
 ## inputs / outputs([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))
 
@@ -70,10 +70,17 @@ outputs:
 runs:
   using: composite
   steps:
-    - dtolnay/rust-toolchain@stable
-    - Swatinem/rust-cache@v2         # workspaces: 本action自身のパス起点
-    - cargo build --release -p xlsxdiff --manifest-path ...
-    - id: diff              # has-changes/changed-files-countは常に累積base..headから$GITHUB_OUTPUTへ書き出す。
+    - id: resolve_binary     # github.action_refが空でなければ対応ターゲットの
+                              # 事前ビルド済みリリースバイナリをダウンロード+チェックサム検証。
+                              # 成功すればfound=true・bin-pathを出力（Issue #28）
+    - if: steps.resolve_binary.outputs.found != 'true'
+      uses: dtolnay/rust-toolchain@stable
+    - if: steps.resolve_binary.outputs.found != 'true'
+      uses: Swatinem/rust-cache@v2   # workspaces: 本action自身のパス起点
+    - id: build_fallback      # found != true の場合のみ: cargo build --release -p xlsxdiff
+      if: steps.resolve_binary.outputs.found != 'true'
+    - id: diff              # BIN = resolve_binary（成功時）または build_fallback（フォールバック時）のbin-path。
+                              # has-changes/changed-files-countは常に累積base..headから$GITHUB_OUTPUTへ書き出す。
                               # diff-scope: pr（既定）なら変更ファイルごとに、
                               # diff-scope: commitならPRの各コミット×そのコミットで変更されたファイルごとに
                               # git show + xlsxdiffを実行しMarkdownを組み立てる（commitモードは
@@ -158,10 +165,44 @@ artifact化そのものは上記の通りPR #48で実装・実機検証(private 
 
 `cli/tests/cli.rs`に、2シートを変更した`.xlsx`ペア(専用ヘルパー`xlsx_zip_multi_sheet`で構築——[[feedback_test_fixture_determinism]]と同じ理由で、既存の無関係な実フィクスチャ2つを流用するのではなく最小構成をその場で組み立てている)を渡し、`manifest.tsv`の2行がどちらも同じ`grid.html`を指すこと、実際に書き出されるHTMLファイルが1つだけであること、そのファイル内に両シート分の`class="sheet"`セクションが含まれることを確認する専用テスト(`grid_html_dir_combines_every_changed_sheet_into_one_page`)を追加した。
 
+## 事前ビルド済みバイナリ配布([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28))
+
+composite action化(P0)は呼び出しのたびに`cargo build`を要求するため低速になる、というのが元々のIssue #28の懸念だった。実装前にPoCで実測したところ(Issue #28のコメント参照)、この懸念は部分的に正しいが原因は想定と異なっていた: `dtolnay/rust-toolchain`は約0.6秒、`Swatinem/rust-cache`のrestoreは約0.4秒とどちらも軽いが、**`Swatinem/rust-cache`は`xlsx-diff.yml`が`on: pull_request`専用(`master`へのpushでは実行されない)なためデフォルトブランチ側にキャッシュの実体が一度も作られず、新規PRの初回実行は必ず`No cache found.`のコールドビルドになる**——実測で`cargo build --release -p xlsxdiff`自体に約14秒かかっていた。
+
+### 設計: ダウンロード優先+ソースビルドへの透過的フォールバック
+
+`action.yml`の最初のステップ「Resolve xlsxdiff binary」が以下を行う(実装は[`action.yml`](../../action.yml)参照):
+
+1. `${{ github.action_ref }}`(呼び出し元の`uses: owner/repo@ref`のref)が空でなく、かつ`runner.os`/`runner.arch`が既知の組み合わせ(後述の対応ターゲット表)であれば、`https://github.com/MinamiyamaKotaro/exceldiff/releases/download/{action_ref}/xlsxdiff-{action_ref}-{target}.tar.gz`とその`SHA256SUMS`を`curl -fsSL`で取得し、チェックサム検証(`sha256sum -c`、macOSには`sha256sum`が無いため`shasum -a 256 -c`にフォールバック)を通ったものだけ展開・`chmod +x`して使う。
+2. 上記のいずれか(ref が空、プラットフォーム非対応、ダウンロード失敗、チェックサム不一致)が起きた場合は、**無条件に**`dtolnay/rust-toolchain`+`Swatinem/rust-cache`+`cargo build --release -p xlsxdiff`という従来のソースビルド経路にフォールバックする(`if: steps.resolve_binary.outputs.found != 'true'`をこれら3ステップに付けるだけで実現——ステップ自体を条件分岐で丸ごとスキップできるのはcomposite actionのステップ単位`if:`ならではの単純さ)。
+3. **`action_ref`の形状による事前フィルタは意図的に行わない**——空文字列でない限り常にダウンロードを試みる。PoC初期案では`^v[0-9]+\.[0-9]+`という正規表現でバージョンタグらしいrefだけに絞り込んでいたが、これは本リポジトリ自身のREADMEが案内する呼び出し例`uses: MinamiyamaKotaro/exceldiff@v1`(メジャーバージョンのみ)にマッチせず、常にダウンロードをスキップしてソースビルドへ回ってしまうという実害のあるバグだった(Issue #28のコメントで実機検証・修正)。`curl`が404で失敗すればそのままフォールバックするため、形状チェック自体が不要という結論に至った。
+
+この設計により、本リポジトリ自身の`.github/workflows/xlsx-diff.yml`(`uses: ./`、`action_ref`が常に空)は**自動的に**従来通りソースビルド経路を通る——事前ビルド済みバイナリへの移行が、この最重要のセルフドッグフーディング経路を壊さないことを保証する仕組みそのものになっている。
+
+### `release.yml`(新設)
+
+`.github/workflows/release.yml`が`v*`形式のタグpushをトリガーに、`ubuntu-latest`/`macos-latest`(2回、`aarch64-apple-darwin`とクロスビルドの`x86_64-apple-darwin`)/`windows-latest`の4ジョブをマトリクスビルドし、各ターゲットのバイナリを`xlsxdiff-{tag}-{target}.tar.gz`として`tar`で固めた上で(Windows含め全ターゲット`.tar.gz`に統一——`windows-latest`にも動く`tar`があるため`.zip`/`Compress-Archive`用の別経路は不要と判断)、最後の集約ジョブが全アセットの`SHA256SUMS`を生成し`gh release create`でGitHub Releaseへ添付する。
+
+`xlsxdiff`の依存グラフ(`cargo tree`で確認済み: `quick-xml`/`serde`/`serde_json`/`thiserror`/`zip`——`zip`の`deflate`featureも`flate2`→`zlib-rs`という純Rust実装で、Cのzlibを要求しない)にはC/ネイティブ依存が一切無い(`exceldiff`のオプション機能`diff-storage`が使う`rusqlite`の`bundled`(C製SQLite同梱)featureは、`cli/Cargo.toml`が`exceldiff = { path = ".." }`とfeature指定なしで依存しているため`xlsxdiff`バイナリには含まれない)。そのため各ターゲットは対応するOSのGitHub-hostedランナー上でネイティブに`cargo build --release --target <トリプル>`するだけでビルドでき、`cross`やDockerは一切不要——実際にこのマシン(arm64 macOS)からmacOSの別アーキテクチャ(x86_64)へのクロスビルドが7秒で成功することも確認済み。
+
+対応ターゲット(優先度順):
+
+| ターゲット | 優先度 | 備考 |
+|---|---|---|
+| `x86_64-unknown-linux-gnu` | P0 | `ubuntu-latest`と一致。composite actionの呼び出し元の大多数を占める |
+| `aarch64-apple-darwin` | P1 | `macos-latest`は現在arm64ホスト |
+| `x86_64-apple-darwin` | P1 | 同一OS内クロスビルド |
+| `x86_64-pc-windows-msvc` | P1 | `windows-latest` |
+| `aarch64-unknown-linux-gnu` | P2(未実装) | クロスリンカが必要になる見込みで今回のスコープ外——下記「未決事項」参照 |
+
+### 未検証の部分
+
+このPoC・実装はいずれも(a) 実際の`curl`ダウンロード成功パスをローカルの簡易HTTPサーバー(`python3 -m http.server`)で模した`.tar.gz`+`SHA256SUMS`に対して検証(展開・`chmod +x`後のバイナリが実際に動作することまで確認)、(b) チェックサム不一致時に正しくフォールバックすることを、破損させたアーカイブに対して検証、(c) `runner.os`/`runner.arch`の全組み合わせに対するターゲットトリプル解決ロジックの検証、まではローカルで実施済み。しかし**実際にタグをpushして`release.yml`を走らせ、本物のGitHub Releaseアセットに対してダウンロード成功パスを実機検証することはまだ行っていない**——タグ・Releaseの作成は公開・準不可逆な操作のため、実施タイミングは別途判断する(下記「未決事項」参照)。
+
 ## 依存関係
 
-- 依存先: [`cli/`](cli.md)(`cargo build -p xlsxdiff`でビルドし、`xlsxdiff`バイナリを1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。`visual: true`時は`--grid-html-dir`も渡す。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない)。~~`action-scripts/`~~(Playwright依存のNodeパッケージ)は上記「変更履歴その2」の通り削除済み——`visual: true`もRustツールチェーンのみで完結する。
-- 依存元: [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)(本リポジトリ自身が`uses: ./`で参照する唯一の呼び出し元。将来、外部リポジトリが`uses: MinamiyamaKotaro/exceldiff@<tag>`で参照することも想定するが、現時点でそのような外部呼び出し元は存在しない)
+- 依存先: [`cli/`](cli.md)(1PR差分ファイルにつき1回、`--max-rows-per-sheet`/`--diff-mode`フラグ付きで起動する。`visual: true`時は`--grid-html-dir`も渡す。位置引数側の契約——`<display_path> <A|M|D> [base_file] [head_file]`——は変更しない。バイナリの入手経路は上記「事前ビルド済みバイナリ配布」参照)。~~`action-scripts/`~~(Playwright依存のNodeパッケージ)は上記「変更履歴その2」の通り削除済み——`visual: true`もRustツールチェーンのみで完結する。
+- 依存元: [`.github/workflows/xlsx-diff.yml`](../../.github/workflows/xlsx-diff.yml)(本リポジトリ自身が`uses: ./`で参照する唯一の呼び出し元。将来、外部リポジトリが`uses: MinamiyamaKotaro/exceldiff@<tag>`で参照することも想定するが、現時点でそのような外部呼び出し元は存在しない)、[`.github/workflows/release.yml`](../../.github/workflows/release.yml)(タグpushで`xlsxdiff`のビルド済みバイナリをGitHub Releaseへ公開する、新設の依存元)
 
 ## エラー処理方針
 
@@ -179,7 +220,7 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 
 ## 未決事項 / オープンクエスチョン
 
-1. **`cli`クレートの`crates.io`公開**: 本actionは`cli/`をソースからビルドする方式を採用しており、`cli/Cargo.toml`の`publish = false`は変更していない。公開する実利(例: 呼び出し元でのビルド時間短縮のため事前ビルド済みバイナリを配布する、[Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)・[Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28))が生じるまでは現状維持とする。
+1. **`cli`クレートの`crates.io`公開**: 本actionは`cli/`をソースからビルドする方式を採用しており、`cli/Cargo.toml`の`publish = false`は変更していない。事前ビルド済みバイナリ配布([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)、下記「事前ビルド済みバイナリ配布」参照)はGitHub Releaseのアセットとして直接配布する方式で実現したため、`crates.io`公開自体は依然として不要のまま——[Issue #22](https://github.com/MinamiyamaKotaro/exceldiff/issues/22)が想定していた「公開する実利」は生じなかった。公開する新たな実利が生じるまでは現状維持とする。
 2. **inputs/outputsの汎用化(続き)**: `files`/`comment`/`job-summary`/`max-rows-per-sheet`/`diff-mode`/`visual`inputsと`has-changes`/`changed-files-count`outputsは実装済み([Issue #24](https://github.com/MinamiyamaKotaro/exceldiff/issues/24))。~~`diff-scope`(コミット単位の差分表示)~~([Issue #43](https://github.com/MinamiyamaKotaro/exceldiff/issues/43)、`commit`モードのみ実装済み): 新規`diff-scope`input(`pr`(既定・従来通り)/`commit`)を追加し、`commit`モードはPRが導入した各コミットを`git log --reverse base.sha..head.sha`で列挙して直前の親(`<commit>^1`)との差分をコミットごとのMarkdownサブセクションとして出力する——新規追加されたファイルへのPR内修正が常に`Added`として扱われる問題([Issue #23のコメント](https://github.com/MinamiyamaKotaro/exceldiff/issues/23))を解消する。`visual: true`併用時のグリッドHTML成果物もコミット単位でネームスペース分けする(上記「ビジュアルモード」参照)。設計はPoC(`poc/issue43-poc/`)で事前検証し、実装後もローカルでシェルスクリプト単体検証まで実施済みだが、**実際のGitHub Actions上での結合検証(dogfooding)はまだ未実施**(上記「テスト方針」項目5参照)。以下は引き続き未着手:
    - `changed-cells-count`output: 現状`xlsxdiff`はMarkdown文字列をstdoutへ書くのみで、追加/変更/削除セル数を機械可読な形で外に出していない。`cli/`側に集計出力(例: stderrへの`added=N modified=M deleted=D`行)を追加した上で、`action.yml`側でファイルごとに合算する必要がある。
    - `diff-scope: push`(直前pushの`before`/`after`単位への切り替え)は未実装のまま残っている。`pull_request`イベントの`synchronize`アクションのペイロードには`before`/`after`フィールドが存在する([octokit/webhooksのJSON Schemaで確認](https://github.com/octokit/webhooks))が、`opened`等それ以外のアクションには存在しないため、そのケースのフォールバック(例: `base.sha`/`head.sha`にフォールバックする)を含めて別途設計・検証が必要。
@@ -188,3 +229,7 @@ composite actionはYAML定義であり`cargo test`の対象にならないため
 3. ~~**外部リポジトリからの実地検証**~~([Issue #23](https://github.com/MinamiyamaKotaro/exceldiff/issues/23)、解決済み): プレリリースタグ`v0.1.0-rc1`を切り、別リポジトリ(throwaway、`MinamiyamaKotaro/exceldiff-action-verify`)から`uses: MinamiyamaKotaro/exceldiff@v0.1.0-rc1`で実際に呼び出し、checkout→差分計算→PRコメント投稿までend-to-endで成功を確認した。この検証自体が実際にバグを発見した——README基本例どおり`permissions: pull-requests: write`のみを書いた呼び出し元では`contents`が黙って`none`になり`actions/checkout`が失敗する問題(上記「`permissions:`ブロック」参照、修正はPR #45)。セルフドッグフーディング(常に`visual: true`で`contents: write`を書く)だけでは決して発見できなかった不具合であり、外部からの実地検証を省略できない実例になった。
 4. ~~**`xlsx-diff-images`ブランチの肥大化**~~(Issue #47の設計変更により解消): pushベース方式(コミットが無期限に増え続ける)自体を廃止し、artifactアップロード(90日で自動失効、`retention-days`で短縮も可能)へ置き換えたため、このリスクは前提ごと無くなった。
 5. ~~**`visual`モードのGitHub Actions実機検証**~~([Issue #47](https://github.com/MinamiyamaKotaro/exceldiff/issues/47)、[PR #48](https://github.com/MinamiyamaKotaro/exceldiff/pull/48)で解決済み): 使い捨ての`.xlsx`フィクスチャを一時的に追加するコミットで本リポジトリ自身の`uses: ./`ワークフローを実際にトリガーし([実行33122403504](https://github.com/MinamiyamaKotaro/exceldiff/actions/runs/33122403504))、`actions/upload-artifact@v4`のアップロード成功・PRコメントへの`artifact-url`リンク掲載・そのartifact自体の実在(`xlsx-diff-screenshots`、id `9666997603`、期限切れでない)をGitHub REST APIで確認した。検証用フィクスチャは確認後削除済み(Issue #23/#24と同じ手順)。**プライベートリポジトリでの検証も追加で実施済み**: マージ後、既存の使い捨て外部検証リポジトリ(`MinamiyamaKotaro/exceldiff-action-verify`、非公開)の新規PRから、マージコミット(`0c4f571`)を指す`uses:`で本actionを呼び出し、実際にコメント・artifactが生成されることを確認した上で、(a) 認証なしでの`artifact-url`アクセスがHTTP 404(APIは401)になり閲覧をブロックされること、(b) 権限を持つ側(オーナー自身のトークン)からは実際にzipをダウンロードでき、中身が期待通りのスクリーンショットPNGであることの両方をGitHub APIで確認した——旧`raw.githubusercontent.com`方式(閲覧権限があっても見えない)、および不採用にした`uploads.github.com`方式(認証なしでも到達できてしまう)のどちらとも異なり、意図通り「リポジトリ権限のある人だけが見える」が実現できていることの直接証拠。
+6. **事前ビルド済みバイナリ配布の実機未検証部分**([Issue #28](https://github.com/MinamiyamaKotaro/exceldiff/issues/28)、上記「事前ビルド済みバイナリ配布」参照): 設計はPoC(`poc/issue28-poc/`)で検証し、ダウンロード成功パス・チェックサム不一致時のフォールバック・ターゲットトリプル解決ロジックはいずれもローカル(簡易HTTPサーバーでのモック含む)で確認済みだが、以下は未着手のまま残っている:
+   - **実際のタグpush→`release.yml`実行→本物のGitHub Releaseアセットに対する`action.yml`側ダウンロードの実機検証**。項目3・5と同じ理由(ローカル検証だけでは見つからない不具合がある)でいずれ必要になるが、タグ・Releaseの作成は本actionにとって初めての公開・準不可逆な操作であり、実施タイミング(バージョン番号の付け方、`v0.1.0-rc1`と同様の検証専用プレリリースを切るか等)は別途判断する。
+   - `aarch64-unknown-linux-gnu`(ARM64 Linux)ターゲットは未実装。クロスリンカが必要になる可能性が高く、`ubuntu-latest`にネイティブARM64版が一般提供されているかも含め別途調査が必要。
+   - `changed-cells-count`output(上記項目2参照)とは独立した課題だが、`release.yml`が生成する`SHA256SUMS`のフォーマット・アセット命名規則が将来この手のoutputやその他のツール連携に流用可能かは未検討。

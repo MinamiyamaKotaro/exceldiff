@@ -1,0 +1,122 @@
+name: Release xlsxdiff binaries
+
+# Builds native `xlsxdiff` release binaries for action.yml's pre-built
+# binary distribution (Issue #28). action.yml's "Resolve xlsxdiff binary"
+# step downloads the asset matching `github.action_ref` from whichever tag
+# triggered this workflow, falling back to `cargo build` from source when
+# no matching release/asset exists (e.g. this repo's own `uses: ./`
+# self-dogfooding, or a caller pinned to a branch/commit rather than a
+# release tag) — see docs/design/action.md's "事前ビルド済みバイナリ配布"
+# section and Issue #28's PoC comments for the verified design rationale.
+#
+# `xlsxdiff`'s full dependency graph (quick-xml/serde/serde_json/thiserror/
+# zip, the last via flate2 -> zlib-rs) is pure Rust — no C toolchain is
+# ever pulled in (confirmed via `cargo tree`; `exceldiff`'s optional
+# `rusqlite`-backed `diff-storage` feature is never enabled here since
+# `cli/Cargo.toml`'s `exceldiff = { path = ".." }` doesn't request it) —
+# so every target below builds by compiling natively on that OS's own
+# GitHub-hosted runner, with no `cross`/Docker/cross-linker needed.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # P0: matches `ubuntu-latest`, the overwhelming majority of real
+          # callers (composite actions run on Linux runners almost
+          # exclusively — see action.yml's own "Preconditions" comment).
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # P1: `macos-latest` is itself Apple Silicon (arm64) today, so
+          # the x86_64 leg below is a same-OS cross-build (no C toolchain
+          # needed, verified locally in the Issue #28 PoC: ~7s, produces
+          # a working Mach-O x86_64 binary from an arm64 host).
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          # aarch64-unknown-linux-gnu (P2 per Issue #28) intentionally
+          # left out of this first pass — see Issue #28's follow-up notes.
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build xlsxdiff
+        run: cargo build --release -p xlsxdiff --target ${{ matrix.target }}
+
+      # A plain `.tar.gz` for every target, Windows included — GitHub's
+      # `windows-latest` runners have a working `tar` (Windows itself has
+      # shipped bsdtar as `tar.exe` since Windows 10, and this step's own
+      # `shell: bash` uses Git Bash's GNU tar either way), so there's no
+      # need for a second `.zip`/`Compress-Archive` code path just for
+      # Windows.
+      - name: Package archive
+        shell: bash
+        run: |
+          bin_name=xlsxdiff
+          [ "${{ runner.os }}" = "Windows" ] && bin_name=xlsxdiff.exe
+          tar -czf "xlsxdiff-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" "$bin_name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlsxdiff-${{ matrix.target }}
+          path: xlsxdiff-*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # `gh release create` below needs to run inside a repo checkout.
+      - uses: actions/checkout@v4
+
+      # Every matrix leg's artifact holds exactly one uniquely-named
+      # `xlsxdiff-<tag>-<target>.tar.gz`, so merging them into one flat
+      # directory can never collide.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS
+
+      # A `-` in the tag (e.g. `v0.1.0-rc1`, this repo's own existing
+      # pre-release-tag convention — see docs/design/action.md's "外部
+      # リポジトリからの実地検証") marks it a pre-release, same as the
+      # `v0.1.0-rc1` tag already used for Issue #23's live verification.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          prerelease_flag=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+          gh release create "$TAG" dist/* \
+            --title "$TAG" \
+            --generate-notes \
+            "${prerelease_flag[@]}"
