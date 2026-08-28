@@ -100,8 +100,8 @@ pub(crate) struct WorksheetParseOutput {
 /// already enforces for an explicit `r` — a run of `r`-omitting `<c>`
 /// elements would otherwise never pass through `CellRef::from_a1`'s own
 /// check at all, letting it inflate `Sheet::max_col` unbounded (the same
-/// attack surface security review `docs/security/code-review.md` Finding 2
-/// covers).
+/// attack surface xlsxparser's own security review
+/// `docs/security/old/code-review.en.md` Finding 2 covers).
 pub(crate) fn parse_worksheet(
     reader: impl BufRead,
     path: &str,

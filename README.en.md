@@ -358,8 +358,11 @@ rendering — will be added here once there's a need for them.
 
 - **Zip Bomb / Zip Slip / XXE**: guarded against at parse time (see
   [Architecture](#architecture) above and
-  [docs/security/design-review.md](docs/security/design-review.md) for the
-  full analysis).
+  [xlsxparser's own docs/security/design-review.md](https://github.com/MinamiyamaKotaro/xlsxparser/blob/master/docs/security/design-review.md)
+  — the sister project sharing this underlying parser — for the full
+  analysis; the security review for `exceldiff`'s own code (diff
+  detection, output, distribution) lives in
+  [this repo's own docs/security/](docs/security/design-review.en.md)).
 - **CSV / formula injection**: cell string values (including formula-computed
   result strings) pass through unchanged, with no escaping at any stage —
   this is safe as JSON output, but callers who re-export parsed values into

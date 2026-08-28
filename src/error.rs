@@ -140,8 +140,8 @@ pub enum Error {
     /// `resolve::merge::MAX_MERGE_REGIONS`. `resolve::merge::resolve`'s
     /// overlap check is O(N^2) in the number of regions, so N itself — not
     /// just the byte size of the XML that declares it, which the Zip Bomb
-    /// cap already bounds — must be bounded independently (security review
-    /// `docs/security/code-review.md` Finding 1).
+    /// cap already bounds — must be bounded independently (xlsxparser's own
+    /// security review `docs/security/old/code-review.md` Finding 1).
     #[error("too many merged cell ranges in one sheet: {count} exceeds limit {limit}")]
     TooManyMergedRanges { count: usize, limit: usize },
 

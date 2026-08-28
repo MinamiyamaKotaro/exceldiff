@@ -237,7 +237,7 @@ src/
 
 ## セキュリティに関する注記
 
-- **Zip Bomb / Zip Slip / XXE**: パース時に防御しています(前述の[アーキテクチャ](#アーキテクチャ)、および完全な分析は [docs/security/design-review.md](docs/security/design-review.md) 参照)。
+- **Zip Bomb / Zip Slip / XXE**: パース時に防御しています(前述の[アーキテクチャ](#アーキテクチャ)、および完全な分析は基盤パーサーを共有する[xlsxparser側のdocs/security/design-review.md](https://github.com/MinamiyamaKotaro/xlsxparser/blob/master/docs/security/design-review.md)参照——`exceldiff`固有コード(差分検出・出力・配布)のセキュリティレビューは[本リポジトリ側のdocs/security/](docs/security/design-review.md)にあります)。
 - **CSV / 数式インジェクション**: セルの文字列値(数式の計算結果文字列を含む)は、いかなる段階でもエスケープされず、そのまま通過します——これはJSON出力としては安全ですが、パース結果をCSVや他のスプレッドシート形式へ再出力する呼び出し側は、自身で数式インジェクション対策(`=`、`+`、`-`、`@` で始まる値のエスケープなど)を行う責任があります。`.xlsx` 入力は信頼できないものであり、本ライブラリはセル内容の書き換えを一切行わないためです。
 
 ## ライセンス

@@ -670,9 +670,9 @@ mod tests {
 
     #[test]
     fn cell_ref_beyond_excels_real_maximum_is_invalid_cell_ref() {
-        // Security review docs/security/code-review.md Finding 2, exercised
-        // end to end through real worksheet XML rather than a direct
-        // CellRef::from_a1 call.
+        // xlsxparser's own security review docs/security/old/code-review.md
+        // Finding 2, exercised end to end through real worksheet XML
+        // rather than a direct CellRef::from_a1 call.
         let sheet_with_forged_coordinate: &[u8] =
             br#"<worksheet><sheetData><row r="1"><c r="ZZZZZZ4294967294"><v>1</v></c></row></sheetData></worksheet>"#;
         let zip = build_zip(&[
@@ -715,7 +715,8 @@ mod tests {
 
     #[test]
     fn excessive_merge_cell_count_is_too_many_merged_ranges() {
-        // Security review docs/security/code-review.md Finding 1: without
+        // xlsxparser's own security review
+        // docs/security/old/code-review.md Finding 1: without
         // resolve::merge's MAX_MERGE_REGIONS cap, a sheet with a large
         // number of non-overlapping <mergeCell> entries costs O(N^2) to
         // validate, letting a file of a few hundred KB block the caller

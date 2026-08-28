@@ -93,8 +93,8 @@ pub(crate) struct WorksheetParseOutput {
 /// 採用する。いずれの経路でも [`model/cell.rs`](../model/cell.md) の
 /// `CellRef::MAX_ROW`/`MAX_COL` と同じ上限チェックを行う——`r` を省略した
 /// `<c>` を大量に並べるだけで `CellRef::from_a1` の上限チェックを経由せず
-/// `Sheet::max_col` を膨張させられてしまうため(セキュリティレビュー
-/// `docs/security/code-review.md` Finding 2 と同じ攻撃面)。
+/// `Sheet::max_col` を膨張させられてしまうため(xlsxparser側のセキュリティ
+/// レビュー`docs/security/old/code-review.md` Finding 2 と同じ攻撃面)。
 pub(crate) fn parse_worksheet(
     reader: impl BufRead,
     path: &str,

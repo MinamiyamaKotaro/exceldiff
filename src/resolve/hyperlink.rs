@@ -20,10 +20,10 @@ use crate::model::{HyperlinkRange, Sheet};
 /// exact value and reasoning rather than deriving an independent one:
 /// `validate_range` below is the same O(N^2) shape as `resolve::merge`'s
 /// `validate_region` (each new range checked against every already-
-/// accepted one), so the identical cost curve applies (security review
-/// `docs/security/code-review.md` Finding 1's measurement — ~424ms at
-/// N=40,000, ~10s extrapolated at N=194,000 — governs this cap too,
-/// without needing to re-derive it).
+/// accepted one), so the identical cost curve applies (xlsxparser's own
+/// security review `docs/security/old/code-review.md` Finding 1's
+/// measurement — ~424ms at N=40,000, ~10s extrapolated at N=194,000 —
+/// governs this cap too, without needing to re-derive it).
 pub(crate) const MAX_HYPERLINKS_PER_SHEET: usize = 20_000;
 
 /// Validates `ranges`, then registers the whole batch into `sheet` in one

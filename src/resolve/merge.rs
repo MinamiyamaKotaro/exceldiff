@@ -15,8 +15,8 @@ use crate::model::{MergedRegion, Sheet};
 /// Bomb byte-size cap (512 MiB by default) alone permits well over 10
 /// million of them, which is already an effectively-unbounded amount of
 /// O(N^2) work. This cap keeps the worst case bounded to roughly a few
-/// hundred milliseconds instead (security review
-/// `docs/security/code-review.md` Finding 1, which measured this scaling
+/// hundred milliseconds instead (xlsxparser's own security review
+/// `docs/security/old/code-review.md` Finding 1, which measured this scaling
 /// directly: N=40,000 took ~424ms, and N=194,000 was already extrapolated
 /// to ~10s). 20,000 leaves ample headroom over the tens-to-hundreds of
 /// merged regions a real-world sheet typically has.
@@ -182,8 +182,9 @@ mod tests {
 
     #[test]
     fn region_count_over_the_limit_is_too_many_merged_ranges() {
-        // Security review docs/security/code-review.md Finding 1: without
-        // this cap, validating N regions costs O(N^2) (each new region is
+        // xlsxparser's own security review
+        // docs/security/old/code-review.md Finding 1: without this cap,
+        // validating N regions costs O(N^2) (each new region is
         // checked against every already-accepted one), so a file with a
         // few hundred KB of `<mergeCell>` entries could block the caller
         // for minutes. The identical/overlapping regions here are

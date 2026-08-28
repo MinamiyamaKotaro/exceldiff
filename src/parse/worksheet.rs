@@ -1335,8 +1335,9 @@ mod tests {
 
     #[test]
     fn cell_missing_r_beyond_max_col_is_invalid_cell_ref() {
-        // Security review docs/security/code-review.md Finding 2: an
-        // inferred column must be bounded the same way `CellRef::from_a1`
+        // xlsxparser's own security review
+        // docs/security/old/code-review.md Finding 2: an inferred column
+        // must be bounded the same way `CellRef::from_a1`
         // already bounds an explicit one, or an attacker could inflate
         // `Sheet::max_col` (and json.rs's `maxCol`) far past
         // `CellRef::MAX_COL` using nothing but MAX_COL + 1 empty <c/>

@@ -470,9 +470,10 @@ fn parse_marker(reader: &mut Reader<impl BufRead>, path: &str) -> Result<AnchorM
 /// match A1 notation — see `model::cell::CellRef`'s doc), so 1 is added to
 /// each before constructing the `CellRef`. A value that would overflow or
 /// push the result past `CellRef::MAX_ROW`/`MAX_COL` is rejected the same
-/// way `CellRef::from_a1` rejects an out-of-range A1 reference (security
-/// review `docs/security/code-review.md` Finding 2's rationale applies here
-/// too — an attacker-controlled coordinate should never reach the model).
+/// way `CellRef::from_a1` rejects an out-of-range A1 reference (xlsxparser's
+/// own security review `docs/security/old/code-review.md` Finding 2's
+/// rationale applies here too — an attacker-controlled coordinate should
+/// never reach the model).
 fn zero_based_to_cell_ref(row0: u32, col0: u32, path: &str) -> Result<CellRef, Error> {
     let row = row0.checked_add(1).filter(|&r| r <= CellRef::MAX_ROW);
     let col = col0.checked_add(1).filter(|&c| c <= CellRef::MAX_COL);
